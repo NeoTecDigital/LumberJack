@@ -156,8 +156,7 @@ func (n *Node) CheckPermission(userID string, permission Permission) bool {
 	for _, user := range n.Users {
 		if user.ID == userID {
 			for _, perm := range user.Permissions {
-
-				if perm == permission {
+				if perm >= permission {
 					return true
 				}
 			}

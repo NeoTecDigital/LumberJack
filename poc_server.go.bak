@@ -1,0 +1,76 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/vaziolabs/lumberjack/internal"
+	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/vaziolabs/lumberjack/types"
+)
+
+func main() {
+	// POC server configuration
+	config := types.ServerConfig{
+		Process: types.ProcessInfo{
+			ID:            "png_poc",
+			PID:           os.Getpid(),
+			Name:          "png-poc",
+			ServerURL:     "localhost",
+			ServerPort:    "9483",
+			DashboardPort: "9484",
+			DashboardURL:  "localhost",
+			DashboardUp:   false,
+			LogPath:       "/var/log/lumberjack/png-poc",
+			DatabasePath:  "/var/lib/lumberjack/png-poc",
+		},
+	}
+
+	// Ensure directories exist
+	os.MkdirAll(config.Process.LogPath, 0755)
+	os.MkdirAll(config.Process.DatabasePath, 0755)
+
+	// Check if database exists
+	dbPath := filepath.Join(config.Process.DatabasePath, config.Process.Name+".dat")
+	var server *internal.Server
+	var err error
+
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		// Create new server with admin user
+		fmt.Println("Creating new PNG POC database...")
+		adminUser := core.User{
+			Username:     "admin",
+			Password:     "admin",
+			Email:        "admin@png.local",
+			Organization: "PNG Construction",
+			Phone:        "555-1234",
+		}
+		server, err = internal.NewServer(config, adminUser)
+		if err != nil {
+			log.Fatalf("Failed to create server: %v", err)
+		}
+		fmt.Println("Database created successfully")
+	} else {
+		// Load existing server
+		fmt.Println("Loading existing PNG POC database...")
+		server, err = internal.LoadServer(config)
+		if err != nil {
+			log.Fatalf("Failed to load server: %v", err)
+		}
+		fmt.Println("Database loaded successfully")
+	}
+
+	// Start the server
+	fmt.Printf("Starting LumberJack POC server on http://%s:%s\n", config.Process.ServerURL, config.Process.ServerPort)
+	fmt.Println("Login credentials: admin / admin")
+	fmt.Println("Press Ctrl+C to stop")
+
+	if err := server.Start(); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+
+	// Block forever
+	select {}
+}
