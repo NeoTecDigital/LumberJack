@@ -23,7 +23,7 @@ func (n *Node) AddChild(child *Node) error {
 	defer n.mutex.Unlock()
 
 	child.AddParent(n)
-	n.Children[child.ID] = child
+	n.Children[child.Name] = child
 	return nil
 }
 

@@ -79,6 +79,9 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	current := server.forest
 
 	for _, part := range parts {
+		if part == "" {
+			continue // Skip empty parts from leading/trailing slashes
+		}
 		found := false
 		for _, child := range current.Children {
 			if child.Name == part {
@@ -88,7 +91,7 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("node not found: %s", path)
+			return nil, fmt.Errorf("node not found: %s (looking for part '%s', current node has %d children)", path, part, len(current.Children))
 		}
 	}
 
