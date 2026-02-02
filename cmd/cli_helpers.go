@@ -209,12 +209,28 @@ func loadConfig(dbName string) types.ProcessInfo {
 	return dbConfig
 }
 
-func updateProcessInfo(proc types.ProcessInfo) error {
-	data, err := json.Marshal(proc)
+// writeProcessInfo writes process info to both .pi file and live directory
+func writeProcessInfo(proc types.ProcessInfo) error {
+	data, err := json.MarshalIndent(proc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal process info: %v", err)
 	}
 
-	processFile := getProcessFilePath(proc.ID)
-	return os.WriteFile(processFile, data, 0644)
+	// Write to .pi file
+	piPath := getProcessFilePath(proc.ID)
+	if err := os.WriteFile(piPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write .pi file: %v", err)
+	}
+
+	// Write to live directory
+	livePath := filepath.Join(defaultProcDir, "live", proc.ID)
+	if err := os.WriteFile(livePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write live file: %v", err)
+	}
+
+	return nil
+}
+
+func updateProcessInfo(proc types.ProcessInfo) error {
+	return writeProcessInfo(proc)
 }

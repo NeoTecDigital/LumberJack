@@ -33,22 +33,23 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 			return fmt.Errorf("server with name '%s' is already running", userInput.Name)
 		}
 	}
-	// Check if config already exists
-	if config := loadConfig(userInput.Name); config.Name != "" {
-		return fmt.Errorf("configuration for '%s' already exists", userInput.Name)
-	}
 
 	// Create unique ID for this instance
 	id := generateID()
 
 	// Set up new server with user input values, using defaults where not specified
 	config := types.ProcessInfo{
+		ID:            id,
 		Name:          userInput.Name,
 		ServerURL:     userInput.ServerURL,
 		ServerPort:    userInput.ServerPort,
 		DashboardPort: userInput.DashboardPort,
+		DashboardUp:   withDashboard,
 		LogPath:       userInput.LogPath,
 		DatabasePath:  filepath.Join(defaultLibDir, userInput.Name),
+		Organization:  userInput.Organization,
+		Phone:         userInput.Phone,
+		Admin:         userInput.Admin,
 	}
 
 	// Fill in defaults for any empty values
@@ -72,10 +73,14 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 	if err := os.MkdirAll(config.DatabasePath, 0755); err != nil {
 		return fmt.Errorf("failed to create database directory: %v", err)
 	}
+	liveDir := filepath.Join(defaultProcDir, "live")
+	if err := os.MkdirAll(liveDir, 0755); err != nil {
+		return fmt.Errorf("failed to create live directory: %v", err)
+	}
 
 	// Create log file
 	logPath := filepath.Join(config.LogPath, fmt.Sprintf("%s.log", id))
-	logFile, err := os.Create(logPath)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %v", err)
 	}
@@ -87,8 +92,20 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 		args = append(args, "-d")
 	}
 
+	// Serialize config to JSON for passing via environment
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to serialize config: %v", err)
+	}
+
 	cmd := exec.Command(os.Args[0], args...)
-	cmd.Env = append(os.Environ(), "LUMBERJACK_SPAWNED=1")
+	cmd.Env = append(os.Environ(),
+		"LUMBERJACK_SPAWNED=1",
+		fmt.Sprintf("LUMBERJACK_PROCESS_ID=%s", id),
+		fmt.Sprintf("LUMBERJACK_CONFIG=%s", string(configJSON)),
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 
 	// Properly detach the process
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -99,6 +116,17 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 	// Start process without waiting
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start server: %v", err)
+	}
+
+	// Update config with actual PID
+	config.PID = cmd.Process.Pid
+
+	// Write processInfo BEFORE releasing the process
+	// This ensures child can find it when it starts
+	if err := writeProcessInfo(config); err != nil {
+		// Kill the spawned process if we can't write process info
+		cmd.Process.Kill()
+		return fmt.Errorf("failed to write process info: %v", err)
 	}
 
 	// Don't wait for the process
@@ -112,14 +140,15 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 	return nil
 }
 
+
 func getRunningServers() ([]types.ProcessInfo, error) {
 	processLock.RLock()
-	defer processLock.RUnlock()
 
 	// Check live processes directory
 	liveDir := filepath.Join(defaultProcDir, "live")
 	liveFiles, err := os.ReadDir(liveDir)
 	if err != nil {
+		processLock.RUnlock()
 		if os.IsNotExist(err) {
 			return []types.ProcessInfo{}, nil
 		}
@@ -127,6 +156,8 @@ func getRunningServers() ([]types.ProcessInfo, error) {
 	}
 
 	var processes []types.ProcessInfo
+	var deadProcesses []string
+
 	for _, file := range liveFiles {
 		// Get process info from .pi file
 		data, err := os.ReadFile(getProcessFilePath(file.Name()))
@@ -145,10 +176,19 @@ func getRunningServers() ([]types.ProcessInfo, error) {
 			if err := process.Signal(syscall.Signal(0)); err == nil {
 				processes = append(processes, proc)
 			} else {
-				// Process not running, clean up files
-				removeProcess(proc.ID)
+				// Process not running, mark for cleanup
+				deadProcesses = append(deadProcesses, proc.ID)
 			}
+		} else {
+			deadProcesses = append(deadProcesses, proc.ID)
 		}
+	}
+
+	processLock.RUnlock()
+
+	// Clean up dead processes (need write lock, so do after releasing read lock)
+	for _, id := range deadProcesses {
+		removeProcess(id)
 	}
 
 	return processes, nil

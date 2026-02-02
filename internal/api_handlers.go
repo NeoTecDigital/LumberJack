@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
@@ -417,7 +418,6 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	server.logger.Info("Attempting login for user: %s", credentials.Username)
-	server.logger.Info("Number of users in system: %d", len(server.forest.Users))
 
 	// Get pointer to user to avoid copying
 	var foundUser *core.User
@@ -767,6 +767,168 @@ func (server *Server) handleDeleteAttachment(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// HTTP handler for creating a node with metadata
+func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
+	server.logger.Enter("CreateNode")
+	defer server.logger.Exit("CreateNode")
+
+	userID := r.Context().Value("user_id").(string)
+
+	var request struct {
+		Path     string                 `json:"path"`
+		Name     string                 `json:"name"`
+		Type     core.NodeType          `json:"type"` // 0=LeafNode, 1=BranchNode
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		server.logger.Failure("Failed to decode request: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Parse path to find parent node
+	parts := strings.Split(strings.Trim(request.Path, "/"), "/")
+	parentPath := ""
+	if len(parts) > 1 {
+		parentPath = strings.Join(parts[:len(parts)-1], "/")
+	}
+
+	server.logger.Info("Creating node at path: %s (parent: %s)", request.Path, parentPath)
+
+	// Get or create parent node
+	parent := server.forest
+	if parentPath != "" {
+		var err error
+		parent, err = server.getNodeFromPath(parentPath)
+		if err != nil {
+			server.logger.Failure("Parent not found: %v", err)
+			http.Error(w, fmt.Sprintf("Parent not found: %v", err), http.StatusNotFound)
+			return
+		}
+	}
+
+	// Check permissions on parent - user needs write or admin permission
+	hasWritePermission := parent.CheckPermission(userID, core.WritePermission)
+	hasAdminPermission := parent.CheckPermission(userID, core.AdminPermission)
+
+	if !hasWritePermission && !hasAdminPermission {
+		server.logger.Failure("User %s lacks write or admin permission on parent", userID)
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	// Create new node
+	newNode := core.NewNode(request.Type, request.Name)
+	server.logger.Info("Created new node: ID=%s, Name=%s, Type=%d", newNode.ID, newNode.Name, newNode.Type)
+
+	// Add metadata as initial activity
+	if request.Metadata != nil {
+		newNode.AddActivity("node_created", request.Metadata, userID)
+		server.logger.Info("Added metadata with %d fields", len(request.Metadata))
+	}
+
+	// Assign creator with write permission
+	user := core.User{ID: userID}
+	if err := newNode.AssignUser(user, core.WritePermission); err != nil {
+		server.logger.Failure("Failed to assign user: %v", err)
+		http.Error(w, "Failed to assign user", http.StatusInternalServerError)
+		return
+	}
+
+	// Add to parent
+	if err := parent.AddChild(newNode); err != nil {
+		server.logger.Failure("Failed to add child: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to add child: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Persist to disk
+	dbPath := filepath.Join(server.config.Process.DatabasePath, server.config.Process.Name+".dat")
+	if err := server.writeChangesToFile(server.forest, dbPath); err != nil {
+		server.logger.Failure("Failed to save state: %v", err)
+		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		return
+	}
+
+	server.logger.Success("Node created and persisted at path: %s", request.Path)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":   newNode.ID,
+		"path": request.Path,
+		"name": newNode.Name,
+		"type": newNode.Type,
+	})
+}
+
+// Handler for getting node metadata by path
+func (server *Server) handleGetNodeByPath(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value("user_id").(string)
+
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "path parameter required", http.StatusBadRequest)
+		return
+	}
+
+	node, err := server.getNodeFromPath(path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Node not found: %v", err), http.StatusNotFound)
+		return
+	}
+
+	// Check read permission
+	if !node.CheckPermission(userID, core.ReadPermission) &&
+	   !node.CheckPermission(userID, core.AdminPermission) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(node)
+}
+
+// Handler for updating node metadata
+func (server *Server) handleUpdateNodeMetadata(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value("user_id").(string)
+
+	var request struct {
+		Path     string                 `json:"path"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	node, err := server.getNodeFromPath(request.Path)
+	if err != nil {
+		http.Error(w, "Node not found", http.StatusNotFound)
+		return
+	}
+
+	if !node.CheckPermission(userID, core.WritePermission) && !node.CheckPermission(userID, core.AdminPermission) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	// Add metadata as new activity
+	node.AddActivity("metadata_updated", request.Metadata, userID)
+
+	// Persist to disk
+	dbPath := filepath.Join(server.config.Process.DatabasePath, server.config.Process.Name+".dat")
+	if err := server.writeChangesToFile(server.forest, dbPath); err != nil {
+		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
 
 // Lazy loading approach
