@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -272,27 +273,39 @@ func runServer(cmd *cobra.Command, args []string) {
 		dbName = args[0]
 	}
 
-	config := loadConfig(dbName)
+	var processInfo types.ProcessInfo
 
-	// Get the process info first
-	processes, err := getRunningServers()
-	if err != nil {
-		fmt.Printf("Error getting process info: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Find the process for this database
-	var processInfo *types.ProcessInfo
-	for _, p := range processes {
-		if p.Name == dbName {
-			processInfo = &p
-			break
+	// First try to get config from environment (passed by spawner)
+	if configJSON := os.Getenv("LUMBERJACK_CONFIG"); configJSON != "" {
+		if err := json.Unmarshal([]byte(configJSON), &processInfo); err != nil {
+			fmt.Printf("Error parsing config from environment: %v\n", err)
+			os.Exit(1)
 		}
-	}
+	} else {
+		// Fallback: try to load from file system
+		config := loadConfig(dbName)
 
-	if processInfo == nil {
-		fmt.Printf("No process info found for database %s\n", dbName)
-		os.Exit(1)
+		// Get the process info first
+		processes, err := getRunningServers()
+		if err != nil {
+			fmt.Printf("Error getting process info: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Find the process for this database
+		var found bool
+		for _, p := range processes {
+			if p.Name == dbName {
+				processInfo = p
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// If not found in running processes, create new processInfo from config
+			processInfo = config
+		}
 	}
 
 	// Update paths in process info
@@ -300,14 +313,27 @@ func runServer(cmd *cobra.Command, args []string) {
 	processInfo.LogPath = defaultLogDir
 
 	serverConfig := types.ServerConfig{
-		Process: *processInfo,
+		Process: processInfo,
 	}
 
 	server, err := internal.LoadServer(serverConfig)
 	if err != nil {
 		// If database doesn't exist yet, create a new one
 		if os.IsNotExist(err) {
-			user := core.User{} // Empty user since this is a spawned process
+			// Create admin user from config
+			user := core.User{}
+			if processInfo.Admin != nil {
+				user = core.User{
+					ID:           fmt.Sprintf("user-%d", time.Now().Unix()),
+					Name:         processInfo.Admin.Organization,
+					Username:     processInfo.Admin.Username,
+					Email:        processInfo.Admin.Email,
+					Password:     processInfo.Admin.Password,
+					Organization: processInfo.Admin.Organization,
+					Phone:        processInfo.Admin.Phone,
+					Permissions:  []core.Permission{core.AdminPermission},
+				}
+			}
 			server, err = internal.NewServer(serverConfig, user)
 			if err != nil {
 				fmt.Printf("Error creating new server: %v\n", err)
@@ -324,9 +350,9 @@ func runServer(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if dashboardSet {
-		apiEndpoint := fmt.Sprintf("http://%s:%s", config.ServerURL, config.ServerPort)
-		dash := dashboard.NewDashboard(apiEndpoint, config.DashboardPort)
+	if dashboardSet || processInfo.DashboardUp {
+		apiEndpoint := fmt.Sprintf("http://%s:%s", processInfo.ServerURL, processInfo.ServerPort)
+		dash := dashboard.NewDashboard(apiEndpoint, processInfo.DashboardPort)
 		dash.Start()
 	}
 

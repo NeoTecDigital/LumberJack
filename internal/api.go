@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -15,10 +16,16 @@ import (
 func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) {
 	router := mux.NewRouter()
 
+	// Load JWT secret from environment variable
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		return nil, errors.New("JWT_SECRET environment variable not set")
+	}
+
 	server := &Server{
 		forest: core.NewForest("forest"),
 		jwtConfig: JWTConfig{
-			SecretKey: []byte("your-secret-key"), // TODO: Add certificate management to handle this securely
+			SecretKey: []byte(jwtSecret),
 			ExpiresIn: 24 * time.Hour,
 		},
 		logger: types.NewLogger(),
@@ -35,6 +42,7 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 	// Create admin user for new database
 	coreUser := core.User{
 		ID:           core.GenerateID(),
+		Name:         adminUser.Name,
 		Username:     adminUser.Username,
 		Email:        adminUser.Email,
 		Organization: adminUser.Organization,
@@ -66,10 +74,16 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 func LoadServer(config types.ServerConfig) (*Server, error) {
 	router := mux.NewRouter()
 
+	// Load JWT secret from environment variable
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		return nil, errors.New("JWT_SECRET environment variable not set")
+	}
+
 	server := &Server{
 		forest: core.NewForest("forest"),
 		jwtConfig: JWTConfig{
-			SecretKey: []byte("your-secret-key"), // TODO: Determine on how to handle key securely
+			SecretKey: []byte(jwtSecret),
 			ExpiresIn: 24 * time.Hour,
 		},
 		logger: types.NewLogger(),
@@ -89,6 +103,9 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 		server.logger.Failure("failed to load database: %v", err)
 		return nil, err
 	}
+
+	server.initCache()
+	server.initAPIQueue(5) // Start with 5 workers
 
 	server.logger.Info("Loaded existing database from %s", dbPath)
 	return server, nil
@@ -126,6 +143,10 @@ func (s *Server) Start() error {
 	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleDeleteAttachment)).Methods("DELETE")
 	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
 	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
+	// Node management routes
+	router.HandleFunc("/nodes/create", s.authMiddleware(s.handleCreateNode)).Methods("POST")
+	router.HandleFunc("/nodes/metadata", s.authMiddleware(s.handleUpdateNodeMetadata)).Methods("PUT")
+	router.HandleFunc("/nodes/get", s.authMiddleware(s.handleGetNodeByPath)).Methods("GET")
 
 	s.server.Handler = router
 	go func() {
