@@ -1,0 +1,151 @@
+package internal
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/vaziolabs/lumberjack/internal/core"
+)
+
+// The node types a client may ask for by name. The forest is branches and leaves; events live on
+// leaves, so a request that does not say is asking for the thing it can track events on.
+const (
+	leafNodeType   = "leaf"
+	branchNodeType = "branch"
+)
+
+// handleCreateNode creates the node a path names, so that a client can reach a LEAF.
+//
+// THIS IS THE ROUTE THE EVENT FLOW WAS MISSING. The forest is rooted on a branch, StartEvent
+// refuses anything that is not a leaf, and no route created one — so on a fresh instance
+// /events/start could only ever answer "cannot add event to non-leaf node" and /events/append
+// could only ever answer "event not found". A client now creates the leaf it is going to track on.
+//
+// EVERY MISSING ANCESTOR IS CREATED AS A BRANCH, because that is the only thing an intermediate
+// segment of a path can be: it has a child. Only the last segment takes the requested type.
+//
+// It is IDEMPOTENT, so a client that starts twice against the same path does not have to
+// distinguish "I made it" from "it was already there".
+func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
+	server.logger.Enter("CreateNode")
+	defer server.logger.Exit("CreateNode")
+
+	userID, ok := r.Context().Value("user_id").(string)
+	if !ok || userID == "" {
+		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return
+	}
+
+	var request struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	nodeType, err := nodeTypeOf(request.Type)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	node, err := server.createNodePath(request.Path, nodeType, userID)
+	if err != nil {
+		server.logger.Failure("Failed to create node %s: %v", request.Path, err)
+		http.Error(w, err.Error(), statusForNodeError(err))
+		return
+	}
+
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
+		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		return
+	}
+
+	// The node itself is NOT the answer: it carries its users, and its users carry password
+	// hashes. What a client needs to go on with is where the thing it just made lives.
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":   node.ID,
+		"name": node.Name,
+		"path": request.Path,
+		"type": nodeTypeName(node.Type),
+	})
+	server.logger.Success("Created node at %s", request.Path)
+}
+
+// createNodePath walks the path from the root, creating what is not there yet.
+//
+// The write permission is checked on EACH PARENT rather than once at the root: a user who may
+// extend one branch has not thereby been given the rest of the forest.
+func (server *Server) createNodePath(path string, nodeType core.NodeType, userID string) (*core.Node, error) {
+	if path == "" {
+		return nil, fmt.Errorf("path is required: the root already exists")
+	}
+
+	parts := strings.Split(path, "/")
+	parent := server.forest
+
+	for i, part := range parts {
+		if part == "" {
+			return nil, fmt.Errorf("empty segment in path: %s", path)
+		}
+
+		if !parent.CheckPermission(userID, core.WritePermission) {
+			return nil, fmt.Errorf("insufficient permissions on %s", parent.Name)
+		}
+
+		// Only the last segment is what the client asked for; an ancestor holds a child, which
+		// makes it a branch whatever the request said.
+		childType := core.BranchNode
+		if i == len(parts)-1 {
+			childType = nodeType
+		}
+
+		child, err := parent.AddChildNode(part, childType, userID)
+		if err != nil {
+			return nil, err
+		}
+		parent = child
+	}
+
+	return parent, nil
+}
+
+// nodeTypeOf reads the type a request asked for. An unstated type is a leaf: events need one, and
+// creating a path in order to track something on it is what this route is for.
+func nodeTypeOf(name string) (core.NodeType, error) {
+	switch name {
+	case "", leafNodeType:
+		return core.LeafNode, nil
+	case branchNodeType:
+		return core.BranchNode, nil
+	default:
+		return core.LeafNode, fmt.Errorf("unknown node type %q: use %q or %q", name, leafNodeType, branchNodeType)
+	}
+}
+
+// nodeTypeName is the name a client used to ask for the type, for the answer it gets back.
+func nodeTypeName(nodeType core.NodeType) string {
+	if nodeType == core.BranchNode {
+		return branchNodeType
+	}
+	return leafNodeType
+}
+
+// statusForNodeError separates "you may not" and "that cannot be" from a server fault, so a client
+// can tell a mistake it made from one the service made.
+func statusForNodeError(err error) int {
+	switch {
+	case strings.Contains(err.Error(), "insufficient permissions"):
+		return http.StatusForbidden
+	case strings.Contains(err.Error(), "already exists"):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}

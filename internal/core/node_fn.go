@@ -151,13 +151,17 @@ func (n *Node) PlanEvent(eventID string, userID string, plannedStart, plannedEnd
 	return nil
 }
 
-// CheckPermission checks if a user has permission to perform an action on the node
+// CheckPermission checks if a user has permission to perform an action on the node.
+//
+// Permissions are ranked, not matched exactly: Read < Write < Admin, which is the order the
+// constants are declared in. An admin who had to be granted WritePermission separately to append
+// to an event is an admin in name only, and every event route asks for WritePermission.
 func (n *Node) CheckPermission(userID string, permission Permission) bool {
 	for _, user := range n.Users {
 		if user.ID == userID {
 			for _, perm := range user.Permissions {
 
-				if perm == permission {
+				if perm >= permission {
 					return true
 				}
 			}
@@ -179,7 +183,9 @@ func (n *Node) AssignUser(user User, permission Permission) error {
 		}
 	}
 	if !found {
-		user.Permissions = []Permission{permission}
+		// The permission is ADDED to whatever the user already carries rather than replacing it,
+		// which is what the branch above does for a user the node already knows.
+		user.Permissions = append(user.Permissions, permission)
 		n.Users = append(n.Users, user)
 	}
 	return nil
