@@ -339,8 +339,9 @@ func TestForestOperations(t *testing.T) {
 			Organization: "test_org",
 			Phone:        "1234567890",
 			Process: types.ProcessInfo{
-				Name:       "test_state",
-				ServerPort: "8080",
+				Name:         "test_state",
+				DatabasePath: t.TempDir(),
+				ServerPort:   "8080",
 			},
 		}, core.User{Username: "admin", Password: "admin"})
 		if err != nil {
