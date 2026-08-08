@@ -97,6 +97,17 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	return current, nil
 }
 
+// statePath is this database's own state file, which is where every handler persists to.
+//
+// It is anchored to the database's own directory: the handlers used to pass the relative name
+// "state_file.dat" to writeChangesToFile, which dropped the database into whatever directory the
+// process was started from, and the ones that passed DatabasePath wrote to the directory itself.
+// The anchor is only as absolute as DatabasePath — the CLI always sets it under
+// /var/lib/lumberjack; a config without one keeps the old relative behaviour.
+func (server *Server) statePath() string {
+	return filepath.Join(server.config.Process.DatabasePath, server.config.Process.Name+".dat")
+}
+
 // UpdateSettings updates server configuration parameters
 func (server *Server) UpdateSettings(userID string, settings types.ServerConfig) error {
 	// Update user-specific settings

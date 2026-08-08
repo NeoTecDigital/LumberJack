@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -25,6 +26,56 @@ func (n *Node) AddChild(child *Node) error {
 	child.AddParent(n)
 	n.Children[child.ID] = child
 	return nil
+}
+
+// AddChildNode creates a child of this node by NAME, which is what a path names.
+//
+// It is IDEMPOTENT: a child of that name and type is returned rather than duplicated, so a client
+// that creates the same path twice gets the same node instead of a second one the path lookup can
+// never reach.
+//
+// The child INHERITS the parent's users, because a node nobody can write to is a node no event can
+// be started on, and the permission a user was granted on a tree is the permission they hold over
+// what grows on it. Only the identity and the permissions are copied; credentials are not.
+func (n *Node) AddChildNode(name string, nodeType NodeType, userID string) (*Node, error) {
+	if name == "" {
+		return nil, fmt.Errorf("node name cannot be empty")
+	}
+
+	if n.Type != BranchNode {
+		return nil, fmt.Errorf("cannot add a child to leaf node: %s", n.Name)
+	}
+
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	for _, child := range n.Children {
+		if child.Name != name {
+			continue
+		}
+		if child.Type != nodeType {
+			return nil, fmt.Errorf("node already exists with a different type: %s", name)
+		}
+		return child, nil
+	}
+
+	child := NewNode(nodeType, name)
+	child.CreatedBy = userID
+	child.CreatedAt = time.Now()
+	child.ModifiedBy = userID
+	child.ModifiedAt = child.CreatedAt
+	child.AddParent(n)
+	for _, user := range n.Users {
+		child.Users = append(child.Users, User{
+			ID:          user.ID,
+			Name:        user.Name,
+			Username:    user.Username,
+			Permissions: append([]Permission(nil), user.Permissions...),
+		})
+	}
+
+	n.Children[child.ID] = child
+	return child, nil
 }
 
 // AddParent adds a parent node to the node

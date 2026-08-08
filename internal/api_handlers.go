@@ -60,7 +60,7 @@ func (server *Server) handleAssignUser(w http.ResponseWriter, r *http.Request) {
 	}, userID)
 
 	// Write changes to file
-	if err := server.writeChangesToFile(node, "state_file.dat"); err != nil {
+	if err := server.writeChangesToFile(node, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -90,7 +90,7 @@ func (server *Server) handleStartTimeTracking(w http.ResponseWriter, r *http.Req
 	node.StartTimeTracking(userID)
 
 	// Write changes to file
-	if err := server.writeChangesToFile(node, "state_file.dat"); err != nil {
+	if err := server.writeChangesToFile(node, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -123,7 +123,7 @@ func (server *Server) handleStopTimeTracking(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(summary)
 
 	// Write changes to file
-	if err := server.writeChangesToFile(node, "state_file.dat"); err != nil {
+	if err := server.writeChangesToFile(node, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -179,7 +179,7 @@ func (server *Server) handleStartEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save state after event creation
-	if err := server.writeChangesToFile(server.forest, "state_file.dat"); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -261,7 +261,7 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := server.writeChangesToFile(server.forest, "state_file.dat"); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		log.Printf("Failed to save state: %v", err)
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
@@ -348,7 +348,7 @@ func (server *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save state
-	if err := server.writeChangesToFile(server.forest, "state_file.dat"); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		server.logger.Failure("Failed to save state: %v", err)
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
@@ -574,7 +574,7 @@ func (server *Server) handleUpdateServerSettings(w http.ResponseWriter, r *http.
 	}
 
 	// Save state after settings update
-	if err := server.writeChangesToFile(server.forest, server.config.Process.DatabasePath); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -640,7 +640,7 @@ func (server *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Save state after attachment upload
-	if err := server.writeChangesToFile(server.forest, server.config.Process.DatabasePath); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -728,7 +728,7 @@ func (server *Server) handleAddEntryAttachment(w http.ResponseWriter, r *http.Re
 	}
 
 	// Save state
-	if err := server.writeChangesToFile(server.forest, server.config.Process.DatabasePath); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -761,7 +761,7 @@ func (server *Server) handleDeleteAttachment(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Save state after deletion
-	if err := server.writeChangesToFile(server.forest, server.config.Process.DatabasePath); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}

@@ -13,6 +13,12 @@ import (
 	"github.com/vaziolabs/lumberjack/types"
 )
 
+const (
+	// The environment the spawned child is told about itself in.
+	spawnedEnv = "LUMBERJACK_SPAWNED"
+	spawnIDEnv = "LUMBERJACK_ID"
+)
+
 var (
 	processLock sync.RWMutex
 )
@@ -21,7 +27,15 @@ func getProcessFilePath(id string) string {
 	return filepath.Join(defaultLibDir, id+".pi")
 }
 
+func getLiveFilePath(id string) string {
+	return filepath.Join(defaultProcDir, "live", id)
+}
+
 func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
+	if userInput.Name == "" {
+		return fmt.Errorf("a database name is required to start a server")
+	}
+
 	// Validate server name doesn't already exist
 	processes, err := getRunningServers()
 	if err != nil {
@@ -33,12 +47,14 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 			return fmt.Errorf("server with name '%s' is already running", userInput.Name)
 		}
 	}
-	// Check if config already exists
-	if config := loadConfig(userInput.Name); config.Name != "" {
-		return fmt.Errorf("configuration for '%s' already exists", userInput.Name)
-	}
 
-	// Create unique ID for this instance
+	// A CONFIGURED DATABASE IS WHAT `start` IS FOR, not a reason to refuse. This used to reject
+	// any name whose config existed — which `create` has just written — so the documented
+	// create-then-start sequence could never be completed. What is worth refusing is a name
+	// already running, which is the loop above; the caller has already loaded the config.
+
+	// Create unique ID for this instance. The CHILD writes the process record, since it is the
+	// only one that knows its own PID, so the id is handed to it in the environment.
 	id := generateID()
 
 	// Set up new server with user input values, using defaults where not specified
@@ -88,7 +104,12 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 	}
 
 	cmd := exec.Command(os.Args[0], args...)
-	cmd.Env = append(os.Environ(), "LUMBERJACK_SPAWNED=1")
+	cmd.Env = append(os.Environ(), spawnedEnv+"=1", spawnIDEnv+"="+id)
+
+	// The log file made just above is the one `lumberjack logs` and /logs read. Without this the
+	// child's output goes to /dev/null and that file stays empty forever.
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 
 	// Properly detach the process
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -113,6 +134,26 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 }
 
 func getRunningServers() ([]types.ProcessInfo, error) {
+	processes, stale, err := readProcessRecords()
+	if err != nil {
+		return nil, err
+	}
+
+	// THE STALE RECORDS ARE REMOVED AFTER THE READ LOCK IS RELEASED. removeProcess takes the write
+	// lock and Go's RWMutex is not upgradable, so cleaning up from inside the read above deadlocked
+	// the process the first time it met a record whose PID was gone.
+	for _, id := range stale {
+		if err := removeProcess(id); err != nil {
+			fmt.Printf("Warning: Error removing stale process record %s: %v\n", id, err)
+		}
+	}
+
+	return processes, nil
+}
+
+// readProcessRecords reads every process record, and reports which of them are no longer running
+// rather than acting on them: see getRunningServers for why removing them here would deadlock.
+func readProcessRecords() ([]types.ProcessInfo, []string, error) {
 	processLock.RLock()
 	defer processLock.RUnlock()
 
@@ -121,37 +162,67 @@ func getRunningServers() ([]types.ProcessInfo, error) {
 	liveFiles, err := os.ReadDir(liveDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []types.ProcessInfo{}, nil
+			return []types.ProcessInfo{}, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	var processes []types.ProcessInfo
+	var stale []string
 	for _, file := range liveFiles {
-		// Get process info from .pi file
+		// Get process info from .pi file. A live entry whose record is GONE names nothing and is
+		// cleaned up with the rest; one we merely could not read this time is left alone.
 		data, err := os.ReadFile(getProcessFilePath(file.Name()))
 		if err != nil {
+			if os.IsNotExist(err) {
+				stale = append(stale, file.Name())
+			}
 			continue
 		}
 
 		var proc types.ProcessInfo
 		if err := json.Unmarshal(data, &proc); err != nil {
+			stale = append(stale, file.Name())
 			continue
 		}
 
 		// Verify process is actually running
-		if process, err := os.FindProcess(proc.PID); err == nil {
-			// Send signal 0 to check if process exists
-			if err := process.Signal(syscall.Signal(0)); err == nil {
-				processes = append(processes, proc)
-			} else {
-				// Process not running, clean up files
-				removeProcess(proc.ID)
-			}
+		process, err := os.FindProcess(proc.PID)
+		if err != nil {
+			stale = append(stale, proc.ID)
+			continue
 		}
+
+		// Send signal 0 to check if process exists
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			stale = append(stale, proc.ID)
+			continue
+		}
+
+		processes = append(processes, proc)
 	}
 
-	return processes, nil
+	return processes, stale, nil
+}
+
+// registerProcess writes the record that says this server is up.
+//
+// IT IS CALLED BY THE SERVER ITSELF, because the PID in the record has to be the PID of the
+// process that is serving: nothing else can write that honestly, and nothing used to write it at
+// all — so `runServer` read a record that never existed and exited on every start.
+func registerProcess(proc types.ProcessInfo) error {
+	if err := os.MkdirAll(filepath.Dir(getProcessFilePath(proc.ID)), 0755); err != nil {
+		return fmt.Errorf("failed to create process directory: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(getLiveFilePath(proc.ID)), 0755); err != nil {
+		return fmt.Errorf("failed to create live directory: %v", err)
+	}
+
+	if err := updateProcessInfo(proc); err != nil {
+		return err
+	}
+
+	return os.WriteFile(getLiveFilePath(proc.ID), []byte(proc.Name), 0644)
 }
 
 func killProcess(proc types.ProcessInfo) error {
@@ -173,7 +244,7 @@ func killProcess(proc types.ProcessInfo) error {
 
 	// Clean up process files regardless of kill success
 	_ = os.Remove(getProcessFilePath(proc.ID))
-	_ = os.Remove(filepath.Join(defaultProcDir, "live", proc.ID))
+	_ = os.Remove(getLiveFilePath(proc.ID))
 
 	// Don't wait for port cleanup, just run in background
 	if proc.DashboardUp {
@@ -192,8 +263,7 @@ func removeProcess(id string) error {
 	_ = os.Remove(getProcessFilePath(id))
 
 	// Remove the live process file
-	liveFilePath := filepath.Join(defaultProcDir, "live", id)
-	_ = os.Remove(liveFilePath)
+	_ = os.Remove(getLiveFilePath(id))
 
 	return nil
 }

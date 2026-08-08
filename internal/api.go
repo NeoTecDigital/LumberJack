@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -51,8 +50,7 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 		return nil, err
 	}
 
-	dbPath := filepath.Join(config.Process.DatabasePath, config.Process.Name+".dat")
-	if err := server.writeChangesToFile(server.forest, dbPath); err != nil {
+	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
 		server.logger.Failure("failed to save state after user creation: %v", err)
 		return nil, err
 	}
@@ -83,12 +81,18 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 	server.logger.Enter("LoadServer")
 	defer server.logger.Exit("LoadServer")
 
-	dbPath := filepath.Join(config.Process.DatabasePath, config.Process.Name+".dat")
+	dbPath := server.statePath()
 	server.logger.Debug("Loading database from %s", dbPath)
 	if err := server.loadFromFile(dbPath); err != nil {
 		server.logger.Failure("failed to load database: %v", err)
 		return nil, err
 	}
+
+	// A LOADED database needs the same cache and worker pool a NEW one gets. Without them every
+	// node-path route nil-panics in getFromCache and Shutdown nil-panics on the queue, which made
+	// a restart fatal to the whole /events/* surface.
+	server.initCache()
+	server.initAPIQueue(5) // Start with 5 workers
 
 	server.logger.Info("Loaded existing database from %s", dbPath)
 	return server, nil
@@ -114,6 +118,7 @@ func (s *Server) Start() error {
 	router.HandleFunc("/events/start", s.authMiddleware(s.handleStartEvent)).Methods("POST")
 	router.HandleFunc("/events/append", s.authMiddleware(s.handleAppendToEvent)).Methods("POST")
 	router.HandleFunc("/events/end", s.authMiddleware(s.handleEndEvent)).Methods("POST")
+	router.HandleFunc("/nodes", s.authMiddleware(s.handleCreateNode)).Methods("POST")
 	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
 	router.HandleFunc("/forest/tree", s.authMiddleware(s.handleGetTree)).Methods("GET")
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")
