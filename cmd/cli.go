@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/manifoldco/promptui"
@@ -17,7 +20,9 @@ import (
 	"github.com/vaziolabs/lumberjack/types"
 )
 
-const (
+// The directories the CLI keeps its logs, databases and process records in. Variables rather than
+// constants so that a test can point them somewhere it is allowed to write.
+var (
 	defaultLogDir  = "/var/log/lumberjack"
 	defaultLibDir  = "/var/lib/lumberjack"
 	defaultProcDir = "/etc/lumberjack"
@@ -242,7 +247,7 @@ Example:
     lumberjack start mydb -d`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// If this is a spawned process, run the server directly
-		if os.Getenv("LUMBERJACK_SPAWNED") == "1" {
+		if os.Getenv(spawnedEnv) == "1" {
 			runServer(cmd, args)
 			return
 		}
@@ -274,25 +279,17 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	config := loadConfig(dbName)
 
-	// Get the process info first
-	processes, err := getRunningServers()
-	if err != nil {
-		fmt.Printf("Error getting process info: %v\n", err)
-		os.Exit(1)
+	// THE PROCESS RECORD IS BUILT HERE AND WRITTEN BELOW, by the process it describes. This used
+	// to READ a record and exit when it found none — and nothing anywhere wrote one, so a spawned
+	// server exited on every start. The id comes from whoever spawned us, so that the log file it
+	// made and the record we write name the same instance.
+	processInfo := config
+	processInfo.PID = os.Getpid()
+	if processInfo.ID == "" {
+		processInfo.ID = os.Getenv(spawnIDEnv)
 	}
-
-	// Find the process for this database
-	var processInfo *types.ProcessInfo
-	for _, p := range processes {
-		if p.Name == dbName {
-			processInfo = &p
-			break
-		}
-	}
-
-	if processInfo == nil {
-		fmt.Printf("No process info found for database %s\n", dbName)
-		os.Exit(1)
+	if processInfo.ID == "" {
+		processInfo.ID = generateID()
 	}
 
 	// Update paths in process info
@@ -300,7 +297,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	processInfo.LogPath = defaultLogDir
 
 	serverConfig := types.ServerConfig{
-		Process: *processInfo,
+		Process: processInfo,
 	}
 
 	server, err := internal.LoadServer(serverConfig)
@@ -328,9 +325,28 @@ func runServer(cmd *cobra.Command, args []string) {
 		apiEndpoint := fmt.Sprintf("http://%s:%s", config.ServerURL, config.ServerPort)
 		dash := dashboard.NewDashboard(apiEndpoint, config.DashboardPort)
 		dash.Start()
+		processInfo.DashboardUp = true
 	}
 
-	select {}
+	if err := registerProcess(processInfo); err != nil {
+		fmt.Printf("Error registering process: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait to be stopped, and take the record with us when we go: a record left behind is a server
+	// the CLI reports as running and cannot kill.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		fmt.Printf("Error shutting down server: %v\n", err)
+	}
+	if err := removeProcess(processInfo.ID); err != nil {
+		fmt.Printf("Error removing process record: %v\n", err)
+	}
 }
 
 func createConfig(cmd *cobra.Command, args []string) error {
@@ -467,7 +483,9 @@ func createConfig(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Configuration created successfully!")
 
-	// Create initial server to save admin info
+	// Create initial server to save admin info. THE DATABASE PATH IS THE ONE `start` READS —
+	// the directory made just above — or the admin created here is written to a file the server
+	// never opens, and the database comes up with the empty user of the spawn path instead.
 	serverConfig := types.ServerConfig{
 		Process: types.ProcessInfo{
 			Name:          dbName,
@@ -476,7 +494,7 @@ func createConfig(cmd *cobra.Command, args []string) error {
 			DashboardURL:  dbConfig.ServerURL,
 			DashboardPort: dbConfig.DashboardPort,
 			LogPath:       defaultLogDir,
-			DatabasePath:  defaultLibDir,
+			DatabasePath:  filepath.Join(defaultLibDir, dbName),
 		},
 	}
 

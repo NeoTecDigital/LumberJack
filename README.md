@@ -185,6 +185,30 @@ curl -X POST http://localhost:8080/events/{eventId}/entries/{entryIndex}/attachm
 
 ### Node Management
 
+#### Create Node
+Events are tracked on leaves, so a client creates the leaf it is going to track on. Missing
+ancestors are created as branches, `type` defaults to `leaf`, and creating the same path twice
+returns the same node.
+```bash
+curl -X POST http://localhost:8080/nodes \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "path": "work/projects/project-alpha",
+    "type": "leaf"
+  }'
+```
+
+### Create Node Response
+```json
+{
+  "id": "user-1786229776411046621",
+  "name": "project-alpha",
+  "path": "work/projects/project-alpha",
+  "type": "leaf"
+}
+```
+
 #### Get Forest
 ```bash
 curl -X GET http://localhost:8080/forest \

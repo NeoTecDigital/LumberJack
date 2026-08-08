@@ -97,6 +97,15 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	return current, nil
 }
 
+// statePath is this database's own state file, which is where every handler persists to.
+//
+// It is ABSOLUTE, and that is the point: the handlers used to pass the relative name
+// "state_file.dat" to writeChangesToFile, which dropped the database into whatever directory the
+// process was started from, and the ones that passed DatabasePath wrote to the directory itself.
+func (server *Server) statePath() string {
+	return filepath.Join(server.config.Process.DatabasePath, server.config.Process.Name+".dat")
+}
+
 // UpdateSettings updates server configuration parameters
 func (server *Server) UpdateSettings(userID string, settings types.ServerConfig) error {
 	// Update user-specific settings
