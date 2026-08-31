@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
 )
@@ -69,6 +70,10 @@ func (server *Server) writeChangesToFile(data interface{}, filename string) erro
 	if server.lastHash != nil && compareHashes(server.lastHash, newHash) {
 		server.logger.Debug("No changes to save")
 		return nil
+	}
+
+	if dir := filepath.Dir(filename); dir != "" {
+		_ = os.MkdirAll(dir, 0755)
 	}
 
 	tmpFile := filename + ".tmp"
