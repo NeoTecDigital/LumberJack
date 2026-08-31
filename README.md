@@ -327,9 +327,15 @@ curl -X GET http://localhost:8080/time \
 ### User Management
 
 #### Create User
+
+Administrative. Requires a session belonging to a user with Admin permission on the root of the
+forest — there is no self-registration: an anonymous caller is refused with 401, and a
+non-administrative session with 403.
+
 ```bash
 curl -X POST http://localhost:8080/users/create \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin token>" \
   -d '{
     "username": "john_doe",
     "email": "john@example.com",

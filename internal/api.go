@@ -41,10 +41,12 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 		return nil, err
 	}
 
+	logger, logCloser := newServerLogger(config)
 	server := &Server{
 		forest:    core.NewForest("forest"),
 		jwtConfig: jwtConfig,
-		logger:    types.NewLogger(),
+		logger:    logger,
+		logCloser: logCloser,
 		server: &http.Server{
 			Addr:    ":" + config.Process.ServerPort,
 			Handler: router,
@@ -93,10 +95,12 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
+	logger, logCloser := newServerLogger(config)
 	server := &Server{
 		forest:    core.NewForest("forest"),
 		jwtConfig: jwtConfig,
-		logger:    types.NewLogger(),
+		logger:    logger,
+		logCloser: logCloser,
 		server: &http.Server{
 			Addr:    ":" + config.Process.ServerPort,
 			Handler: router,
@@ -129,14 +133,37 @@ func (s *Server) Start() error {
 		return errors.New("server not initialized")
 	}
 
+	s.server.Handler = s.routes()
+	go func() {
+		s.logger.Info("API server starting on http://localhost" + s.server.Addr)
+		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Failure("API server error: %v", err)
+		}
+	}()
+
+	return nil
+}
+
+// routes builds the whole HTTP surface, including which parts of it require a session.
+//
+// It is SEPARATE from Start so that what is public and what is protected can be asserted without
+// binding a port. The routing table used to be a local inside Start, which meant no test could tell
+// a route registered publicly from one registered behind the middleware — and /users/create was
+// registered publicly for exactly that long.
+func (s *Server) routes() *mux.Router {
 	router := mux.NewRouter()
 
 	// Public routes
 	router.HandleFunc("/health", s.handleHealth).Methods("GET")
 	router.HandleFunc("/login", s.handleLogin).Methods("POST")
 	router.HandleFunc("/refresh", s.handleRefreshToken).Methods("POST")
-	router.HandleFunc("/users/create", s.handleCreateUser).Methods("POST")
 	// Protected routes
+	//
+	// /users/create IS ONE OF THEM. It was public, which meant anyone who could reach the port could
+	// register themselves, receive ReadPermission on the root of the forest, and read the whole tree
+	// and the entire user list. Creating a user is an administrative act; the handler checks for
+	// AdminPermission and the middleware here is what gives it a caller to check.
+	router.HandleFunc("/users/create", s.authMiddleware(s.handleCreateUser)).Methods("POST")
 	router.HandleFunc("/time", s.authMiddleware(s.handleGetTimeTracking)).Methods("GET")
 	router.HandleFunc("/time/start", s.authMiddleware(s.handleStartTimeTracking)).Methods("POST")
 	router.HandleFunc("/time/stop", s.authMiddleware(s.handleStopTimeTracking)).Methods("POST")
@@ -159,15 +186,7 @@ func (s *Server) Start() error {
 	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
 	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
 
-	s.server.Handler = router
-	go func() {
-		s.logger.Info("API server starting on http://localhost" + s.server.Addr)
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Failure("API server error: %v", err)
-		}
-	}()
-
-	return nil
+	return router
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -179,7 +198,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	if s.server != nil {
 		s.logger.Info("Shutting down API server")
-		return s.server.Shutdown(ctx)
+		err := s.server.Shutdown(ctx)
+		s.closeLogSink()
+		return err
 	}
+
+	s.closeLogSink()
 	return nil
+}
+
+// closeLogSink releases the log file, if the logger opened one. Failing to close it is reported and
+// not returned: it does not make a shutdown unsuccessful.
+func (s *Server) closeLogSink() {
+	if s.logCloser == nil {
+		return
+	}
+	if err := s.logCloser.Close(); err != nil {
+		s.logger.Warn("Failed to close the log file: %v", err)
+	}
+	s.logCloser = nil
 }

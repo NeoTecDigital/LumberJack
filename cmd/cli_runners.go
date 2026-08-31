@@ -89,13 +89,22 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 		return fmt.Errorf("failed to create database directory: %v", err)
 	}
 
-	// Create log file
+	// Create log file.
+	//
+	// APPENDED to, not truncated: a restart used to throw away everything the previous run recorded.
+	// Owner-only, because the log names users, paths and failures and is served over HTTP by
+	// GET /logs; os.Create opened it 0666&^umask, which is 0644 on a stock system.
 	logPath := filepath.Join(config.LogPath, fmt.Sprintf("%s.log", id))
-	logFile, err := os.Create(logPath)
+	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, types.LogFileMode)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %v", err)
 	}
 	defer logFile.Close()
+
+	// O_CREATE does not re-permission a file an older build left behind at a wider mode.
+	if err := logFile.Chmod(types.LogFileMode); err != nil {
+		return fmt.Errorf("failed to set permissions on log file: %v", err)
+	}
 
 	// Create command with proper arguments
 	args := []string{"start", userInput.Name}

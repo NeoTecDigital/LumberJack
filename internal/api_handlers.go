@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
 	"github.com/vaziolabs/lumberjack/types"
 )
+
+// eventIDRequired is what a caller is told when it names no event. An event is stored UNDER its id,
+// so a request without one silently created an event keyed on the empty string — which POST /events
+// then reported back as an event with no name that no client could ever end or append to.
+const eventIDRequired = "event_id is required"
+
+// validEventID reports whether an id names something. Whitespace names nothing.
+func validEventID(eventID string) bool {
+	return strings.TrimSpace(eventID) != ""
+}
 
 // HTTP handler for assigning a user
 func (server *Server) handleAssignUser(w http.ResponseWriter, r *http.Request) {
@@ -85,9 +96,22 @@ func (server *Server) handleStartEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !validEventID(request.EventID) {
+		http.Error(w, eventIDRequired, http.StatusBadRequest)
+		return
+	}
+
 	node, err := server.getNodeFromPath(request.Path)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Path error: %v", err), http.StatusNotFound)
+		return
+	}
+
+	// Checked HERE as well as inside StartEvent. core.StartEvent does close the hole, but it closes
+	// it by returning an error, and every error out of it was reported as 500 — so a refusal was
+	// indistinguishable from a server fault, and disagreed with /events/plan and /events/end.
+	if !node.CheckPermission(userID, core.WritePermission) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
 		return
 	}
 
@@ -178,6 +202,13 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The same explicit check, for the same reason: AppendToEvent refuses without write permission
+	// and its refusal was answered as 500.
+	if !node.CheckPermission(userID, core.WritePermission) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		return
+	}
+
 	log.Printf("Appending to event %s", request.EventID)
 	entry := core.Entry{
 		Content:   request.Content,
@@ -204,7 +235,17 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 }
 
 // HTTP handler for getting event entries
+//
+// It asked for NOTHING: no caller, no permission. core.GetEventEntries checks neither, so any valid
+// session could read the entries of any event on any node in the forest regardless of what that
+// session had been granted. Reading is a ReadPermission act and is now checked as one.
 func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userIDFrom(r)
+	if !ok {
+		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return
+	}
+
 	var request struct {
 		Path    string `json:"path"`
 		EventID string `json:"event_id"`
@@ -218,6 +259,11 @@ func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Reque
 	node, err := server.getNodeFromPath(request.Path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	if !node.CheckPermission(userID, core.ReadPermission) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
 		return
 	}
 
@@ -261,6 +307,11 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !validEventID(request.EventID) {
+		http.Error(w, eventIDRequired, http.StatusBadRequest)
 		return
 	}
 
@@ -320,15 +371,7 @@ func (server *Server) handleGetTree(w http.ResponseWriter, r *http.Request) {
 
 // HTTP handler for getting server settings
 func (server *Server) handleGetServerSettings(w http.ResponseWriter, r *http.Request) {
-	userID, ok := userIDFrom(r)
-	if !ok {
-		http.Error(w, "No user in session", http.StatusUnauthorized)
-		return
-	}
-
-	// Check if user has admin permission on root node
-	if !server.forest.CheckPermission(userID, core.AdminPermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+	if _, ok := server.requireAdmin(w, r); !ok {
 		return
 	}
 
@@ -346,15 +389,8 @@ func (server *Server) handleGetServerSettings(w http.ResponseWriter, r *http.Req
 
 // HTTP handler for updating server settings
 func (server *Server) handleUpdateServerSettings(w http.ResponseWriter, r *http.Request) {
-	userID, ok := userIDFrom(r)
+	userID, ok := server.requireAdmin(w, r)
 	if !ok {
-		http.Error(w, "No user in session", http.StatusUnauthorized)
-		return
-	}
-
-	// Check if user has admin permission on root node
-	if !server.forest.CheckPermission(userID, core.AdminPermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
 		return
 	}
 

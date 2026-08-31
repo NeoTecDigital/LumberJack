@@ -12,6 +12,14 @@ import (
 	"github.com/vaziolabs/lumberjack/internal/core"
 )
 
+// The state file holds the WHOLE forest, and the forest holds every user's bcrypt hash. It is
+// readable by its owner and nobody else; it used to be written 0644, which handed every local
+// account on the box the password hash of every account on the server.
+const (
+	stateFileMode os.FileMode = 0600
+	stateDirMode  os.FileMode = 0700
+)
+
 // loadFromFile loads the forest data from the file.
 func (server *Server) loadFromFile(filename string) error {
 	server.logger.Enter("loadFromFile")
@@ -76,16 +84,28 @@ func (server *Server) writeChangesToFile(filename string) error {
 	}
 
 	if dir := filepath.Dir(filename); dir != "" {
-		_ = os.MkdirAll(dir, 0755)
+		_ = os.MkdirAll(dir, stateDirMode)
 	}
 
+	// The temporary file is created at the SAME mode as the state file it becomes. os.Create opens
+	// 0666&^umask — 0644 on a stock system — and os.Rename preserves the mode of the source inode,
+	// so a 0644 temp file leaks exactly as widely as a 0644 state file, for the whole window it
+	// exists and forever afterwards.
 	tmpFile := filename + ".tmp"
-	file, err := os.Create(tmpFile)
+	file, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, stateFileMode)
 	if err != nil {
 		server.logger.Failure("Failed to create temporary file: %v", err)
 		return err
 	}
 	defer file.Close()
+
+	// An EXISTING temp file is not re-permissioned by O_CREATE, and neither is a state file written
+	// by an older build. Both are forced back to the intended mode.
+	if err := file.Chmod(stateFileMode); err != nil {
+		os.Remove(tmpFile)
+		server.logger.Failure("Failed to set permissions on temporary file: %v", err)
+		return err
+	}
 
 	if _, err := file.Write(newHash); err != nil {
 		os.Remove(tmpFile)

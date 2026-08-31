@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -71,4 +72,7 @@ type Server struct {
 	config    types.ServerConfig
 	logCache  *LogCache
 	lastHash  []byte
+	// logCloser releases the logger's file sink at shutdown. It is nil when the logger only writes
+	// to standard error, which is what an unconfigured log path leaves it doing.
+	logCloser io.Closer
 }

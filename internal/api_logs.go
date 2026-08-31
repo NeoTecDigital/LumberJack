@@ -2,17 +2,32 @@ package internal
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 )
 
 // The log route, which pages the file this process writes.
 
-// Lazy loading approach
+// errNoLogFile is what the log machinery reports when this install has no log file to page. It is a
+// 404, not a fault: there is nothing wrong with a server that was not configured to log to disk.
+var errNoLogFile = errors.New("no log file is configured for this server")
+
+// handleGetLogs pages the process log.
+//
+// It answered 500 ON EVERY CALL, on every install, forever: it stats {LogPath}/{ID}.log and nothing
+// opened that file — the logger wrote to standard error only. The logger now opens a real sink when
+// a log path is configured, and this route answers 404 when one is not, rather than reporting a
+// guaranteed condition as a server fault.
+//
+// It is an ADMIN route. The file names users, paths and failures, and now that it genuinely exists
+// it is operator data rather than a route that could never return anything.
 func (server *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := server.requireAdmin(w, r); !ok {
+		return
+	}
+
 	server.initLogCacheIfNeeded()
 
 	// Get query parameters
@@ -26,8 +41,18 @@ func (server *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if cache needs refresh
-	logPath := filepath.Join(server.config.Process.LogPath, fmt.Sprintf("%s.log", server.config.Process.ID))
+	logPath := server.logFilePath()
+	if logPath == "" {
+		http.Error(w, errNoLogFile.Error(), http.StatusNotFound)
+		return
+	}
+
 	fileInfo, err := os.Stat(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// Configured, but nothing has been written yet. That is a missing resource, not a fault.
+		http.Error(w, "no log file has been written yet", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		server.logger.Error("Failed to stat log file: %v", err)
 		http.Error(w, "Failed to access logs", http.StatusInternalServerError)

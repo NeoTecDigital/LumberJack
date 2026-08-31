@@ -73,6 +73,26 @@ func userIDFrom(r *http.Request) (string, bool) {
 	return userID, ok && userID != ""
 }
 
+// requireAdmin reads the caller and confirms it administers the forest.
+//
+// It ANSWERS THE REQUEST on refusal and reports false, so a handler guards itself in three lines
+// instead of repeating the same eight. The refusals are told apart: no session is 401, a session
+// without the authority is 403.
+func (server *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (string, bool) {
+	userID, ok := userIDFrom(r)
+	if !ok {
+		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return "", false
+	}
+
+	if !server.forest.CheckPermission(userID, core.AdminPermission) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		return "", false
+	}
+
+	return userID, true
+}
+
 // getNodeFromPath traverses the forest to find a node by its path
 func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	// Try cache first
@@ -116,6 +136,41 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 // /var/lib/lumberjack; a config without one keeps the old relative behaviour.
 func (server *Server) statePath() string {
 	return filepath.Join(server.config.Process.DatabasePath, server.config.Process.Name+".dat")
+}
+
+// logFilePath is the file this process logs to, and the file GET /logs pages.
+//
+// It is EMPTY when the configuration does not say where to log or which process this is, which is
+// the honest answer for an install that has no log file rather than a path that will never exist.
+func (server *Server) logFilePath() string {
+	logPath := server.config.Process.LogPath
+	id := server.config.Process.ID
+	if logPath == "" || id == "" {
+		return ""
+	}
+	return filepath.Join(logPath, id+".log")
+}
+
+// newServerLogger opens the logger a server runs with.
+//
+// A configured log path gets a real file sink, because the log route serves that file and nothing
+// ever opened one. A path that cannot be opened is NOT fatal — losing the ability to page logs over
+// HTTP is not a reason to refuse to serve — but it is reported, and the server falls back to
+// standard error, where GET /logs will honestly answer that there is no log file.
+func newServerLogger(config types.ServerConfig) (types.Logger, io.Closer) {
+	logPath := config.Process.LogPath
+	id := config.Process.ID
+	if logPath == "" || id == "" {
+		return types.NewLogger(), nil
+	}
+
+	fileLogger, err := types.NewFileLogger(filepath.Join(logPath, id+".log"))
+	if err != nil {
+		fallback := types.NewLogger()
+		fallback.Warn("Logging to standard error only: %v", err)
+		return fallback, nil
+	}
+	return fileLogger, fileLogger
 }
 
 // UpdateSettings updates server configuration parameters
@@ -227,7 +282,11 @@ func (server *Server) updateLogCache(level string) error {
 	server.logCache.mutex.Lock()
 	defer server.logCache.mutex.Unlock()
 
-	logPath := filepath.Join(server.config.Process.LogPath, fmt.Sprintf("%s.log", server.config.Process.ID))
+	logPath := server.logFilePath()
+	if logPath == "" {
+		return errNoLogFile
+	}
+
 	fileInfo, err := os.Stat(logPath)
 	if err != nil {
 		return err

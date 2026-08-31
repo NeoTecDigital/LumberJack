@@ -1,0 +1,340 @@
+package internal
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/vaziolabs/lumberjack/types"
+)
+
+// The tests here go through the ROUTER rather than calling a handler directly, because what is
+// under test is which routes require a session — a fact that lives in the routing table and not in
+// any handler.
+
+// serve sends a request through the server's real routing table.
+func serve(t *testing.T, server *Server, request *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	return recorder
+}
+
+// jsonRequest builds a request carrying a JSON body, with no credential of any kind.
+func jsonRequest(t *testing.T, method, target string, body map[string]interface{}) *http.Request {
+	t.Helper()
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Failed to encode request: %v", err)
+	}
+
+	request := httptest.NewRequest(method, target, bytes.NewBuffer(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+// sessionFor mints the session token the login route would hand this user.
+func sessionFor(t *testing.T, server *Server, userID, username string) string {
+	t.Helper()
+
+	pair, err := server.generateTokenPair(&core.User{ID: userID, Username: username})
+	if err != nil {
+		t.Fatalf("Failed to generate a session token: %v", err)
+	}
+	return pair.SessionToken
+}
+
+// addReadUser puts a user holding nothing but ReadPermission on the root, which is exactly what
+// self-registration used to grant.
+func addReadUser(t *testing.T, server *Server, username string) string {
+	t.Helper()
+
+	user := core.User{ID: core.GenerateUserID(), Username: username}
+	if err := server.forest.AssignUser(user, core.ReadPermission); err != nil {
+		t.Fatalf("Failed to add a reader: %v", err)
+	}
+	return user.ID
+}
+
+// An anonymous caller cannot register itself, and therefore cannot read the forest.
+//
+// POST /users/create was a PUBLIC route. Registration granted ReadPermission on the root, and the
+// read routes ask only for a valid session — so anyone who could reach the port could mint an
+// account, log in with it, and read the whole tree and the entire user list.
+func TestAnonymousRegistrationIsRefused(t *testing.T) {
+	server, _ := newStockServer(t)
+	usersBefore := len(server.forest.Users)
+
+	credentials := map[string]interface{}{
+		"username": "qapwn",
+		"email":    "qapwn@example.com",
+		"password": "qapwn-password",
+	}
+
+	registered := serve(t, server, jsonRequest(t, "POST", "/users/create", credentials))
+	if registered.Code != http.StatusUnauthorized {
+		t.Errorf("Anonymous POST /users/create: got %d, want %d: %s",
+			registered.Code, http.StatusUnauthorized, registered.Body.String())
+	}
+
+	if after := len(server.forest.Users); after != usersBefore {
+		t.Fatalf("Anonymous registration added %d user(s) to the forest", after-usersBefore)
+	}
+
+	// The account does not exist to log in as, so the read that followed it cannot happen either.
+	loggedIn := serve(t, server, jsonRequest(t, "POST", "/login", map[string]interface{}{
+		"username": "qapwn", "password": "qapwn-password",
+	}))
+	if loggedIn.Code != http.StatusUnauthorized {
+		t.Errorf("Login as the unregistered user: got %d, want %d", loggedIn.Code, http.StatusUnauthorized)
+	}
+
+	// And an anonymous read is refused on its own account, not only for want of an account.
+	for _, target := range []string{"/forest", "/users"} {
+		read := serve(t, server, httptest.NewRequest("GET", target, nil))
+		if read.Code != http.StatusUnauthorized {
+			t.Errorf("Anonymous GET %s: got %d, want %d: %s",
+				target, read.Code, http.StatusUnauthorized, read.Body.String())
+		}
+	}
+}
+
+// A session that is not administrative cannot create a user either. Registration is refused for
+// want of AUTHORITY, not merely for want of a token.
+func TestNonAdminCannotCreateAUser(t *testing.T) {
+	server, _ := newStockServer(t)
+	readerID := addReadUser(t, server, "reader")
+	usersBefore := len(server.forest.Users)
+
+	request := jsonRequest(t, "POST", "/users/create", map[string]interface{}{
+		"username": "invited", "email": "invited@example.com", "password": "invited-password",
+	})
+	request.Header.Set("Authorization", "Bearer "+sessionFor(t, server, readerID, "reader"))
+
+	if recorder := serve(t, server, request); recorder.Code != http.StatusForbidden {
+		t.Errorf("Reader POST /users/create: got %d, want %d: %s",
+			recorder.Code, http.StatusForbidden, recorder.Body.String())
+	}
+	if after := len(server.forest.Users); after != usersBefore {
+		t.Errorf("A non-administrative session added %d user(s)", after-usersBefore)
+	}
+}
+
+// An administrator still can, which is what the route is for.
+func TestAdminCanCreateAUser(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+
+	request := jsonRequest(t, "POST", "/users/create", map[string]interface{}{
+		"username": "invited", "email": "invited@example.com", "password": "invited-password",
+	})
+	request.Header.Set("Authorization", "Bearer "+sessionFor(t, server, adminUserID, "admin"))
+
+	if recorder := serve(t, server, request); recorder.Code != http.StatusOK {
+		t.Fatalf("Admin POST /users/create: got %d, want %d: %s",
+			recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	loggedIn := serve(t, server, jsonRequest(t, "POST", "/login", map[string]interface{}{
+		"username": "invited", "password": "invited-password",
+	}))
+	if loggedIn.Code != http.StatusOK {
+		t.Errorf("Login as the created user: got %d, want %d: %s",
+			loggedIn.Code, http.StatusOK, loggedIn.Body.String())
+	}
+}
+
+// A user with no name or no password is refused, rather than stored as an account nobody can be.
+func TestUserCreationRequiresANameAndAPassword(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+
+	for _, body := range []map[string]interface{}{
+		{"username": "  ", "password": "a-password"},
+		{"username": "named", "password": ""},
+	} {
+		request := jsonRequest(t, "POST", "/users/create", body)
+		request.Header.Set("Authorization", "Bearer "+sessionFor(t, server, adminUserID, "admin"))
+
+		if recorder := serve(t, server, request); recorder.Code != http.StatusBadRequest {
+			t.Errorf("POST /users/create %v: got %d, want %d", body, recorder.Code, http.StatusBadRequest)
+		}
+	}
+}
+
+// The state file is readable by its owner and by NOBODY ELSE. It holds the whole forest, and the
+// forest holds every bcrypt hash; it used to be written 0644 by os.Create.
+func TestStateFileIsNotWorldReadable(t *testing.T) {
+	server, dir := newStockServer(t)
+	statePath := server.statePath()
+
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("The state file was not written: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != stateFileMode {
+		t.Errorf("State file mode is %04o, want %04o", mode, stateFileMode)
+	}
+
+	// It really does hold a hash, so this test is about something.
+	contents, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("Failed to read the state file: %v", err)
+	}
+	if len(contents) == 0 {
+		t.Fatal("The state file is empty, so this test proves nothing")
+	}
+
+	// A second write goes through the temporary-file path again. An atomic rename carries the mode
+	// of the temporary file with it, so a 0644 temporary file is a 0644 state file.
+	if code := post(t, server.handleCreateNode, adminID(t, server), map[string]interface{}{
+		"path": "work/leaf",
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Create node: got %d, want %d", code, http.StatusOK)
+	}
+
+	info, err = os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("The state file disappeared: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != stateFileMode {
+		t.Errorf("State file mode after rewrite is %04o, want %04o", mode, stateFileMode)
+	}
+
+	// Nothing is left behind at a wider mode under a different name.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("Failed to read the data directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Errorf("A temporary state file was left behind: %s", entry.Name())
+		}
+	}
+}
+
+// GET /logs answers with logs. It used to answer 500 on EVERY call on every install: it stats a
+// file that nothing ever opened.
+func TestLogsRouteReturnsLogsRatherThanAFault(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+
+	// The server logged while it was being built, so there is something to page.
+	if _, err := os.Stat(server.logFilePath()); err != nil {
+		t.Fatalf("No log file was opened at %s: %v", server.logFilePath(), err)
+	}
+
+	recorder := get(t, server.handleGetLogs, adminUserID, "/logs")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /logs: got %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var response struct {
+		Logs    []LogEntry `json:"logs"`
+		HasMore bool       `json:"has_more"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to decode %q: %v", recorder.Body.String(), err)
+	}
+	if len(response.Logs) == 0 {
+		t.Error("GET /logs returned no entries from a log file that has content")
+	}
+}
+
+// The log file, and therefore the log route, carries NO CREDENTIAL MATERIAL. This is the reason the
+// %+v dumps of users and nodes came out of the logging calls: this route is what made them reachable.
+func TestTheLogFileCarriesNoPasswordHash(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+
+	// Exercise the paths that handle users and nodes, which are the ones that could dump a hash.
+	if code := post(t, server.handleCreateUser, adminUserID, map[string]interface{}{
+		"username": "logged", "email": "logged@example.com", "password": "a-real-password",
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Create user: got %d, want %d", code, http.StatusOK)
+	}
+	if code := post(t, server.handleCreateNode, adminUserID, map[string]interface{}{"path": "work/leaf"}).Code; code != http.StatusOK {
+		t.Fatalf("Create node: got %d, want %d", code, http.StatusOK)
+	}
+	serve(t, server, jsonRequest(t, "POST", "/login", map[string]interface{}{
+		"username": "logged", "password": "a-real-password",
+	}))
+
+	// A load reads the forest back, which is the other place a dump could happen.
+	if _, err := LoadServer(server.config); err != nil {
+		t.Fatalf("Failed to reload the server: %v", err)
+	}
+
+	contents, err := os.ReadFile(server.logFilePath())
+	if err != nil {
+		t.Fatalf("Failed to read the log file: %v", err)
+	}
+	if len(contents) == 0 {
+		t.Fatal("The log file is empty, so this test proves nothing")
+	}
+
+	log := string(contents)
+	for _, prefix := range bcryptPrefixes {
+		if strings.Contains(log, prefix) {
+			t.Errorf("The log file contains a bcrypt hash (%s)", prefix)
+		}
+	}
+	if strings.Contains(log, "a-real-password") {
+		t.Error("The log file contains a plaintext password")
+	}
+
+	// And what the log file holds is what the route hands out.
+	body := get(t, server.handleGetLogs, adminUserID, "/logs").Body.String()
+	for _, prefix := range bcryptPrefixes {
+		if strings.Contains(body, prefix) {
+			t.Errorf("GET /logs returned a bcrypt hash (%s)", prefix)
+		}
+	}
+}
+
+// The log file is readable by its owner and nobody else: it names users, paths and failures.
+func TestLogFileIsNotWorldReadable(t *testing.T) {
+	server, _ := newStockServer(t)
+
+	info, err := os.Stat(server.logFilePath())
+	if err != nil {
+		t.Fatalf("No log file was opened: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != types.LogFileMode {
+		t.Errorf("Log file mode is %04o, want %04o", mode, types.LogFileMode)
+	}
+}
+
+// A server with nowhere to log says so with a 404 rather than reporting a configuration choice as a
+// server fault.
+func TestLogsRouteIsHonestWithoutALogFile(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+	server.config.Process.LogPath = ""
+
+	if recorder := get(t, server.handleGetLogs, adminUserID, "/logs"); recorder.Code != http.StatusNotFound {
+		t.Errorf("GET /logs with no log path: got %d, want %d: %s",
+			recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+}
+
+// The log is operator data, so reading it takes an administrator.
+func TestLogsRouteRequiresAdmin(t *testing.T) {
+	server, _ := newStockServer(t)
+	readerID := addReadUser(t, server, "reader")
+
+	if recorder := get(t, server.handleGetLogs, readerID, "/logs"); recorder.Code != http.StatusForbidden {
+		t.Errorf("Reader GET /logs: got %d, want %d: %s",
+			recorder.Code, http.StatusForbidden, recorder.Body.String())
+	}
+	if recorder := serve(t, server, httptest.NewRequest("GET", "/logs", nil)); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("Anonymous GET /logs: got %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}

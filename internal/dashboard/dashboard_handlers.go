@@ -130,8 +130,18 @@ func (s *DashboardServer) handleCreateUser(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resp, err := http.Post(s.apiEndpoint+"/users/create", "application/json",
-		bytes.NewBuffer(body))
+	// The Authorization header the dashboard's own middleware put on this request is FORWARDED.
+	// /users/create is no longer a public route on the API — creating a user is an administrative
+	// act — and a bare http.Post carries no credential, so this proxy would answer 401 forever.
+	req, err := http.NewRequest("POST", s.apiEndpoint+"/users/create", bytes.NewBuffer(body))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", r.Header.Get("Authorization"))
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

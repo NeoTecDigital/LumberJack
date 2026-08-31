@@ -1016,7 +1016,9 @@ func TestUserCreationAndAuthentication(t *testing.T) {
 	}
 	createBytes, _ := json.Marshal(createBody)
 
-	createReq := httptest.NewRequest("POST", "/create_user", bytes.NewBuffer(createBytes))
+	// Creating a user is an ADMINISTRATIVE act, so the request carries the caller the middleware
+	// would have put there. setupTestForest grants "admin" AdminPermission on the root.
+	createReq := withUser(httptest.NewRequest("POST", "/create_user", bytes.NewBuffer(createBytes)), "admin")
 	createReq.Header.Set("Content-Type", "application/json")
 	createRR := httptest.NewRecorder()
 	app.handleCreateUser(createRR, createReq)

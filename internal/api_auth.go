@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/golang-jwt/jwt"
 	"github.com/vaziolabs/lumberjack/internal/core"
@@ -10,10 +11,23 @@ import (
 
 // The routes that make a user and turn a credential into a session, and the claims they carry.
 
-// HTTP handler for creating a user
+// handleCreateUser creates a user, and is an ADMINISTRATIVE route.
+//
+// It used to be registered as a PUBLIC route. Self-registration granted ReadPermission on the root
+// of the forest, and the read routes ask for nothing beyond a valid session — so anyone who could
+// reach the port could mint an account, log in, and read the entire forest and the whole user list.
+// There is no evidence self-registration was intended: the dashboard's own create-user route sits
+// behind the dashboard's authenticated subrouter, which is the only caller in the tree.
+//
+// The check matches handleAssignUser: only a user holding AdminPermission may widen the set of
+// people who can see the data.
 func (server *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	server.logger.Enter("CreateUser")
 	defer server.logger.Exit("CreateUser")
+
+	if _, ok := server.requireAdmin(w, r); !ok {
+		return
+	}
 
 	var request struct {
 		Username string `json:"username"`
@@ -24,6 +38,17 @@ func (server *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		server.logger.Failure("Failed to decode request: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// A user with no name cannot be logged in as and cannot be told apart from the next one, and a
+	// user with no password is an account whose credential is the empty string.
+	if strings.TrimSpace(request.Username) == "" {
+		http.Error(w, "username is required", http.StatusBadRequest)
+		return
+	}
+	if request.Password == "" {
+		http.Error(w, "password is required", http.StatusBadRequest)
 		return
 	}
 
