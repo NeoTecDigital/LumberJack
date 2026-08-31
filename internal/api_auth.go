@@ -1,9 +1,12 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt"
 	"github.com/vaziolabs/lumberjack/internal/core"
@@ -213,4 +216,111 @@ type TokenClaims struct {
 	Username  string `json:"username"`
 	TokenType string `json:"token_type"` // "session" or "refresh"
 	jwt.StandardClaims
+}
+
+// The session guard the routes are wrapped in, and the pair of tokens a login hands out. They live
+// beside the routes that issue and consume them rather than in a helpers bucket.
+
+// Update the auth middleware to handle user_id from token claims
+func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenString := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if tokenString == "" {
+			http.Error(w, "No token provided", http.StatusUnauthorized)
+			return
+		}
+
+		token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return server.jwtConfig.SecretKey, nil
+		})
+
+		if err != nil || !token.Valid {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := token.Claims.(*TokenClaims)
+		if !ok || claims.TokenType != "session" {
+			http.Error(w, "Invalid session token", http.StatusUnauthorized)
+			return
+		}
+
+		// Add user info to context
+		ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+// userIDFrom reads the caller that authMiddleware put in the request context.
+//
+// The unchecked `r.Context().Value("user_id").(string)` this replaces PANICKED on a nil interface
+// conversion whenever a handler was reached without one, which takes the whole process down instead
+// of answering 401.
+func userIDFrom(r *http.Request) (string, bool) {
+	userID, ok := r.Context().Value("user_id").(string)
+	return userID, ok && userID != ""
+}
+
+// requireAdmin reads the caller and confirms it administers the forest.
+//
+// It ANSWERS THE REQUEST on refusal and reports false, so a handler guards itself in three lines
+// instead of repeating the same eight. The refusals are told apart: no session is 401, a session
+// without the authority is 403.
+func (server *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (string, bool) {
+	userID, ok := userIDFrom(r)
+	if !ok {
+		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return "", false
+	}
+
+	if !server.forest.CheckPermission(userID, core.AdminPermission) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		return "", false
+	}
+
+	return userID, true
+}
+
+func (server *Server) generateTokenPair(user *core.User) (*TokenPair, error) {
+	// Generate session token (short-lived)
+	sessionClaims := TokenClaims{
+		UserID:    user.ID,
+		Username:  user.Username,
+		TokenType: "session",
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
+			IssuedAt:  time.Now().Unix(),
+		},
+	}
+
+	sessionToken := jwt.NewWithClaims(jwt.SigningMethodHS256, sessionClaims)
+	sessionTokenString, err := sessionToken.SignedString(server.jwtConfig.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate refresh token (long-lived)
+	refreshClaims := TokenClaims{
+		UserID:    user.ID,
+		Username:  user.Username,
+		TokenType: "refresh",
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
+			IssuedAt:  time.Now().Unix(),
+		},
+	}
+
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
+	refreshTokenString, err := refreshToken.SignedString(server.jwtConfig.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		SessionToken: sessionTokenString,
+		RefreshToken: refreshTokenString,
+	}, nil
 }

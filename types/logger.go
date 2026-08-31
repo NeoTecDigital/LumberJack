@@ -13,9 +13,6 @@ import (
 // failures — so it is readable by the account that runs the service and by nobody else.
 const LogFileMode os.FileMode = 0600
 
-// logDirMode is what a missing log directory is created as, matching what the CLI already makes.
-const logDirMode os.FileMode = 0755
-
 type Logger interface {
 	Debug(format string, args ...interface{})
 	Info(format string, args ...interface{})
@@ -55,8 +52,11 @@ func NewLogger() *LogInfo {
 // a core.User, a core.Node or the forest: they carry bcrypt hashes, and a hash written here is a
 // hash on disk and a hash in an API response.
 func NewFileLogger(path string) (*LogInfo, error) {
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, logDirMode); err != nil {
+	// EnsureDir rather than MkdirAll: the directory is nearly always already there — the CLI and
+	// `serve` both make it before this runs — and MkdirAll says nothing about the mode of a
+	// directory it did not create.
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := EnsureDir(dir, LogDirMode); err != nil {
 			return nil, fmt.Errorf("failed to create log directory %s: %w", dir, err)
 		}
 	}

@@ -22,6 +22,14 @@ func newStockServer(t *testing.T) (*Server, string) {
 	t.Helper()
 
 	dir := t.TempDir()
+	return newServerInDirs(t, dir, dir), dir
+}
+
+// newServerInDirs is the same fresh install, in directories the caller chose — which is what a test
+// about directory permissions needs, since it has to plant them at the wrong mode first.
+func newServerInDirs(t *testing.T, dataDir, logDir string) *Server {
+	t.Helper()
+
 	config := types.ServerConfig{
 		Organization: "test_org",
 		Process: types.ProcessInfo{
@@ -29,8 +37,8 @@ func newStockServer(t *testing.T) (*Server, string) {
 			Name:         "stock",
 			ServerURL:    "localhost",
 			ServerPort:   "8080",
-			LogPath:      dir,
-			DatabasePath: dir,
+			LogPath:      logDir,
+			DatabasePath: dataDir,
 		},
 	}
 
@@ -38,7 +46,7 @@ func newStockServer(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
-	return server, dir
+	return server
 }
 
 // adminID is the id of the user a fresh install made, which is the only user that can do anything.

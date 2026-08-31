@@ -55,10 +55,14 @@ Example:
 			serveAdminPass = os.Getenv(adminPassEnv)
 		}
 
-		if err := os.MkdirAll(serveDataDir, 0755); err != nil {
+		// Owner-only, and ENFORCED rather than merely requested. These two directories hold the
+		// state file — every bcrypt hash on the server — and the log file that GET /logs serves.
+		// They used to be made here at 0755, before anything with an opinion about the mode ran,
+		// which is what made the 0700 in the state writer a no-op on every install.
+		if err := types.EnsureDir(serveDataDir, types.DataDirMode); err != nil {
 			return fmt.Errorf("failed to create data dir: %w", err)
 		}
-		if err := os.MkdirAll(serveLogDir, 0755); err != nil {
+		if err := types.EnsureDir(serveLogDir, types.LogDirMode); err != nil {
 			return fmt.Errorf("failed to create log dir: %w", err)
 		}
 

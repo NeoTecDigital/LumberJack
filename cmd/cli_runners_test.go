@@ -175,3 +175,39 @@ func TestSpawnServerRefusesOnlyWhatIsRunning(t *testing.T) {
 		t.Error("Expected a server with no database name to be refused")
 	}
 }
+
+// The two directories a spawned server writes into are owner-only, including when they are already
+// there at 0755 — which they always were, because this entrypoint used to create them that way and
+// os.MkdirAll never re-permissions a directory it did not create.
+//
+// 0700 is asserted as a LITERAL. Measuring against types.DataDirMode would pass just as happily
+// after someone set that constant back to 0755.
+func TestPrepareRuntimeDirsNarrowsExistingDirectories(t *testing.T) {
+	root := t.TempDir()
+	logDir := filepath.Join(root, "log")
+	dataDir := filepath.Join(root, "lib")
+
+	for _, dir := range []string{logDir, dataDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("Failed to plant %s: %v", dir, err)
+		}
+		// MkdirAll is subject to the umask, so the starting mode is forced rather than requested.
+		if err := os.Chmod(dir, 0755); err != nil {
+			t.Fatalf("Failed to widen %s: %v", dir, err)
+		}
+	}
+
+	if err := prepareRuntimeDirs(logDir, dataDir); err != nil {
+		t.Fatalf("prepareRuntimeDirs reported %v", err)
+	}
+
+	for _, dir := range []string{logDir, dataDir} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("Failed to stat %s: %v", dir, err)
+		}
+		if mode := info.Mode().Perm(); mode != 0700 {
+			t.Errorf("%s is %04o, want %04o", dir, mode, os.FileMode(0700))
+		}
+	}
+}

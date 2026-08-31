@@ -10,15 +10,15 @@ import (
 	"path/filepath"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/vaziolabs/lumberjack/types"
 )
 
 // The state file holds the WHOLE forest, and the forest holds every user's bcrypt hash. It is
 // readable by its owner and nobody else; it used to be written 0644, which handed every local
 // account on the box the password hash of every account on the server.
-const (
-	stateFileMode os.FileMode = 0600
-	stateDirMode  os.FileMode = 0700
-)
+//
+// The directory it sits in is types.DataDirMode, which is where every entrypoint gets it from too.
+const stateFileMode os.FileMode = 0600
 
 // loadFromFile loads the forest data from the file.
 func (server *Server) loadFromFile(filename string) error {
@@ -83,45 +83,19 @@ func (server *Server) writeChangesToFile(filename string) error {
 		return nil
 	}
 
-	if dir := filepath.Dir(filename); dir != "" {
-		_ = os.MkdirAll(dir, stateDirMode)
+	// The directory is ensured at every write, not just the first: it holds this file, and this
+	// file holds the hashes. A relative name with no directory part is left alone — chmodding the
+	// working directory is not this function's business.
+	if dir := filepath.Dir(filename); dir != "" && dir != "." {
+		if err := types.EnsureDir(dir, types.DataDirMode); err != nil {
+			server.logger.Failure("Failed to prepare the state directory: %v", err)
+			return err
+		}
 	}
 
-	// The temporary file is created at the SAME mode as the state file it becomes. os.Create opens
-	// 0666&^umask — 0644 on a stock system — and os.Rename preserves the mode of the source inode,
-	// so a 0644 temp file leaks exactly as widely as a 0644 state file, for the whole window it
-	// exists and forever afterwards.
 	tmpFile := filename + ".tmp"
-	file, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, stateFileMode)
-	if err != nil {
-		server.logger.Failure("Failed to create temporary file: %v", err)
-		return err
-	}
-	defer file.Close()
-
-	// An EXISTING temp file is not re-permissioned by O_CREATE, and neither is a state file written
-	// by an older build. Both are forced back to the intended mode.
-	if err := file.Chmod(stateFileMode); err != nil {
+	if err := server.writeStateTempFile(tmpFile, newHash, jsonData); err != nil {
 		os.Remove(tmpFile)
-		server.logger.Failure("Failed to set permissions on temporary file: %v", err)
-		return err
-	}
-
-	if _, err := file.Write(newHash); err != nil {
-		os.Remove(tmpFile)
-		server.logger.Failure("Failed to write hash to temporary file: %v", err)
-		return err
-	}
-
-	gzipWriter := gzip.NewWriter(file)
-	if _, err := gzipWriter.Write(jsonData); err != nil {
-		os.Remove(tmpFile)
-		server.logger.Failure("Failed to write compressed data to temporary file: %v", err)
-		return err
-	}
-	if err := gzipWriter.Close(); err != nil {
-		os.Remove(tmpFile)
-		server.logger.Failure("Failed to close gzip writer: %v", err)
 		return err
 	}
 
@@ -133,6 +107,47 @@ func (server *Server) writeChangesToFile(filename string) error {
 
 	server.lastHash = newHash
 	server.logger.Debug("Saved changes to file: %s", filename)
+	return nil
+}
+
+// writeStateTempFile fills the temporary file that os.Rename will turn into the state file. The
+// caller removes it if this reports an error, so nothing half-written is left behind under a name
+// that outlives the attempt.
+//
+// The temporary file is created at the SAME mode as the state file it becomes. os.Create opens
+// 0666&^umask — 0644 on a stock system — and os.Rename preserves the mode of the source inode, so a
+// 0644 temp file leaks exactly as widely as a 0644 state file, for the whole window it exists and
+// forever afterwards.
+func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, stateFileMode)
+	if err != nil {
+		server.logger.Failure("Failed to create temporary file: %v", err)
+		return err
+	}
+	defer file.Close()
+
+	// An EXISTING temp file is not re-permissioned by O_CREATE, and neither is a state file written
+	// by an older build. Both are forced back to the intended mode.
+	if err := file.Chmod(stateFileMode); err != nil {
+		server.logger.Failure("Failed to set permissions on temporary file: %v", err)
+		return err
+	}
+
+	if _, err := file.Write(hash); err != nil {
+		server.logger.Failure("Failed to write hash to temporary file: %v", err)
+		return err
+	}
+
+	gzipWriter := gzip.NewWriter(file)
+	if _, err := gzipWriter.Write(jsonData); err != nil {
+		server.logger.Failure("Failed to write compressed data to temporary file: %v", err)
+		return err
+	}
+	if err := gzipWriter.Close(); err != nil {
+		server.logger.Failure("Failed to close gzip writer: %v", err)
+		return err
+	}
+
 	return nil
 }
 

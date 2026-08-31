@@ -71,8 +71,32 @@ func TestFileLoggerOpensTheFileOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to stat the log file: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != LogFileMode {
-		t.Errorf("Log file mode is %04o, want %04o", mode, LogFileMode)
+	// The literal, not LogFileMode: comparing the mode on disk to the constant that produced it
+	// passes just as happily when the constant is changed to 0644.
+	if mode := info.Mode().Perm(); mode != 0600 {
+		t.Errorf("Log file mode is %04o, want %04o", mode, os.FileMode(0600))
+	}
+}
+
+// The DIRECTORY the log file lands in is owner-only too, including one that already exists at a
+// wider mode — which is every install, because the CLI and `serve` both make it before this runs.
+func TestFileLoggerNarrowsTheLogDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("Failed to plant a world-enterable log directory: %v", err)
+	}
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatalf("Failed to widen %s: %v", dir, err)
+	}
+
+	logger, err := NewFileLogger(filepath.Join(dir, "process.log"))
+	if err != nil {
+		t.Fatalf("Failed to open the log file: %v", err)
+	}
+	defer logger.Close()
+
+	if mode := statMode(t, dir); mode != wantDirMode {
+		t.Errorf("The log directory is %04o, want %04o", mode, wantDirMode)
 	}
 }
 

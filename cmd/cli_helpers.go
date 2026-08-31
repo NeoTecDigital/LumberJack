@@ -73,7 +73,7 @@ func deleteConfig(cmd *cobra.Command, args []string) {
 		if err := os.RemoveAll(defaultLibDir); err != nil {
 			fmt.Printf("Error cleaning up %s: %v\n", defaultLibDir, err)
 		}
-		if err := os.MkdirAll(defaultLibDir, 0755); err != nil {
+		if err := types.EnsureDir(defaultLibDir, types.DataDirMode); err != nil {
 			fmt.Printf("Error recreating %s: %v\n", defaultLibDir, err)
 		}
 
@@ -81,7 +81,7 @@ func deleteConfig(cmd *cobra.Command, args []string) {
 		if err := os.RemoveAll(defaultLogDir); err != nil {
 			fmt.Printf("Error cleaning up %s: %v\n", defaultLogDir, err)
 		}
-		if err := os.MkdirAll(defaultLogDir, 0755); err != nil {
+		if err := types.EnsureDir(defaultLogDir, types.LogDirMode); err != nil {
 			fmt.Printf("Error recreating %s: %v\n", defaultLogDir, err)
 		}
 

@@ -467,7 +467,8 @@ func createConfig(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	if err := os.MkdirAll(filepath.Join(defaultLibDir, dbName), 0755); err != nil {
+	// Owner-only: `start` reads the state file out of here, and it carries the admin credential.
+	if err := types.EnsureDir(filepath.Join(defaultLibDir, dbName), types.DataDirMode); err != nil {
 		fmt.Printf("Error creating database directory: %v\n", err)
 		os.Exit(1)
 	}

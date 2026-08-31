@@ -31,6 +31,20 @@ func getLiveFilePath(id string) string {
 	return filepath.Join(defaultProcDir, "live", id)
 }
 
+// prepareRuntimeDirs makes the two directories a spawned server writes into, owner-only.
+//
+// It is a named function so the mode is one decision with one test, rather than a pair of literals
+// repeated at each entrypoint — which is how they all drifted to 0755 and stayed there.
+func prepareRuntimeDirs(logPath, databasePath string) error {
+	if err := types.EnsureDir(logPath, types.LogDirMode); err != nil {
+		return fmt.Errorf("failed to create log directory: %v", err)
+	}
+	if err := types.EnsureDir(databasePath, types.DataDirMode); err != nil {
+		return fmt.Errorf("failed to create database directory: %v", err)
+	}
+	return nil
+}
+
 func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 	if userInput.Name == "" {
 		return fmt.Errorf("a database name is required to start a server")
@@ -81,12 +95,11 @@ func spawnServer(userInput types.ProcessInfo, withDashboard bool) error {
 		config.LogPath = defaultLogDir
 	}
 
-	// Ensure directories exist
-	if err := os.MkdirAll(config.LogPath, 0755); err != nil {
-		return fmt.Errorf("failed to create log directory: %v", err)
-	}
-	if err := os.MkdirAll(config.DatabasePath, 0755); err != nil {
-		return fmt.Errorf("failed to create database directory: %v", err)
+	// Ensure directories exist, owner-only. They hold the log file and the state file, and the
+	// state file is every bcrypt hash on the server. MkdirAll at 0755 here is what kept the
+	// directories world-readable no matter what mode the writers asked for.
+	if err := prepareRuntimeDirs(config.LogPath, config.DatabasePath); err != nil {
+		return err
 	}
 
 	// Create log file.

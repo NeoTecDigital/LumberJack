@@ -14,6 +14,9 @@ import (
 // 404, not a fault: there is nothing wrong with a server that was not configured to log to disk.
 var errNoLogFile = errors.New("no log file is configured for this server")
 
+// logsPageSize is how many entries one page of GET /logs carries.
+const logsPageSize = 100
+
 // handleGetLogs pages the process log.
 //
 // It answered 500 ON EVERY CALL, on every install, forever: it stats {LogPath}/{ID}.log and nothing
@@ -30,74 +33,17 @@ func (server *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	server.initLogCacheIfNeeded()
 
-	// Get query parameters
 	query := r.URL.Query()
-	page, _ := strconv.Atoi(query.Get("page"))
-	lastEventID := query.Get("last_event_id")
+	page := pageNumber(query.Get("page"))
 	level := query.Get("level")
 
-	if page < 1 {
-		page = 1
-	}
-
-	// Check if cache needs refresh
-	logPath := server.logFilePath()
-	if logPath == "" {
-		http.Error(w, errNoLogFile.Error(), http.StatusNotFound)
+	if status, err := server.refreshLogCache(level); err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
 
-	fileInfo, err := os.Stat(logPath)
-	if errors.Is(err, os.ErrNotExist) {
-		// Configured, but nothing has been written yet. That is a missing resource, not a fault.
-		http.Error(w, "no log file has been written yet", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		server.logger.Error("Failed to stat log file: %v", err)
-		http.Error(w, "Failed to access logs", http.StatusInternalServerError)
-		return
-	}
-
-	if server.logCache.LastModTime != fileInfo.ModTime() {
-		if err := server.updateLogCache(level); err != nil {
-			server.logger.Error("Failed to update log cache: %v", err)
-			http.Error(w, "Failed to update logs", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Get logs after the last event ID if provided
-	var filteredLogs []LogEntry
-	if lastEventID != "" {
-		lastEventTimestamp, err := strconv.ParseInt(lastEventID, 10, 64)
-		if err != nil {
-			server.logger.Error("Invalid last_event_id: %v", err)
-			filteredLogs = server.logCache.Logs
-		} else {
-			// Only include logs that come after the lastEventTimestamp
-			for _, log := range server.logCache.Logs {
-				if log.Timestamp.UnixNano() > lastEventTimestamp {
-					filteredLogs = append(filteredLogs, log)
-				}
-			}
-		}
-	} else {
-		filteredLogs = server.logCache.Logs
-	}
-
-	// Return paginated results
-	startIdx := (page - 1) * 100
-	endIdx := startIdx + 100
-	if endIdx > len(filteredLogs) {
-		endIdx = len(filteredLogs)
-	}
-
-	hasMore := endIdx < len(filteredLogs)
-	var logs []LogEntry
-	if startIdx < len(filteredLogs) {
-		logs = filteredLogs[startIdx:endIdx]
-	}
+	entries := server.logsAfter(query.Get("last_event_id"))
+	logs, hasMore := pageOfLogs(entries, page)
 
 	response := struct {
 		Logs    []LogEntry `json:"logs"`
@@ -114,4 +60,88 @@ func (server *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// pageNumber reads the requested page. Anything that is not a page — absent, unparseable, zero,
+// negative — is the first one.
+func pageNumber(raw string) int {
+	page, _ := strconv.Atoi(raw)
+	if page < 1 {
+		return 1
+	}
+	return page
+}
+
+// refreshLogCache brings the cache up to date with the file, and reports the HTTP status that goes
+// with a failure to do so.
+//
+// A server configured with nowhere to log, and one whose log file has not been written yet, are both
+// 404: there is no resource, and neither is a fault of the server. Only an unreadable file is a 500.
+func (server *Server) refreshLogCache(level string) (int, error) {
+	logPath := server.logFilePath()
+	if logPath == "" {
+		return http.StatusNotFound, errNoLogFile
+	}
+
+	fileInfo, err := os.Stat(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// Configured, but nothing has been written yet. That is a missing resource, not a fault.
+		return http.StatusNotFound, errors.New("no log file has been written yet")
+	}
+	if err != nil {
+		server.logger.Error("Failed to stat log file: %v", err)
+		return http.StatusInternalServerError, errors.New("Failed to access logs")
+	}
+
+	if server.logCache.LastModTime == fileInfo.ModTime() {
+		return 0, nil
+	}
+
+	if err := server.updateLogCache(level); err != nil {
+		server.logger.Error("Failed to update log cache: %v", err)
+		return http.StatusInternalServerError, errors.New("Failed to update logs")
+	}
+
+	return 0, nil
+}
+
+// logsAfter narrows the cache to the entries a caller has not seen, where lastEventID is a Unix
+// nanosecond timestamp taken from an entry it already has.
+//
+// An id that is not a number is reported and then IGNORED rather than refused: the caller gets the
+// whole cache, which is what it would have got had it sent no id at all.
+func (server *Server) logsAfter(lastEventID string) []LogEntry {
+	if lastEventID == "" {
+		return server.logCache.Logs
+	}
+
+	after, err := strconv.ParseInt(lastEventID, 10, 64)
+	if err != nil {
+		server.logger.Error("Invalid last_event_id: %v", err)
+		return server.logCache.Logs
+	}
+
+	var filtered []LogEntry
+	for _, entry := range server.logCache.Logs {
+		if entry.Timestamp.UnixNano() > after {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+// pageOfLogs cuts one page out of entries, and says whether another one follows. A page past the
+// end is empty rather than an error.
+func pageOfLogs(entries []LogEntry, page int) ([]LogEntry, bool) {
+	start := (page - 1) * logsPageSize
+	if start >= len(entries) {
+		return nil, false
+	}
+
+	end := start + logsPageSize
+	if end > len(entries) {
+		end = len(entries)
+	}
+
+	return entries[start:end], end < len(entries)
 }

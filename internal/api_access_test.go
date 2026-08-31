@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
 )
 
 // The tests here go through the ROUTER rather than calling a handler directly, because what is
@@ -169,6 +169,19 @@ func TestUserCreationRequiresANameAndAPassword(t *testing.T) {
 	}
 }
 
+// wantFileMode and wantDirMode are what a state file, a log file and the directories holding them
+// are REQUIRED to be. They are written out here as literals on purpose.
+//
+// These tests used to compare the mode on disk against the constant that produced it —
+// stateFileMode, types.LogFileMode — which is a tautology: changing the constant to 0644 changes
+// both sides of the comparison and the suite stays green while every install goes world-readable.
+// QA proved exactly that. The requirement is 0600 and 0700, so 0600 and 0700 is what is asserted,
+// and flipping a constant now fails here.
+const (
+	wantFileMode os.FileMode = 0600
+	wantDirMode  os.FileMode = 0700
+)
+
 // The state file is readable by its owner and by NOBODY ELSE. It holds the whole forest, and the
 // forest holds every bcrypt hash; it used to be written 0644 by os.Create.
 func TestStateFileIsNotWorldReadable(t *testing.T) {
@@ -179,8 +192,8 @@ func TestStateFileIsNotWorldReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("The state file was not written: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != stateFileMode {
-		t.Errorf("State file mode is %04o, want %04o", mode, stateFileMode)
+	if mode := info.Mode().Perm(); mode != wantFileMode {
+		t.Errorf("State file mode is %04o, want %04o", mode, wantFileMode)
 	}
 
 	// It really does hold a hash, so this test is about something.
@@ -204,8 +217,8 @@ func TestStateFileIsNotWorldReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("The state file disappeared: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != stateFileMode {
-		t.Errorf("State file mode after rewrite is %04o, want %04o", mode, stateFileMode)
+	if mode := info.Mode().Perm(); mode != wantFileMode {
+		t.Errorf("State file mode after rewrite is %04o, want %04o", mode, wantFileMode)
 	}
 
 	// Nothing is left behind at a wider mode under a different name.
@@ -307,8 +320,8 @@ func TestLogFileIsNotWorldReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("No log file was opened: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != types.LogFileMode {
-		t.Errorf("Log file mode is %04o, want %04o", mode, types.LogFileMode)
+	if mode := info.Mode().Perm(); mode != wantFileMode {
+		t.Errorf("Log file mode is %04o, want %04o", mode, wantFileMode)
 	}
 }
 
@@ -337,4 +350,92 @@ func TestLogsRouteRequiresAdmin(t *testing.T) {
 	if recorder := serve(t, server, httptest.NewRequest("GET", "/logs", nil)); recorder.Code != http.StatusUnauthorized {
 		t.Errorf("Anonymous GET /logs: got %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
+}
+
+// The directory the state file sits in is enterable by its owner and NOBODY ELSE.
+//
+// This is the hole the file modes alone did not close. Every entrypoint pre-created this directory
+// at 0755 before any code with an opinion about the mode ran, and os.MkdirAll applies its mode only
+// to directories it actually creates — so the 0700 in the state writer was an unreachable no-op and
+// a `stat` of a running install measured 755 no matter what the source said.
+func TestStateDirectoryIsNotWorldEnterable(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	logDir := filepath.Join(root, "logs")
+
+	// Planted at 0755 FIRST, which is what the entrypoints used to leave behind. A test that lets
+	// the server create the directory itself proves nothing: t.TempDir is already 0700, and so is
+	// anything MkdirAll makes fresh.
+	plantWideDir(t, dataDir)
+	plantWideDir(t, logDir)
+
+	server := newServerInDirs(t, dataDir, logDir)
+
+	// A second write goes through the whole persist path again, after the directory exists.
+	if code := post(t, server.handleCreateNode, adminID(t, server), map[string]interface{}{
+		"path": "work/leaf",
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Create node: got %d, want %d", code, http.StatusOK)
+	}
+
+	// The state file really is in there, so this is measuring the directory that holds the hashes.
+	if _, err := os.Stat(server.statePath()); err != nil {
+		t.Fatalf("No state file was written into %s: %v", dataDir, err)
+	}
+
+	assertDirMode(t, dataDir)
+}
+
+// The directory the log file sits in, likewise. It holds the file GET /logs serves.
+func TestLogDirectoryIsNotWorldEnterable(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	logDir := filepath.Join(root, "logs")
+
+	plantWideDir(t, dataDir)
+	plantWideDir(t, logDir)
+
+	server := newServerInDirs(t, dataDir, logDir)
+
+	if _, err := os.Stat(server.logFilePath()); err != nil {
+		t.Fatalf("No log file was written into %s: %v", logDir, err)
+	}
+
+	assertDirMode(t, logDir)
+}
+
+// plantWideDir creates dir at 0755 — the mode every entrypoint used to leave it at — and confirms
+// it landed that way, so a test built on it is starting from the state it means to.
+func plantWideDir(t *testing.T, dir string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("Failed to create %s: %v", dir, err)
+	}
+	// MkdirAll is subject to the umask, so the mode is forced rather than requested.
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatalf("Failed to widen %s: %v", dir, err)
+	}
+	if mode := statMode(t, dir); mode != 0755 {
+		t.Fatalf("%s is %04o, not the 0755 this test needs to start from", dir, mode)
+	}
+}
+
+// assertDirMode measures a directory against the literal 0700, for the reason wantDirMode gives.
+func assertDirMode(t *testing.T, dir string) {
+	t.Helper()
+
+	if mode := statMode(t, dir); mode != wantDirMode {
+		t.Errorf("%s is %04o, want %04o", dir, mode, wantDirMode)
+	}
+}
+
+func statMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Failed to stat %s: %v", path, err)
+	}
+	return info.Mode().Perm()
 }
