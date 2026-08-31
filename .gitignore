@@ -1,0 +1,6 @@
+lumberjack
+lumberjack-bin
+*.dat
+*.dat.tmp
+data/
+logs/
