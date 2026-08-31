@@ -13,6 +13,11 @@ import (
 	"github.com/vaziolabs/lumberjack/types"
 )
 
+// adminPassEnv is the other way to give the first admin a password. There is no third way: the
+// flag used to default to "admin123", so every install that did not think about it came up with a
+// published password on an admin account.
+const adminPassEnv = "LUMBERJACK_ADMIN_PASS"
+
 var (
 	servePort      string
 	serveDataDir   string
@@ -44,6 +49,10 @@ Example:
 		}
 		if servePort == "" {
 			servePort = "8080"
+		}
+
+		if serveAdminPass == "" {
+			serveAdminPass = os.Getenv(adminPassEnv)
 		}
 
 		if err := os.MkdirAll(serveDataDir, 0755); err != nil {
@@ -79,6 +88,12 @@ Example:
 				return fmt.Errorf("failed to load database: %w", err)
 			}
 		} else {
+			// FAIL CLOSED on first init. A password is required, and it is required HERE rather
+			// than defaulted, because this is the only moment the account is created.
+			if serveAdminPass == "" {
+				return fmt.Errorf("no admin password: pass --admin-pass or set %s to initialize a new database", adminPassEnv)
+			}
+
 			fmt.Printf("[LumberJack] Initializing new database '%s' (admin: '%s') at %s\n", serveDBName, serveAdminUser, dbPath)
 			adminUser := core.User{
 				Username:     serveAdminUser,
@@ -115,7 +130,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveLogDir, "log-dir", "./logs/lumberjack", "Directory for logs")
 	serveCmd.Flags().StringVarP(&serveDBName, "db", "d", "default", "Database name")
 	serveCmd.Flags().StringVar(&serveAdminUser, "admin-user", "admin", "Admin username for initialization")
-	serveCmd.Flags().StringVar(&serveAdminPass, "admin-pass", "admin123", "Admin password for initialization")
+	serveCmd.Flags().StringVar(&serveAdminPass, "admin-pass", "", "Admin password for initialization (or "+adminPassEnv+"); required on first init")
 	serveCmd.Flags().StringVar(&serveAdminOrg, "admin-org", "Momentum", "Organization name")
 	serveCmd.Flags().StringVar(&serveAdminMail, "admin-email", "admin@momentum.local", "Admin email")
 }

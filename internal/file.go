@@ -43,13 +43,16 @@ func (server *Server) loadFromFile(filename string) error {
 
 	// Important: Copy the loaded forest to server's forest
 	server.forest = &loadedForest
-	server.logger.Debug("Loaded forest: %+v", server.forest)
+	// The forest is NOT logged. It carries its users, and its users carry bcrypt hashes; Debug is
+	// ungated and the log file it writes to is the one GET /logs serves.
+	server.logger.Debug("Loaded forest with %d users and %d children", len(server.forest.Users), len(server.forest.Children))
 	return nil
 }
 
 // TODO: Encrypt this
-// Function to write changes to an encrypted state file
-func (server *Server) writeChangesToFile(data interface{}, filename string) error {
+// writeChangesToFile persists the WHOLE forest to the state file. It took a `data interface{}`
+// that it never looked at — callers passed a node or the forest and got the forest either way.
+func (server *Server) writeChangesToFile(filename string) error {
 	server.logger.Enter("writeChangesToFile")
 	defer server.logger.Exit("writeChangesToFile")
 
@@ -145,6 +148,7 @@ func (server *Server) validateAndUnmarshal(data []byte, hash []byte, target inte
 	}
 
 	server.lastHash = hash
-	server.logger.Debug("Unmarshalled data: %+v", target)
+	// The unmarshalled value is NOT logged: it is the forest, and the forest carries password hashes.
+	server.logger.Debug("Unmarshalled %d bytes of state", len(data))
 	return nil
 }

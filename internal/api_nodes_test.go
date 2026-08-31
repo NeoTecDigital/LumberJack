@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
 	"github.com/vaziolabs/lumberjack/types"
@@ -247,5 +249,172 @@ func TestLoadedServerServesNodePaths(t *testing.T) {
 		"path": "work", "event_id": "after-restart", "metadata": map[string]interface{}{},
 	}).Code; code != http.StatusOK {
 		t.Errorf("Start event on a loaded database: got %d, want %d", code, http.StatusOK)
+	}
+}
+
+// A leaf that records nothing is promoted to a branch when a child is added beneath it.
+//
+// POST /nodes could not nest under a path it had itself created: the first call made a leaf, and
+// the second answered 409 forever. A leaf is only a leaf because nothing has been put beneath it.
+func TestCreateNodePromotesAnEmptyLeaf(t *testing.T) {
+	server, _ := newStockServer(t)
+	userID := adminID(t, server)
+
+	if code := post(t, server.handleCreateNode, userID, map[string]interface{}{
+		"path": "work", "type": "leaf",
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Create the leaf: got %d, want %d", code, http.StatusOK)
+	}
+
+	nested := post(t, server.handleCreateNode, userID, map[string]interface{}{
+		"path": "work/task", "type": "leaf",
+	})
+	if nested.Code != http.StatusOK {
+		t.Fatalf("Nest under the leaf: got %d, want %d: %s", nested.Code, http.StatusOK, nested.Body.String())
+	}
+
+	parent, err := server.getNodeFromPath("work")
+	if err != nil {
+		t.Fatalf("Failed to find the promoted node: %v", err)
+	}
+	if parent.Type != core.BranchNode {
+		t.Errorf("The parent is still type %d, want a branch", parent.Type)
+	}
+
+	child, err := server.getNodeFromPath("work/task")
+	if err != nil {
+		t.Fatalf("Failed to find the nested node: %v", err)
+	}
+	if child.Type != core.LeafNode {
+		t.Errorf("The child is type %d, want a leaf", child.Type)
+	}
+
+	// The child is reachable for the thing a leaf is for.
+	if code := post(t, server.handleStartEvent, userID, map[string]interface{}{
+		"path": "work/task", "event_id": "e1", "metadata": map[string]interface{}{},
+	}).Code; code != http.StatusOK {
+		t.Errorf("Start an event on the nested leaf: got %d, want %d", code, http.StatusOK)
+	}
+}
+
+// A leaf that HOLDS something is not promoted. Converting it would strand its record on a node
+// every event route refuses, so the request is refused instead — with a reason.
+func TestCreateNodeRefusesToPromoteALeafThatRecordsEvents(t *testing.T) {
+	server, _ := newStockServer(t)
+	userID := adminID(t, server)
+
+	if code := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "tracked"}).Code; code != http.StatusOK {
+		t.Fatalf("Create the leaf: got %d, want %d", code, http.StatusOK)
+	}
+	if code := post(t, server.handleStartEvent, userID, map[string]interface{}{
+		"path": "tracked", "event_id": "e1", "metadata": map[string]interface{}{},
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Start the event: got %d, want %d", code, http.StatusOK)
+	}
+
+	refused := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "tracked/below"})
+	if refused.Code != http.StatusConflict {
+		t.Fatalf("Nest under a recording leaf: got %d, want %d", refused.Code, http.StatusConflict)
+	}
+	if !strings.Contains(refused.Body.String(), "records events or entries") {
+		t.Errorf("The refusal does not say why: %s", refused.Body.String())
+	}
+
+	node, err := server.getNodeFromPath("tracked")
+	if err != nil {
+		t.Fatalf("Failed to find the node: %v", err)
+	}
+	if node.Type != core.LeafNode {
+		t.Errorf("The refused node was converted anyway: type %d", node.Type)
+	}
+	if len(node.Events) != 1 {
+		t.Errorf("The event on the refused node is gone: %d events", len(node.Events))
+	}
+}
+
+// A planned event is persisted, so it survives the restart it is a plan across.
+func TestPlannedEventSurvivesAReload(t *testing.T) {
+	server, dir := newStockServer(t)
+	userID := adminID(t, server)
+
+	if code := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "planning"}).Code; code != http.StatusOK {
+		t.Fatalf("Create node: got %d, want %d", code, http.StatusOK)
+	}
+
+	planned := post(t, server.handlePlanEvent, userID, map[string]interface{}{
+		"path":       "planning",
+		"event_id":   "next-week",
+		"start_time": time.Now().Add(time.Hour).Format(time.RFC3339),
+		"end_time":   time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+		"metadata":   map[string]interface{}{"title": "review"},
+	})
+	if planned.Code != http.StatusOK {
+		t.Fatalf("Plan the event: got %d, want %d: %s", planned.Code, http.StatusOK, planned.Body.String())
+	}
+
+	loaded, err := LoadServer(types.ServerConfig{
+		Process: types.ProcessInfo{ID: "stock_process", Name: "stock", LogPath: dir, DatabasePath: dir},
+	})
+	if err != nil {
+		t.Fatalf("Failed to load the database: %v", err)
+	}
+
+	node, err := loaded.getNodeFromPath("planning")
+	if err != nil {
+		t.Fatalf("Failed to find the node after reload: %v", err)
+	}
+	if _, exists := node.PlannedEvents["next-week"]; !exists {
+		t.Error("The planned event did not survive the reload")
+	}
+}
+
+// A stranger cannot plan an event, and is told so rather than being handed a 500.
+func TestPlanEventRefusesWithoutWritePermission(t *testing.T) {
+	server, _ := newStockServer(t)
+	userID := adminID(t, server)
+
+	if code := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "planning"}).Code; code != http.StatusOK {
+		t.Fatalf("Create node: got %d, want %d", code, http.StatusOK)
+	}
+
+	refused := post(t, server.handlePlanEvent, "someone-else", map[string]interface{}{
+		"path":       "planning",
+		"event_id":   "not-yours",
+		"start_time": time.Now().Add(time.Hour).Format(time.RFC3339),
+		"end_time":   time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+		"metadata":   map[string]interface{}{},
+	})
+	if refused.Code != http.StatusForbidden {
+		t.Errorf("Plan as a stranger: got %d, want %d", refused.Code, http.StatusForbidden)
+	}
+}
+
+// Node ids are NOT user ids. Every node in the forest used to be minted by the user generator and
+// so carried a "user-" prefix, which made a node id unreadable as what it identifies.
+func TestNodeIDsAreNotPrefixedAsUsers(t *testing.T) {
+	server, _ := newStockServer(t)
+	userID := adminID(t, server)
+
+	if code := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "work/projects/alpha"}).Code; code != http.StatusOK {
+		t.Fatalf("Create node: got %d, want %d", code, http.StatusOK)
+	}
+
+	seen := map[string]bool{}
+	for _, path := range []string{"", "work", "work/projects", "work/projects/alpha"} {
+		node, err := server.getNodeFromPath(path)
+		if err != nil {
+			t.Fatalf("Failed to find %q: %v", path, err)
+		}
+		if !strings.HasPrefix(node.ID, "node-") {
+			t.Errorf("Node %q has id %q, want a node- prefix", path, node.ID)
+		}
+		if seen[node.ID] {
+			t.Errorf("Node id %q was minted twice", node.ID)
+		}
+		seen[node.ID] = true
+	}
+
+	if !strings.HasPrefix(userID, "user-") {
+		t.Errorf("User id %q lost its user- prefix", userID)
 	}
 }

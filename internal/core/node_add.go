@@ -43,7 +43,7 @@ func (n *Node) AddChildNode(name string, nodeType NodeType, userID string) (*Nod
 	}
 
 	if n.Type != BranchNode {
-		return nil, fmt.Errorf("cannot add a child to leaf node: %s", n.Name)
+		return nil, fmt.Errorf("cannot add a child to leaf node %s", n.Name)
 	}
 
 	n.mutex.Lock()
@@ -76,6 +76,57 @@ func (n *Node) AddChildNode(name string, nodeType NodeType, userID string) (*Nod
 
 	n.Children[child.ID] = child
 	return child, nil
+}
+
+// ChildNamed is the child a path segment names, or nil if there is none.
+func (n *Node) ChildNamed(name string) *Node {
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
+
+	for _, child := range n.Children {
+		if child.Name == name {
+			return child
+		}
+	}
+	return nil
+}
+
+// AddBranchChild adds the child an INTERMEDIATE segment of a path names.
+//
+// Such a segment holds a child, which is what a branch is, so an empty leaf already sitting there is
+// PROMOTED rather than refused. Refusing it was why POST /nodes could not nest under a path it had
+// itself created: the first call made a leaf, and every call below it answered 409 forever.
+func (n *Node) AddBranchChild(name string, userID string) (*Node, error) {
+	existing := n.ChildNamed(name)
+	if existing == nil {
+		return n.AddChildNode(name, BranchNode, userID)
+	}
+	if existing.Type == BranchNode {
+		return existing, nil
+	}
+	if err := existing.promoteToBranch(); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+// promoteToBranch turns a leaf that records nothing into a branch.
+//
+// A leaf that HOLDS something is NOT promoted. Events, planned events, entries and attachments only
+// live on leaves, so converting one would strand its record on a node every event route refuses.
+func (n *Node) promoteToBranch() error {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	if len(n.Events) > 0 || len(n.PlannedEvents) > 0 || len(n.Entries) > 0 || len(n.Attachments) > 0 {
+		return fmt.Errorf("cannot add a child to leaf node %s: it already records events or entries", n.Name)
+	}
+
+	n.Type = BranchNode
+	if n.Children == nil {
+		n.Children = make(map[string]*Node)
+	}
+	return nil
 }
 
 // AddParent adds a parent node to the node

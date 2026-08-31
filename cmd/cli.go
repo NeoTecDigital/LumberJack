@@ -406,11 +406,12 @@ func createConfig(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
+	// NO DEFAULT PASSWORD. This used to be the literal "admin", offered as the prompt default and
+	// accepted on a bare return, so the common path created an admin account with a published
+	// password. It is prompted for below and it has to be typed twice.
 	user := core.User{
 		Username:     "admin",
-		Password:     "admin",
 		Organization: "LumberJack",
-		Phone:        "1234567890",
 		Email:        "admin@lumberjack.com",
 	}
 
@@ -423,20 +424,15 @@ func createConfig(cmd *cobra.Command, args []string) error {
 		{"Email (optional):", &user.Email, ""},
 		{"Phone Number (optional):", &user.Phone, ""},
 		{"Admin Username", &user.Username, user.Username},
-		{"Admin Password", &user.Password, user.Password},
-		{"Re-enter Admin Password", &user.Password, user.Password},
 		{"LumberJack Host Domain", &dbConfig.ServerURL, "localhost"},
 		{"LumberJack API Port", &dbConfig.ServerPort, "8080"},
 		{"LumberJack Dashboard Port", &dbConfig.DashboardPort, "8081"},
 	}
 
-	for i, p := range prompts {
+	for _, p := range prompts {
 		prompt := promptui.Prompt{
 			Label:   p.label,
 			Default: p.default_,
-		}
-		if strings.Contains(strings.ToLower(p.label), "password") {
-			prompt.Mask = '*'
 		}
 		result, err := prompt.Run()
 		if err != nil {
@@ -444,20 +440,15 @@ func createConfig(cmd *cobra.Command, args []string) error {
 			os.Exit(1)
 		}
 
-		if i == 5 {
-			if result != prompts[4].default_ {
-				fmt.Println("Passwords do not match")
-				os.Exit(1)
-			}
-		}
-
 		*p.field = result
 	}
 
-	if user.Password != prompts[5].default_ {
-		user.Username = prompts[4].default_
-		user.Password = prompts[5].default_
+	password, err := promptForAdminPassword()
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		os.Exit(1)
 	}
+	user.Password = password
 
 	dbConfig.Name = dbName
 	config.Databases[dbName] = dbConfig
@@ -506,6 +497,30 @@ func createConfig(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// promptForAdminPassword asks for the admin password twice and refuses an empty one.
+//
+// The confirmation used to compare the second entry against the DEFAULT of an unrelated prompt,
+// which meant it never actually compared the two entries to each other.
+func promptForAdminPassword() (string, error) {
+	first, err := (&promptui.Prompt{Label: "Admin Password", Mask: '*'}).Run()
+	if err != nil {
+		return "", fmt.Errorf("prompt failed: %v", err)
+	}
+	if strings.TrimSpace(first) == "" {
+		return "", fmt.Errorf("admin password cannot be empty")
+	}
+
+	second, err := (&promptui.Prompt{Label: "Re-enter Admin Password", Mask: '*'}).Run()
+	if err != nil {
+		return "", fmt.Errorf("prompt failed: %v", err)
+	}
+	if first != second {
+		return "", fmt.Errorf("passwords do not match")
+	}
+
+	return first, nil
 }
 
 func killServer(cmd *cobra.Command, args []string) {

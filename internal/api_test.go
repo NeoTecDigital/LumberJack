@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -23,6 +24,12 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// The server FAILS CLOSED without a signing key, so the suite has to supply one the way a
+	// deployment does.
+	if err := os.Setenv("LUMBERJACK_JWT_SECRET", "test-signing-key-not-a-deployment-key"); err != nil {
+		log.Fatalf("Failed to set the test signing key: %v", err)
+	}
+
 	// Setup test environment
 	testDbName = "test_state"
 	testDbPath, err := os.MkdirTemp("", "core-test-*")
@@ -43,6 +50,15 @@ func TestMain(m *testing.M) {
 	// Cleanup
 	os.RemoveAll(testDbPath)
 	os.Exit(code)
+}
+
+// withUser puts the caller in the request context the way authMiddleware does.
+//
+// These tests used to set an X-User-ID header, which the middleware ABANDONED when it moved to
+// reading the id out of the token claims. The header went nowhere, so every handler under test saw
+// no user at all.
+func withUser(r *http.Request, userID string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), "user_id", userID))
 }
 
 func setupTestForest(t *testing.T) *Server {
@@ -92,7 +108,7 @@ func setupTestForest(t *testing.T) *Server {
 	root.AddChild(testNode)
 
 	// Save initial state
-	if err := server.writeChangesToFile(server.forest, testDbFile); err != nil {
+	if err := server.writeChangesToFile(testDbFile); err != nil {
 		logger.Failure("Failed to write initial state: %v", err)
 	} else {
 		logger.Success("Saved initial state to file")
@@ -125,7 +141,7 @@ func TestForestOperations(t *testing.T) {
 		rootNode.Children[childNode2.ID] = childNode2
 		rootNode.Children[childNode3.ID] = childNode3
 
-		if err := server.writeChangesToFile(rootNode, testDbFile); err != nil {
+		if err := server.writeChangesToFile(testDbFile); err != nil {
 			logger.Failure("Failed to write state to file: %v", err)
 			t.Errorf("Failed to write state to file: %v", err)
 		} else {
@@ -231,7 +247,7 @@ func TestForestOperations(t *testing.T) {
 			logger.Success("Event found in storage")
 		}
 
-		if err := server.writeChangesToFile(rootNode, testDbFile); err != nil {
+		if err := server.writeChangesToFile(testDbFile); err != nil {
 			logger.Failure("Failed to write state to file: %v", err)
 		} else {
 			logger.Success("State saved to file")
@@ -327,7 +343,7 @@ func TestForestOperations(t *testing.T) {
 		logger.Enter("Persistence Verification")
 		defer logger.Exit("Persistence Verification")
 
-		if err := server.writeChangesToFile(rootNode, testDbFile); err != nil {
+		if err := server.writeChangesToFile(testDbFile); err != nil {
 			logger.Failure("Failed to save final state: %v", err)
 			t.Error(err)
 		} else {
@@ -461,25 +477,38 @@ func TestHandleAssignUser(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req := httptest.NewRequest("POST", "/assign_user", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("X-User-ID", "admin")
-	req.Header.Set("Content-Type", "application/json")
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(app.handleAssignUser)
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusOK {
+	rr := post(t, app.handleAssignUser, "admin", body)
+	if rr.Code != http.StatusOK {
 		logger.Failure("Handler returned wrong status code: got %v want %v\nBody: %v",
-			status, http.StatusOK, rr.Body.String())
+			rr.Code, http.StatusOK, rr.Body.String())
 		t.Errorf("Handler returned wrong status code: got %v want %v\nBody: %v",
-			status, http.StatusOK, rr.Body.String())
+			rr.Code, http.StatusOK, rr.Body.String())
 	} else {
 		logger.Success("User assigned successfully")
 	}
 
+	// The assignment actually landed on the node, which a test that only reads the status code
+	// could not tell from a handler that answered 200 and did nothing.
+	node, err := app.forest.GetNode("test-node")
+	if err != nil {
+		t.Fatalf("Failed to find the node the user was assigned to: %v", err)
+	}
+	if !node.CheckPermission("test_user", core.WritePermission) {
+		t.Error("The assignee has no write permission on the node")
+	}
+
+	// A caller with no user in the context is refused rather than crashing the process, which is
+	// what the unchecked context assertion used to do.
+	unauthenticated := httptest.NewRequest("POST", "/users/assign", bytes.NewBuffer(bodyBytes))
+	unauthenticatedRecorder := httptest.NewRecorder()
+	app.handleAssignUser(unauthenticatedRecorder, unauthenticated)
+	if unauthenticatedRecorder.Code != http.StatusUnauthorized {
+		t.Errorf("Assign with no user in session: got %d, want %d",
+			unauthenticatedRecorder.Code, http.StatusUnauthorized)
+	}
+
 	// Save state
-	if err := app.writeChangesToFile(app.forest, testDbFile); err != nil {
+	if err := app.writeChangesToFile(testDbFile); err != nil {
 		logger.Failure("Failed to save state: %v", err)
 		t.Fatalf("Failed to save state: %v", err)
 	} else {
@@ -500,21 +529,25 @@ func TestHandleGetTimeTracking(t *testing.T) {
 	}
 	startBytes, _ := json.Marshal(startBody)
 	startReq := httptest.NewRequest("POST", "/start_time_tracking", bytes.NewBuffer(startBytes))
-	startReq.Header.Set("X-User-ID", "admin")
+	startReq = withUser(startReq, "admin")
 	startReq.Header.Set("Content-Type", "application/json")
 	app.handleStartTimeTracking(httptest.NewRecorder(), startReq)
 
 	// Stop time tracking
 	stopReq := httptest.NewRequest("POST", "/stop_time_tracking", bytes.NewBuffer(startBytes))
-	stopReq.Header.Set("X-User-ID", "admin")
+	stopReq = withUser(stopReq, "admin")
 	stopReq.Header.Set("Content-Type", "application/json")
 	app.handleStopTimeTracking(httptest.NewRecorder(), stopReq)
 
-	// Get summary
-	req := httptest.NewRequest("POST", "/get_time_tracking", bytes.NewBuffer(startBytes))
-	req.Header.Set("X-User-ID", "admin")
+	// A GET with the path in the QUERY STRING. This route used to decode a JSON body, which no
+	// conforming client sends on a GET, so it answered 400 "EOF" to everybody.
+	req := withUser(httptest.NewRequest("GET", "/time?path=test-node", nil), "admin")
 	rr := httptest.NewRecorder()
 	app.handleGetTimeTracking(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /time: got %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
 
 	var summary []map[string]interface{}
 	json.NewDecoder(rr.Body).Decode(&summary)
@@ -545,7 +578,7 @@ func TestHandleGetEventEntries(t *testing.T) {
 	}
 	startBytes, _ := json.Marshal(startBody)
 	startReq := httptest.NewRequest("POST", "/start_event", bytes.NewBuffer(startBytes))
-	startReq.Header.Set("X-User-ID", "admin")
+	startReq = withUser(startReq, "admin")
 	startReq.Header.Set("Content-Type", "application/json")
 
 	startRR := httptest.NewRecorder()
@@ -564,7 +597,7 @@ func TestHandleGetEventEntries(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/get_event_entries", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("X-User-ID", "admin")
+	req = withUser(req, "admin")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -600,7 +633,7 @@ func TestHandleEndEvent(t *testing.T) {
 	}
 	startBytes, _ := json.Marshal(startBody)
 	startReq := httptest.NewRequest("POST", "/start_event", bytes.NewBuffer(startBytes))
-	startReq.Header.Set("X-User-ID", "admin")
+	startReq = withUser(startReq, "admin")
 	startReq.Header.Set("Content-Type", "application/json")
 	app.handleStartEvent(httptest.NewRecorder(), startReq)
 
@@ -611,7 +644,7 @@ func TestHandleEndEvent(t *testing.T) {
 	}
 	endBytes, _ := json.Marshal(endBody)
 	endReq := httptest.NewRequest("POST", "/end_event", bytes.NewBuffer(endBytes))
-	endReq.Header.Set("X-User-ID", "admin")
+	endReq = withUser(endReq, "admin")
 	endReq.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	app.handleEndEvent(rr, endReq)
@@ -641,7 +674,7 @@ func TestHandleAppendToEvent(t *testing.T) {
 	}
 	startBytes, _ := json.Marshal(startBody)
 	startReq := httptest.NewRequest("POST", "/start_event", bytes.NewBuffer(startBytes))
-	startReq.Header.Set("X-User-ID", "admin")
+	startReq = withUser(startReq, "admin")
 	startReq.Header.Set("Content-Type", "application/json")
 
 	startRR := httptest.NewRecorder()
@@ -664,7 +697,7 @@ func TestHandleAppendToEvent(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/append_event", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("X-User-ID", "admin")
+	req = withUser(req, "admin")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -686,7 +719,7 @@ func TestHandleAppendToEvent(t *testing.T) {
 	}
 	getBytes, _ := json.Marshal(getBody)
 	getReq := httptest.NewRequest("POST", "/get_event_entries", bytes.NewBuffer(getBytes))
-	getReq.Header.Set("X-User-ID", "admin")
+	getReq = withUser(getReq, "admin")
 	getReq.Header.Set("Content-Type", "application/json")
 
 	getRR := httptest.NewRecorder()
@@ -723,7 +756,7 @@ func TestHandleStartEvent(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/start_event", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("X-User-ID", "admin")
+	req = withUser(req, "admin")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -784,7 +817,7 @@ func TestHandleAppendToEventWithCategories(t *testing.T) {
 	}
 	startBytes, _ := json.Marshal(startBody)
 	startReq := httptest.NewRequest("POST", "/start_event", bytes.NewBuffer(startBytes))
-	startReq.Header.Set("X-User-ID", "admin")
+	startReq = withUser(startReq, "admin")
 	startReq.Header.Set("Content-Type", "application/json")
 	app.handleStartEvent(httptest.NewRecorder(), startReq)
 
@@ -801,7 +834,7 @@ func TestHandleAppendToEventWithCategories(t *testing.T) {
 	}
 	appendBytes, _ := json.Marshal(appendBody)
 	req := httptest.NewRequest("POST", "/append_event", bytes.NewBuffer(appendBytes))
-	req.Header.Set("X-User-ID", "admin")
+	req = withUser(req, "admin")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	app.handleAppendToEvent(rr, req)
@@ -828,6 +861,14 @@ func TestHandlePlanEvent(t *testing.T) {
 	languagesNode := core.NewNode(core.BranchNode, "languages")
 	spanishNode := core.NewNode(core.LeafNode, "spanish")
 
+	// The handler checks write permission now, so the node has to know the caller.
+	adminUser := core.User{
+		ID:          "admin",
+		Username:    "admin",
+		Permissions: []core.Permission{core.AdminPermission},
+	}
+	spanishNode.Users = []core.User{adminUser}
+
 	app.forest.Children["study"] = studyNode
 	studyNode.Children["languages"] = languagesNode
 	languagesNode.Children["spanish"] = spanishNode
@@ -851,7 +892,7 @@ func TestHandlePlanEvent(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/plan_event", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("X-User-ID", "admin")
+	req = withUser(req, "admin")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -883,6 +924,14 @@ func TestMultipleParentNodes(t *testing.T) {
 	houseNode := core.NewNode(core.BranchNode, "house")
 	fundNode := core.NewNode(core.BranchNode, "fund")
 	savingsNode := core.NewNode(core.LeafNode, "savings")
+
+	// StartEvent refuses a user the node does not know, and the assertion below is about where the
+	// event is reachable from, not about who may write it.
+	savingsNode.Users = []core.User{{
+		ID:          "user1",
+		Username:    "user1",
+		Permissions: []core.Permission{core.WritePermission},
+	}}
 
 	// Setup path: life::work::payday::savings
 	root.Children["life"] = lifeNode
@@ -932,7 +981,9 @@ func TestMultipleParentNodes(t *testing.T) {
 
 	logger.Enter("Event Propagation")
 	// Test event propagation through all parents
-	savingsNode.StartEvent("deposit", "user1", nil, nil, map[string]interface{}{"amount": 1000})
+	if err := savingsNode.StartEvent("deposit", "user1", nil, nil, map[string]interface{}{"amount": 1000}); err != nil {
+		t.Fatalf("Failed to start the event: %v", err)
+	}
 
 	// Verify event is accessible from all paths
 	for _, path := range paths {
@@ -1006,11 +1057,16 @@ func TestUserCreationAndAuthentication(t *testing.T) {
 		logger.Success("Login response decoded successfully")
 	}
 
-	if _, exists := loginResponse["token"]; !exists {
-		logger.Failure("Login response missing token")
-		t.Error("Login response missing token")
+	// The pair the handler actually answers with. The old assertion looked for a "token" key no
+	// version of this handler has ever written.
+	if loginResponse["session_token"] == "" {
+		logger.Failure("Login response missing session token")
+		t.Error("Login response missing session token")
+	} else if loginResponse["refresh_token"] == "" {
+		logger.Failure("Login response missing refresh token")
+		t.Error("Login response missing refresh token")
 	} else {
-		logger.Success("JWT token received")
+		logger.Success("JWT token pair received")
 	}
 
 	logger.Enter("Failed Login Test")

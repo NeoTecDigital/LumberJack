@@ -109,9 +109,9 @@ func (n *Node) GetTimeTrackingSummary(userID string) []map[string]interface{} {
 	var startTime *Entry
 	for _, entry := range n.Entries {
 		if entry.UserID == userID {
-			if entry.Content == "start_time_entry" {
+			if entry.Content == TimeEntryStart {
 				startTime = &entry
-			} else if entry.Content == "end_time_entry" && startTime != nil {
+			} else if entry.Content == TimeEntryStop && startTime != nil {
 				duration := entry.Timestamp.Sub(startTime.Timestamp)
 				summary = append(summary, map[string]interface{}{
 					"start_time": startTime.Timestamp,

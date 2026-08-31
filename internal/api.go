@@ -3,7 +3,9 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -11,16 +13,38 @@ import (
 	"github.com/vaziolabs/lumberjack/types"
 )
 
+// jwtSecretEnv names the environment variable the session signing key comes from. There is exactly
+// ONE source for it. The key used to be the literal "your-secret-key", written out twice, so every
+// install signed its sessions with a key published in the source tree and anyone holding the source
+// could mint a token for any user.
+const jwtSecretEnv = "LUMBERJACK_JWT_SECRET"
+
+// newJWTConfig reads the signing key, and FAILS CLOSED. An unset key is not a reason to invent one:
+// a server that invents one accepts tokens it should refuse.
+func newJWTConfig() (JWTConfig, error) {
+	secret := os.Getenv(jwtSecretEnv)
+	if secret == "" {
+		return JWTConfig{}, fmt.Errorf("%s is not set: refusing to start without a session signing key", jwtSecretEnv)
+	}
+
+	return JWTConfig{
+		SecretKey: []byte(secret),
+		ExpiresIn: 24 * time.Hour,
+	}, nil
+}
+
 func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) {
 	router := mux.NewRouter()
 
+	jwtConfig, err := newJWTConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	server := &Server{
-		forest: core.NewForest("forest"),
-		jwtConfig: JWTConfig{
-			SecretKey: []byte("your-secret-key"), // TODO: Add certificate management to handle this securely
-			ExpiresIn: 24 * time.Hour,
-		},
-		logger: types.NewLogger(),
+		forest:    core.NewForest("forest"),
+		jwtConfig: jwtConfig,
+		logger:    types.NewLogger(),
 		server: &http.Server{
 			Addr:    ":" + config.Process.ServerPort,
 			Handler: router,
@@ -33,7 +57,7 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 
 	// Create admin user for new database
 	coreUser := core.User{
-		ID:           core.GenerateID(),
+		ID:           core.GenerateUserID(),
 		Username:     adminUser.Username,
 		Email:        adminUser.Email,
 		Organization: adminUser.Organization,
@@ -50,7 +74,7 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 		return nil, err
 	}
 
-	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
+	if err := server.writeChangesToFile(server.statePath()); err != nil {
 		server.logger.Failure("failed to save state after user creation: %v", err)
 		return nil, err
 	}
@@ -64,13 +88,15 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 func LoadServer(config types.ServerConfig) (*Server, error) {
 	router := mux.NewRouter()
 
+	jwtConfig, err := newJWTConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	server := &Server{
-		forest: core.NewForest("forest"),
-		jwtConfig: JWTConfig{
-			SecretKey: []byte("your-secret-key"), // TODO: Determine on how to handle key securely
-			ExpiresIn: 24 * time.Hour,
-		},
-		logger: types.NewLogger(),
+		forest:    core.NewForest("forest"),
+		jwtConfig: jwtConfig,
+		logger:    types.NewLogger(),
 		server: &http.Server{
 			Addr:    ":" + config.Process.ServerPort,
 			Handler: router,
@@ -106,6 +132,7 @@ func (s *Server) Start() error {
 	router := mux.NewRouter()
 
 	// Public routes
+	router.HandleFunc("/health", s.handleHealth).Methods("GET")
 	router.HandleFunc("/login", s.handleLogin).Methods("POST")
 	router.HandleFunc("/refresh", s.handleRefreshToken).Methods("POST")
 	router.HandleFunc("/users/create", s.handleCreateUser).Methods("POST")

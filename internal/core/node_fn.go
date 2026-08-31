@@ -3,12 +3,37 @@ package core
 import (
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"time"
 )
 
-// GenerateID generates a unique ID for a user
-func GenerateID() string {
-	return fmt.Sprintf("user-%d", time.Now().UnixNano())
+// The content a time-tracking entry carries. These are SENTINELS, not prose: GetTimeTrackingSummary
+// pairs a start with a stop by matching on them exactly, so the writer and the reader have to name
+// the same thing. They disagreed ("stop_time_entry" written, "end_time_entry" read), which meant a
+// summary could never pair anything and time tracking reported nothing at all.
+const (
+	TimeEntryStart = "start_time_entry"
+	TimeEntryStop  = "stop_time_entry"
+)
+
+// idSequence disambiguates two ids minted in the same nanosecond, which creating a path of nodes
+// in one pass routinely does.
+var idSequence atomic.Uint64
+
+// generateID builds a unique identifier under a prefix naming what kind of thing it identifies.
+func generateID(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), idSequence.Add(1))
+}
+
+// GenerateUserID generates a unique ID for a user.
+func GenerateUserID() string {
+	return generateID("user")
+}
+
+// GenerateNodeID generates a unique ID for a node. Nodes used to be minted by the user generator,
+// so every node in the forest carried a "user-" prefix.
+func GenerateNodeID() string {
+	return generateID("node")
 }
 
 // StartEvent starts a new event or schedules it for the future
@@ -203,7 +228,7 @@ func (n *Node) StartTimeTracking(userID string) (*Entry, error) {
 	entry := Entry{
 		Timestamp: time.Now(),
 		UserID:    userID,
-		Content:   "start_time_entry",
+		Content:   TimeEntryStart,
 	}
 
 	n.Entries = append(n.Entries, entry)
@@ -223,7 +248,7 @@ func (n *Node) StopTimeTracking(userID string) (*Entry, error) {
 	entry := Entry{
 		Timestamp: time.Now(),
 		UserID:    userID,
-		Content:   "stop_time_entry",
+		Content:   TimeEntryStop,
 	}
 
 	n.Entries = append(n.Entries, entry)

@@ -32,8 +32,8 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	server.logger.Enter("CreateNode")
 	defer server.logger.Exit("CreateNode")
 
-	userID, ok := r.Context().Value("user_id").(string)
-	if !ok || userID == "" {
+	userID, ok := userIDFrom(r)
+	if !ok {
 		http.Error(w, "No user in session", http.StatusUnauthorized)
 		return
 	}
@@ -61,7 +61,7 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := server.writeChangesToFile(server.forest, server.statePath()); err != nil {
+	if err := server.writeChangesToFile(server.statePath()); err != nil {
 		http.Error(w, "Failed to save state", http.StatusInternalServerError)
 		return
 	}
@@ -100,13 +100,15 @@ func (server *Server) createNodePath(path string, nodeType core.NodeType, userID
 		}
 
 		// Only the last segment is what the client asked for; an ancestor holds a child, which
-		// makes it a branch whatever the request said.
-		childType := core.BranchNode
+		// makes it a branch whatever the request said — and an empty leaf already sitting on an
+		// ancestor segment is promoted to one rather than blocking the path.
+		var child *core.Node
+		var err error
 		if i == len(parts)-1 {
-			childType = nodeType
+			child, err = parent.AddChildNode(part, nodeType, userID)
+		} else {
+			child, err = parent.AddBranchChild(part, userID)
 		}
-
-		child, err := parent.AddChildNode(part, childType, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -144,6 +146,10 @@ func statusForNodeError(err error) int {
 	case strings.Contains(err.Error(), "insufficient permissions"):
 		return http.StatusForbidden
 	case strings.Contains(err.Error(), "already exists"):
+		return http.StatusConflict
+	// A leaf that records something cannot become a branch. That is a conflict with what is already
+	// there, not a malformed request.
+	case strings.Contains(err.Error(), "cannot add a child to leaf node"):
 		return http.StatusConflict
 	default:
 		return http.StatusBadRequest

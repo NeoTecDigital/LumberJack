@@ -63,6 +63,16 @@ func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// userIDFrom reads the caller that authMiddleware put in the request context.
+//
+// The unchecked `r.Context().Value("user_id").(string)` this replaces PANICKED on a nil interface
+// conversion whenever a handler was reached without one, which takes the whole process down instead
+// of answering 401.
+func userIDFrom(r *http.Request) (string, bool) {
+	userID, ok := r.Context().Value("user_id").(string)
+	return userID, ok && userID != ""
+}
+
 // getNodeFromPath traverses the forest to find a node by its path
 func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	// Try cache first
@@ -412,9 +422,13 @@ func (server *Server) worker() {
 	}
 }
 
-// Example of using the queue for an API call
+// queuedGetNode reads a node through the worker pool.
+//
+// The callback used to wrap its answer in a SECOND APIResponse, which the worker then stored in the
+// Data field of the one it sends back. So Data was never a *core.Node and the unchecked assertion
+// here panicked on every call — GET /forest/tree took the process down rather than answering.
 func (server *Server) queuedGetNode(path string) (*core.Node, error) {
-	responseChan := make(chan APIResponse)
+	responseChan := make(chan APIResponse, 1)
 
 	request := APIRequest{
 		Type: "GET_NODE",
@@ -422,9 +436,9 @@ func (server *Server) queuedGetNode(path string) (*core.Node, error) {
 		Callback: func(forest *core.Node) interface{} {
 			node, err := server.getNodeFromPath(path)
 			if err != nil {
-				return APIResponse{Error: err}
+				return err
 			}
-			return APIResponse{Data: node}
+			return node
 		},
 		Response: responseChan,
 	}
@@ -436,5 +450,12 @@ func (server *Server) queuedGetNode(path string) (*core.Node, error) {
 		return nil, response.Error
 	}
 
-	return response.Data.(*core.Node), nil
+	switch result := response.Data.(type) {
+	case error:
+		return nil, result
+	case *core.Node:
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unexpected response reading node %q", path)
+	}
 }
