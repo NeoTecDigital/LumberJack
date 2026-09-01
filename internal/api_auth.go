@@ -32,39 +32,10 @@ func (server *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request struct {
-		Username string `json:"username"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		server.logger.Failure("Failed to decode request: %v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// A user with no name cannot be logged in as and cannot be told apart from the next one, and a
-	// user with no password is an account whose credential is the empty string.
-	if strings.TrimSpace(request.Username) == "" {
-		http.Error(w, "username is required", http.StatusBadRequest)
-		return
-	}
-	if request.Password == "" {
-		http.Error(w, "password is required", http.StatusBadRequest)
-		return
-	}
-
-	// Create new user
-	user := core.User{
-		ID:       core.GenerateUserID(),
-		Username: request.Username,
-		Email:    request.Email,
-	}
-
-	if err := user.SetPassword(request.Password); err != nil {
-		server.logger.Failure("Failed to set password: %v", err)
-		http.Error(w, "Failed to set password", http.StatusInternalServerError)
+	user, err := decodeNewUser(r)
+	if err != nil {
+		server.logger.Failure("Failed to read the new user: %v", err)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -82,6 +53,38 @@ func (server *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	server.logger.Success("User created successfully")
+}
+
+// decodeNewUser reads the account a request asks for, with its credential already hashed.
+func decodeNewUser(r *http.Request) (core.User, error) {
+	var request struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		return core.User{}, apiErrorf(http.StatusBadRequest, "%v", err)
+	}
+
+	// A user with no name cannot be logged in as and cannot be told apart from the next one, and a
+	// user with no password is an account whose credential is the empty string.
+	if strings.TrimSpace(request.Username) == "" {
+		return core.User{}, apiErrorf(http.StatusBadRequest, "username is required")
+	}
+	if request.Password == "" {
+		return core.User{}, apiErrorf(http.StatusBadRequest, "password is required")
+	}
+
+	user := core.User{
+		ID:       core.GenerateUserID(),
+		Username: request.Username,
+		Email:    request.Email,
+	}
+	if err := user.SetPassword(request.Password); err != nil {
+		return core.User{}, apiErrorf(http.StatusInternalServerError, "Failed to set password")
+	}
+	return user, nil
 }
 
 // Add new handlers

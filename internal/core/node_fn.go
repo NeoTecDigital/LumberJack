@@ -272,50 +272,58 @@ func (n *Node) CompareEvents(plannedEventID, actualEventID string) (bool, error)
 		return false, fmt.Errorf("one or both events not found: plannedEventID=%s, actualEventID=%s", plannedEventID, actualEventID)
 	}
 
-	// Initialize a slice to hold differences
-	var differences []string
-
-	// Compare StartTime
-	if (plannedEvent.StartTime == nil && actualEvent.StartTime != nil) || (plannedEvent.StartTime != nil && actualEvent.StartTime == nil) {
-		differences = append(differences, "StartTime differs")
-	} else if plannedEvent.StartTime != nil && actualEvent.StartTime != nil && !plannedEvent.StartTime.Equal(*actualEvent.StartTime) {
-		differences = append(differences, fmt.Sprintf("StartTime differs: planned=%v, actual=%v", *plannedEvent.StartTime, *actualEvent.StartTime))
-	}
-
-	// Compare EndTime
-	if (plannedEvent.EndTime == nil && actualEvent.EndTime != nil) || (plannedEvent.EndTime != nil && actualEvent.EndTime == nil) {
-		differences = append(differences, "EndTime differs")
-	} else if plannedEvent.EndTime != nil && actualEvent.EndTime != nil && !plannedEvent.EndTime.Equal(*actualEvent.EndTime) {
-		differences = append(differences, fmt.Sprintf("EndTime differs: planned=%v, actual=%v", *plannedEvent.EndTime, *actualEvent.EndTime))
-	}
-
-	// Compare Status
-	if plannedEvent.Status != actualEvent.Status {
-		differences = append(differences, fmt.Sprintf("Status differs: planned=%s, actual=%s", plannedEvent.Status, actualEvent.Status))
-	}
-
-	// Compare Metadata
-	if !reflect.DeepEqual(plannedEvent.Metadata, actualEvent.Metadata) {
-		differences = append(differences, "Metadata differs")
-	}
-
-	// Compare Entries
-	if len(plannedEvent.Entries) != len(actualEvent.Entries) {
-		differences = append(differences, fmt.Sprintf("Entries count differs: planned=%d, actual=%d", len(plannedEvent.Entries), len(actualEvent.Entries)))
-	} else {
-		for i := range plannedEvent.Entries {
-			if !reflect.DeepEqual(plannedEvent.Entries[i], actualEvent.Entries[i]) {
-				differences = append(differences, fmt.Sprintf("Entry %d differs", i))
-			}
-		}
-	}
-
-	// If there are differences, return them
+	differences := eventDifferences(plannedEvent, actualEvent)
 	if len(differences) > 0 {
 		return false, fmt.Errorf("differences found: %v", differences)
 	}
-
 	return true, nil
+}
+
+// eventDifferences lists every way a plan and what happened disagree.
+func eventDifferences(planned, actual Event) []string {
+	var differences []string
+
+	differences = append(differences, spanDifference("StartTime", planned.StartTime, actual.StartTime)...)
+	differences = append(differences, spanDifference("EndTime", planned.EndTime, actual.EndTime)...)
+
+	if planned.Status != actual.Status {
+		differences = append(differences, fmt.Sprintf("Status differs: planned=%s, actual=%s", planned.Status, actual.Status))
+	}
+	if !reflect.DeepEqual(planned.Metadata, actual.Metadata) {
+		differences = append(differences, "Metadata differs")
+	}
+	return append(differences, entryDifferences(planned.Entries, actual.Entries)...)
+}
+
+// spanDifference compares one end of a span. An end that is set on one side and not the other is a
+// difference in its own right, and there is no value to report for the side that has none.
+func spanDifference(name string, planned, actual *time.Time) []string {
+	switch {
+	case planned == nil && actual == nil:
+		return nil
+	case planned == nil || actual == nil:
+		return []string{name + " differs"}
+	case !planned.Equal(*actual):
+		return []string{fmt.Sprintf("%s differs: planned=%v, actual=%v", name, *planned, *actual)}
+	default:
+		return nil
+	}
+}
+
+// entryDifferences compares the entries. A different COUNT is reported as itself rather than as a
+// list of positions, because past the shorter of the two there is nothing to compare against.
+func entryDifferences(planned, actual []Entry) []string {
+	if len(planned) != len(actual) {
+		return []string{fmt.Sprintf("Entries count differs: planned=%d, actual=%d", len(planned), len(actual))}
+	}
+
+	var differences []string
+	for index := range planned {
+		if !reflect.DeepEqual(planned[index], actual[index]) {
+			differences = append(differences, fmt.Sprintf("Entry %d differs", index))
+		}
+	}
+	return differences
 }
 
 // Add attachment to node

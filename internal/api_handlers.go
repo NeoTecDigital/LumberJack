@@ -310,12 +310,7 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !validEventID(request.EventID) {
-		http.Error(w, eventIDRequired, http.StatusBadRequest)
-		return
-	}
-
-	startTime, endTime, err := plannedSpan(request.StartTime, request.EndTime)
+	startTime, endTime, err := plannedSpan(request.EventID, request.StartTime, request.EndTime)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -342,9 +337,13 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// plannedSpan reads the two ends of a plan. Both are required and both are RFC3339: a plan with no
-// span is not a plan.
-func plannedSpan(start, end string) (time.Time, time.Time, error) {
+// plannedSpan reads what a plan needs: an event to be a plan FOR, and both of its ends. Both ends
+// are required and both are RFC3339 — a plan with no span is not a plan.
+func plannedSpan(eventID, start, end string) (time.Time, time.Time, error) {
+	if !validEventID(eventID) {
+		return time.Time{}, time.Time{}, apiErrorf(http.StatusBadRequest, eventIDRequired)
+	}
+
 	startTime, err := time.Parse(time.RFC3339, start)
 	if err != nil {
 		return time.Time{}, time.Time{}, apiErrorf(http.StatusBadRequest, "Invalid start time format")

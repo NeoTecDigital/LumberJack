@@ -38,19 +38,9 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request struct {
-		Path string `json:"path"`
-		Type string `json:"type"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	nodeType, err := nodeTypeOf(request.Type)
+	path, nodeType, err := decodeNodeRequest(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -59,9 +49,9 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	// persist serializes.
 	var node *core.Node
 	err = server.changeForest(func() error {
-		created, err := server.createNodePath(request.Path, nodeType, userID)
+		created, err := server.createNodePath(path, nodeType, userID)
 		if err != nil {
-			server.logger.Failure("Failed to create node %s: %v", request.Path, err)
+			server.logger.Failure("Failed to create node %s: %v", path, err)
 			return apiErrorf(statusForNodeError(err), "%v", err)
 		}
 		node = created
@@ -72,7 +62,7 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server.publish(mutation(mutationNodeCreated, request.Path))
+	server.publish(mutation(mutationNodeCreated, path))
 
 	// The node itself is NOT the answer: it carries its users, and its users carry password
 	// hashes. What a client needs to go on with is where the thing it just made lives.
@@ -80,10 +70,28 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":   node.ID,
 		"name": node.Name,
-		"path": request.Path,
+		"path": path,
 		"type": nodeTypeName(node.Type),
 	})
-	server.logger.Success("Created node at %s", request.Path)
+	server.logger.Success("Created node at %s", path)
+}
+
+// decodeNodeRequest reads the path a client wants and the type it wants there.
+func decodeNodeRequest(r *http.Request) (string, core.NodeType, error) {
+	var request struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		return "", core.LeafNode, apiErrorf(http.StatusBadRequest, "%v", err)
+	}
+
+	nodeType, err := nodeTypeOf(request.Type)
+	if err != nil {
+		return "", core.LeafNode, apiErrorf(http.StatusBadRequest, "%v", err)
+	}
+	return request.Path, nodeType, nil
 }
 
 // createNodePath walks the path from the root, creating what is not there yet.

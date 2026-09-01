@@ -17,6 +17,11 @@ import (
 
 // plantEvent puts a finished event on a node with times the test chose, so a duration is exact
 // rather than however long the test took to run.
+//
+// CreatedAt is a MONTH AND A DAY BEFORE the event starts, which is what a planned event looks like:
+// the record is entered, and then the work happens. It used to be set to the start time, so every
+// assertion below held whether the code bucketed on when the work happened or on when it was
+// entered — a fixture the test could not fail on, over data the API never produces.
 func plantEvent(t *testing.T, server *Server, path, eventID, category, userID string, start, end time.Time) {
 	t.Helper()
 
@@ -26,14 +31,16 @@ func plantEvent(t *testing.T, server *Server, path, eventID, category, userID st
 	}
 
 	startAt, endAt := start, end
+	enteredAt := start.AddDate(0, -1, -1)
 	node.Events[eventID] = core.Event{
-		StartTime: &startAt,
-		EndTime:   &endAt,
-		Status:    core.EventFinished,
-		Category:  category,
-		CreatedBy: userID,
-		CreatedAt: startAt,
-		Entries:   []core.Entry{{Content: "note", UserID: userID, Timestamp: startAt}},
+		StartTime:  &startAt,
+		EndTime:    &endAt,
+		Status:     core.EventFinished,
+		Category:   category,
+		CreatedBy:  userID,
+		CreatedAt:  enteredAt,
+		ModifiedAt: enteredAt,
+		Entries:    []core.Entry{{Content: "note", UserID: userID, Timestamp: startAt, CreatedAt: enteredAt}},
 	}
 }
 
@@ -272,6 +279,10 @@ func TestAggregateRefusesWhatCannotMeanAnything(t *testing.T) {
 				"where":  map[string]interface{}{"time": map[string]string{"field": "strat_time"}},
 			},
 		},
+		{
+			name:    "unknown bucket field",
+			request: map[string]interface{}{"select": "events", "group": []string{groupMonth}, "bucket_field": "when"},
+		},
 	}
 
 	for _, testCase := range cases {
@@ -356,5 +367,52 @@ func TestTimeBucketsAreUTC(t *testing.T) {
 		if got := timeBucket(lateEvening, unit); got != want {
 			t.Errorf("%s: got %s, want %s", unit, got, want)
 		}
+	}
+}
+
+// /aggregate buckets on WHEN THE WORK HAPPENS, not on when the record of it was made.
+//
+// The time bucketings read candidate.Timestamp, which for an event is its CreatedAt. An event
+// planned for November and entered in October was therefore counted in October: the calendar drew
+// it in the wrong month, and so did every metric over a period. bucket_field names the time a
+// bucketing means, and defaults to the one the surfaces asking the question need.
+func TestAggregateBucketsAnEventOnWhenItHappens(t *testing.T) {
+	server, _ := newStockServer(t)
+	userID := adminID(t, server)
+	path := leafFor(t, server, userID, "work/calendar")
+
+	planned := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	plantEvent(t, server, path, "inspection", "inspection", userID, planned, planned.Add(time.Hour))
+
+	node, err := server.getNodeFromPath(path)
+	if err != nil {
+		t.Fatalf("Failed to find the fixture node: %v", err)
+	}
+
+	happensIn := planned.UTC().Format("2006-01")
+	enteredIn := node.Events["inspection"].CreatedAt.UTC().Format("2006-01")
+	if happensIn == enteredIn {
+		t.Fatalf("The fixture was entered and happens in the same month (%s), so neither bucketing proves anything", happensIn)
+	}
+
+	byDefault := aggregateOf(t, server, userID, map[string]interface{}{
+		"select": "events", "scope": "work", "group": []string{groupMonth},
+	})
+	if count := bucketFor(t, byDefault, map[string]string{groupMonth: happensIn}).Count; count != 1 {
+		t.Errorf("The month the work happens counted %d, want 1", count)
+	}
+	for _, bucket := range byDefault.Buckets {
+		if bucket.Key[groupMonth] == enteredIn {
+			t.Errorf("The event was counted in %s, the month its record was entered", enteredIn)
+		}
+	}
+
+	// The other question is still askable, and has to be asked for.
+	byEntry := aggregateOf(t, server, userID, map[string]interface{}{
+		"select": "events", "scope": "work", "group": []string{groupMonth},
+		"bucket_field": timeFieldCreatedAt,
+	})
+	if count := bucketFor(t, byEntry, map[string]string{groupMonth: enteredIn}).Count; count != 1 {
+		t.Errorf("bucket_field=created_at counted %d in %s, want 1", count, enteredIn)
 	}
 }

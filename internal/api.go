@@ -33,31 +33,47 @@ func newJWTConfig() (JWTConfig, error) {
 	}, nil
 }
 
-func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) {
-	router := mux.NewRouter()
-
+// newServerShell builds what BOTH entrypoints start from: a fresh forest, the signing key, the
+// logger and the HTTP server. NewServer and LoadServer differ in what they put IN the forest, not
+// in how the shell around it is made, and the block was written out twice.
+func newServerShell(config types.ServerConfig) (*Server, error) {
 	jwtConfig, err := newJWTConfig()
 	if err != nil {
 		return nil, err
 	}
 
 	logger, logCloser := newServerLogger(config)
-	server := &Server{
+	return &Server{
 		forest:    core.NewForest("forest"),
 		jwtConfig: jwtConfig,
 		logger:    logger,
 		logCloser: logCloser,
 		server: &http.Server{
 			Addr:    ":" + config.Process.ServerPort,
-			Handler: router,
+			Handler: mux.NewRouter(),
 		},
 		config: config,
-	}
+	}, nil
+}
 
-	server.logger.Enter("NewServer")
-	defer server.logger.Exit("NewServer")
+// startRuntime brings up what a forest needs in order to be SERVED: the read cache, the worker pool
+// the node routes go through, and the mutation stream.
+//
+// A LOADED database needs every one of them just as a new one does. Without them each node-path
+// route nil-panics in getFromCache and Shutdown nil-panics on the queue, which made a restart fatal
+// to the whole /events/* surface.
+func (server *Server) startRuntime() {
+	server.initCache()
+	server.initAPIQueue(5) // Start with 5 workers
+	server.mutations = newMutationStream()
+}
 
-	// Create admin user for new database
+// installAdmin creates the account a fresh install is administered from, and writes the state file
+// it lives in.
+//
+// Nothing is serving yet, so this is the one place the persist is reached without going through
+// changeForest: there is no concurrent request to hold the forest against.
+func (server *Server) installAdmin(adminUser core.User) error {
 	coreUser := core.User{
 		ID:           core.GenerateUserID(),
 		Username:     adminUser.Username,
@@ -68,47 +84,40 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 
 	if err := coreUser.SetPassword(adminUser.Password); err != nil {
 		server.logger.Failure("failed to set admin password: %v", err)
-		return nil, err
+		return err
 	}
-
 	if err := server.forest.AssignUser(coreUser, core.AdminPermission); err != nil {
 		server.logger.Failure("failed to save admin user: %v", err)
-		return nil, err
+		return err
 	}
-
-	// Nothing is serving yet, so this is the one place the persist is reached without going
-	// through changeForest: there is no concurrent request to hold the forest against.
 	if err := server.persistLocked(server.statePath()); err != nil {
 		server.logger.Failure("failed to save state after user creation: %v", err)
-		return nil, err
+		return err
 	}
-
-	server.initCache()
-	server.initAPIQueue(5) // Start with 5 workers
-	server.mutations = newMutationStream()
-
-	return server, nil
+	return nil
 }
 
-func LoadServer(config types.ServerConfig) (*Server, error) {
-	router := mux.NewRouter()
-
-	jwtConfig, err := newJWTConfig()
+func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) {
+	server, err := newServerShell(config)
 	if err != nil {
 		return nil, err
 	}
 
-	logger, logCloser := newServerLogger(config)
-	server := &Server{
-		forest:    core.NewForest("forest"),
-		jwtConfig: jwtConfig,
-		logger:    logger,
-		logCloser: logCloser,
-		server: &http.Server{
-			Addr:    ":" + config.Process.ServerPort,
-			Handler: router,
-		},
-		config: config,
+	server.logger.Enter("NewServer")
+	defer server.logger.Exit("NewServer")
+
+	if err := server.installAdmin(adminUser); err != nil {
+		return nil, err
+	}
+
+	server.startRuntime()
+	return server, nil
+}
+
+func LoadServer(config types.ServerConfig) (*Server, error) {
+	server, err := newServerShell(config)
+	if err != nil {
+		return nil, err
 	}
 
 	server.logger.Enter("LoadServer")
@@ -121,13 +130,7 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	// A LOADED database needs the same cache and worker pool a NEW one gets. Without them every
-	// node-path route nil-panics in getFromCache and Shutdown nil-panics on the queue, which made
-	// a restart fatal to the whole /events/* surface.
-	server.initCache()
-	server.initAPIQueue(5) // Start with 5 workers
-	server.mutations = newMutationStream()
-
+	server.startRuntime()
 	server.logger.Info("Loaded existing database from %s", dbPath)
 	return server, nil
 }

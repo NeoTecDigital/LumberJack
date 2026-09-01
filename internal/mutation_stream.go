@@ -21,6 +21,11 @@ const (
 	mutationEventStarted = "event_started"
 	mutationEventEnded   = "event_ended"
 	mutationEntryAdded   = "entry_added"
+
+	// A file appearing on a node or on an entry, and one going away. api_attachments.go published
+	// NEITHER: upload and delete were the two mutations the feed never mentioned.
+	mutationAttachmentAdded   = "attachment_added"
+	mutationAttachmentRemoved = "attachment_removed"
 )
 
 // mutationEvent is what /stream emits.

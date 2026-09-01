@@ -2,7 +2,6 @@ package internal
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -40,13 +39,18 @@ var groupFields = map[string]func(candidate) string{
 }
 
 // aggregateRequest is POST /aggregate.
+//
+// BucketField names the time the day, week and month groupings read. It is explicit because the two
+// answers are different reports: an event PLANNED for November and entered in September belongs in
+// November on a calendar and in September in a record of what was booked when.
 type aggregateRequest struct {
-	Select string       `json:"select"`
-	Scope  string       `json:"scope"`
-	Depth  *int         `json:"depth"`
-	Where  *whereClause `json:"where"`
-	Group  []string     `json:"group"`
-	Metric []string     `json:"metric"`
+	Select      string       `json:"select"`
+	Scope       string       `json:"scope"`
+	Depth       *int         `json:"depth"`
+	Where       *whereClause `json:"where"`
+	Group       []string     `json:"group"`
+	Metric      []string     `json:"metric"`
+	BucketField string       `json:"bucket_field"`
 }
 
 // bucketView is one group of the answer.
@@ -96,7 +100,7 @@ func (server *Server) runAggregate(userID string, request aggregateRequest) (*ag
 			"select must be %q, %q or %q", selectEvents, selectEntries, selectTime)
 	}
 
-	group, err := compileGrouping(request.Group)
+	group, err := compileGrouping(request.Group, request.BucketField, request.Select)
 	if err != nil {
 		return nil, err
 	}
@@ -117,15 +121,17 @@ func (server *Server) runAggregate(userID string, request aggregateRequest) (*ag
 	return &aggregateResponse{Buckets: bucketize(matches, group, metrics)}, nil
 }
 
-// grouping is a compiled group list: the dimensions, in the order the caller named them.
+// grouping is a compiled group list: the dimensions, in the order the caller named them, and the
+// time a day, week or month among them is read from.
 type grouping struct {
-	dimensions []string
+	dimensions  []string
+	bucketField string
 }
 
-// compileGrouping validates the dimensions.
+// compileGrouping validates the dimensions and the time the bucketings read.
 //
 // An EMPTY group is the whole selection as one bucket, which is what "how many are there" asks for.
-func compileGrouping(dimensions []string) (*grouping, error) {
+func compileGrouping(dimensions []string, bucketField, selecting string) (*grouping, error) {
 	for _, dimension := range dimensions {
 		if _, known := groupFields[dimension]; known {
 			continue
@@ -135,7 +141,27 @@ func compileGrouping(dimensions []string) (*grouping, error) {
 		}
 		return nil, apiErrorf(http.StatusBadRequest, "cannot group by %q", dimension)
 	}
-	return &grouping{dimensions: dimensions}, nil
+
+	if bucketField == "" {
+		return &grouping{dimensions: dimensions, bucketField: defaultBucketField(selecting)}, nil
+	}
+	if !timeFieldsAllowed[bucketField] {
+		return nil, apiErrorf(http.StatusBadRequest, "cannot bucket on %q", bucketField)
+	}
+	return &grouping{dimensions: dimensions, bucketField: bucketField}, nil
+}
+
+// defaultBucketField is the time a bucketing means when the caller does not name one.
+//
+// WHEN THE WORK HAPPENS, not when the record of it was made. An event's span is what a calendar
+// draws and what a report of a period is about, so it is the event's start; an entry has no span —
+// the thing that happened IS the entry — so it is the entry's own timestamp. A closed time span
+// starts when the clock was started.
+func defaultBucketField(selecting string) string {
+	if selecting == selectEntries {
+		return timeFieldTimestamp
+	}
+	return timeFieldStart
 }
 
 // key builds a candidate's bucket key.
@@ -146,7 +172,7 @@ func (g *grouping) key(item candidate) map[string]string {
 			key[dimension] = read(item)
 			continue
 		}
-		key[dimension] = timeBucket(item.Timestamp, dimension)
+		key[dimension] = timeBucket(item.timeOf(g.bucketField), dimension)
 	}
 	return key
 }
@@ -189,7 +215,8 @@ func compileMetrics(metrics []string) ([]string, error) {
 	return metrics, nil
 }
 
-// accumulator is one bucket while it is being filled.
+// accumulator is one bucket while it is being filled. order is its identity, which is what
+// renderBuckets sorts on.
 type accumulator struct {
 	key           map[string]string
 	order         string
@@ -222,12 +249,17 @@ func bucketize(matches []candidate, group *grouping, metrics []string) []bucketV
 	return renderBuckets(buckets, metrics)
 }
 
-// bucketIdentity is the text that identifies a bucket, in the order the caller named the
-// dimensions. It doubles as the sort key, so an answer comes back in the same order every time.
+// bucketIdentity is the text that identifies a bucket: `name=value` for each dimension, in the
+// order the caller named them.
+//
+// It is the map key AND the sort key. There used to be a SECOND identity for the same concept —
+// one built from the values alone in the caller's order to key the map, another from `name=value`
+// in alphabetical order to sort the answer — which is two ways to say what a bucket is, and no
+// reason for them to stay in step.
 func bucketIdentity(dimensions []string, key map[string]string) string {
 	parts := make([]string, 0, len(dimensions))
 	for _, dimension := range dimensions {
-		parts = append(parts, key[dimension])
+		parts = append(parts, dimension+"="+key[dimension])
 	}
 	return strings.Join(parts, "\x1f")
 }
@@ -239,8 +271,16 @@ func renderBuckets(buckets map[string]*accumulator, metrics []string) []bucketVi
 		wants[metric] = true
 	}
 
-	rendered := make([]bucketView, 0, len(buckets))
+	// Ordered by the identity the bucket was keyed on, so an answer comes back the same way every
+	// time: ranging the map alone is deliberately randomized.
+	ordered := make([]*accumulator, 0, len(buckets))
 	for _, bucket := range buckets {
+		ordered = append(ordered, bucket)
+	}
+	sort.Slice(ordered, func(a, b int) bool { return ordered[a].order < ordered[b].order })
+
+	rendered := make([]bucketView, 0, len(ordered))
+	for _, bucket := range ordered {
 		view := bucketView{Key: bucket.key, Count: bucket.count}
 
 		if wants[metricDurationSum] {
@@ -256,25 +296,5 @@ func renderBuckets(buckets map[string]*accumulator, metrics []string) []bucketVi
 		}
 		rendered = append(rendered, view)
 	}
-
-	sort.Slice(rendered, func(a, b int) bool {
-		return bucketIdentityOf(rendered[a]) < bucketIdentityOf(rendered[b])
-	})
 	return rendered
-}
-
-// bucketIdentityOf orders a rendered bucket. The keys are sorted so the order does not depend on
-// which dimension a map happened to hand back first.
-func bucketIdentityOf(view bucketView) string {
-	names := make([]string, 0, len(view.Key))
-	for name := range view.Key {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s=%s", name, view.Key[name]))
-	}
-	return strings.Join(parts, "\x1f")
 }
