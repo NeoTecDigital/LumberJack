@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // LogFileMode is what a log file is created as. The log is operator data — it names users, paths and
@@ -28,8 +29,21 @@ type Logger interface {
 	Exit(name string)
 }
 
+// LogInfo is the logger every entrypoint and every request handler shares.
+//
+// depth is the Enter/Exit nesting the indentation is drawn from, and it is ATOMIC because it is
+// shared: two concurrent requests both bracket their work with Enter and Exit, so a plain int here
+// is a read-modify-write on shared state from every handler at once. That is a data race the
+// detector reports on any two overlapping requests, and its damage outlives the moment — nothing
+// ever recomputes the depth, so a lost increment is permanent and the indentation of a long-lived
+// server grows without bound.
+//
+// It is one counter for the whole process rather than one per request, which is what the
+// indentation always was: interleaved spans from two requests nest into each other. Making it
+// per-request would need the request to be carried into every log call, which is a different
+// change to a different surface.
 type LogInfo struct {
-	depth int
+	depth atomic.Int64
 	out   *log.Logger
 	file  *os.File
 }
@@ -37,7 +51,7 @@ type LogInfo struct {
 // NewLogger returns a logger that writes to the process's standard error, which is where the
 // stdlib default goes.
 func NewLogger() *LogInfo {
-	return &LogInfo{depth: 0, out: log.Default()}
+	return &LogInfo{out: log.Default()}
 }
 
 // NewFileLogger returns a logger that writes to standard error AND to path.
@@ -74,9 +88,8 @@ func NewFileLogger(path string) (*LogInfo, error) {
 	}
 
 	return &LogInfo{
-		depth: 0,
-		out:   log.New(logSink(file), "", log.LstdFlags),
-		file:  file,
+		out:  log.New(logSink(file), "", log.LstdFlags),
+		file: file,
 	}, nil
 }
 
@@ -113,11 +126,36 @@ func (l *LogInfo) writer() *log.Logger {
 	return l.out
 }
 
-func (l *LogInfo) getIndent() string {
-	if l.depth < 0 {
-		l.depth = 0
+// currentDepth is how deep in its Enter/Exit nesting the logger currently is.
+func (l *LogInfo) currentDepth() int {
+	return int(l.depth.Load())
+}
+
+// descend leaves a span, and will not go below zero.
+//
+// The clamp is a COMPARE-AND-SWAP rather than a read, a test and a write: the last of those is what
+// loses an update, and a depth that has drifted is never corrected by anything.
+func (l *LogInfo) descend() {
+	for {
+		depth := l.depth.Load()
+		if depth <= 0 {
+			return
+		}
+		if l.depth.CompareAndSwap(depth, depth-1) {
+			return
+		}
 	}
-	return strings.Repeat("│  ", l.depth)
+}
+
+// getIndent draws the nesting. It READS ONLY: it used to write the depth back to zero when it saw a
+// negative one, which made every Info, Debug and Failure — the read path — a writer of the state
+// every other goroutine was also writing.
+func (l *LogInfo) getIndent() string {
+	depth := l.depth.Load()
+	if depth < 0 {
+		depth = 0
+	}
+	return strings.Repeat("│  ", int(depth))
 }
 
 func (l *LogInfo) log(prefix, format string, args ...interface{}) {
@@ -139,13 +177,11 @@ func (l *LogInfo) Failure(format string, args ...interface{}) {
 
 func (l *LogInfo) Enter(name string) {
 	l.log("┌─", "BEGIN: %s", name)
-	l.depth++
+	l.depth.Add(1)
 }
 
 func (l *LogInfo) Exit(name string) {
-	if l.depth > 0 {
-		l.depth--
-	}
+	l.descend()
 	l.log("└─", "END: %s", name)
 }
 

@@ -1,9 +1,12 @@
 package types
 
 import (
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -162,4 +165,72 @@ func TestStderrLoggerNeedsNoFile(t *testing.T) {
 
 	// A zero value logs rather than panicking on a nil sink.
 	(&LogInfo{}).Info("a message from a zero-value logger")
+}
+
+// LogInfo.depth is shared by every goroutine that logs through the logger, and every request
+// handler does: Enter and Exit bracket handleCreateNode, handleAssignUser, handleCreateUser,
+// handleLogin, persistLocked and loadFromFile. Two concurrent requests therefore read-modify-write
+// the same int with no synchronization at all.
+//
+// The consequence is not only the race report. A lost increment is never recovered — nothing ever
+// recomputes the depth from anything — so on a long-lived server the indentation drifts, and it
+// drifts UPWARD, because a lost decrement is clamped at zero while a lost increment is not.
+
+// discardLogger is a logger with a real *log.Logger and no output, so a test measures the depth
+// arithmetic rather than the cost of writing to a terminal.
+func discardLogger() *LogInfo {
+	return &LogInfo{out: log.New(io.Discard, "", 0)}
+}
+
+// Balanced spans leave the depth where they found it, however many goroutines ran them.
+func TestLoggerDepthSurvivesConcurrentSpans(t *testing.T) {
+	logger := discardLogger()
+
+	const goroutines = 16
+	const spans = 50000
+
+	var waiting sync.WaitGroup
+	for worker := 0; worker < goroutines; worker++ {
+		waiting.Add(1)
+		go func() {
+			defer waiting.Done()
+			for span := 0; span < spans; span++ {
+				logger.Enter("span")
+				logger.Exit("span")
+			}
+		}()
+	}
+	waiting.Wait()
+
+	if depth := logger.currentDepth(); depth != 0 {
+		t.Errorf("%d goroutines x %d balanced spans left depth=%d, want 0", goroutines, spans, depth)
+	}
+}
+
+// The read path does not write. getIndent used to reset the depth to zero when it saw a negative
+// one, which made every Info, Debug and Failure a writer of shared state.
+func TestLoggerIndentDoesNotWriteOnTheReadPath(t *testing.T) {
+	logger := discardLogger()
+
+	logger.Enter("outer")
+	logger.Enter("inner")
+	before := logger.currentDepth()
+
+	var waiting sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		waiting.Add(1)
+		go func() {
+			defer waiting.Done()
+			for line := 0; line < 20000; line++ {
+				logger.Info("a line")
+			}
+		}()
+	}
+	waiting.Wait()
+
+	if after := logger.currentDepth(); after != before {
+		t.Errorf("Logging %d lines moved the depth from %d to %d", 8*20000, before, after)
+	}
+	logger.Exit("inner")
+	logger.Exit("outer")
 }
