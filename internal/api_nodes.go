@@ -54,15 +54,21 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := server.createNodePath(request.Path, nodeType, userID)
+	// Creating the path and persisting it are ONE exclusive hold on the forest: createNodePath
+	// walks and writes the Children map of every node on the path, which is the same map the
+	// persist serializes.
+	var node *core.Node
+	err = server.changeForest(func() error {
+		created, err := server.createNodePath(request.Path, nodeType, userID)
+		if err != nil {
+			server.logger.Failure("Failed to create node %s: %v", request.Path, err)
+			return apiErrorf(statusForNodeError(err), "%v", err)
+		}
+		node = created
+		return nil
+	})
 	if err != nil {
-		server.logger.Failure("Failed to create node %s: %v", request.Path, err)
-		http.Error(w, err.Error(), statusForNodeError(err))
-		return
-	}
-
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		writeAPIError(w, err)
 		return
 	}
 

@@ -69,23 +69,33 @@ func (server *Server) worker() {
 	}
 }
 
-// queuedGetNode reads a node through the worker pool.
+// queuedNodeView reads a node through the worker pool and PROJECTS it there.
 //
 // The callback used to wrap its answer in a SECOND APIResponse, which the worker then stored in the
 // Data field of the one it sends back. So Data was never a *core.Node and the unchecked assertion
 // here panicked on every call — GET /forest/tree took the process down rather than answering.
-func (server *Server) queuedGetNode(path string) (*core.Node, error) {
+//
+// What comes back is a VIEW, not a live node. Handing a *core.Node out of the read hold and
+// projecting it in the handler afterwards would walk the maps of a node another request is free to
+// be writing into, which is the whole defect forest_lock.go exists to close. The hold is taken here
+// rather than in the handler because the handler's goroutine is not the one that does the reading.
+func (server *Server) queuedNodeView(path string) (nodeView, error) {
 	responseChan := make(chan APIResponse, 1)
 
 	request := APIRequest{
 		Type: "GET_NODE",
 		Path: path,
 		Callback: func(forest *core.Node) interface{} {
-			node, err := server.getNodeFromPath(path)
-			if err != nil {
-				return err
-			}
-			return node
+			var result interface{}
+			server.readForest(func() {
+				node, err := server.getNodeFromPath(path)
+				if err != nil {
+					result = err
+					return
+				}
+				result = newNodeView(node)
+			})
+			return result
 		},
 		Response: responseChan,
 	}
@@ -94,15 +104,15 @@ func (server *Server) queuedGetNode(path string) (*core.Node, error) {
 	response := <-responseChan
 
 	if response.Error != nil {
-		return nil, response.Error
+		return nodeView{}, response.Error
 	}
 
 	switch result := response.Data.(type) {
 	case error:
-		return nil, result
-	case *core.Node:
+		return nodeView{}, result
+	case nodeView:
 		return result, nil
 	default:
-		return nil, fmt.Errorf("unexpected response reading node %q", path)
+		return nodeView{}, fmt.Errorf("unexpected response reading node %q", path)
 	}
 }

@@ -2,8 +2,6 @@ package internal
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -44,33 +42,20 @@ func (server *Server) handleAssignUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := server.forest.GetNode(request.Path)
+	err := server.changeNode(request.Path, userID, core.AdminPermission, func(node *core.Node) error {
+		assignee := core.User{ID: request.AssigneeID}
+		if err := node.AssignUser(assignee, request.Permission); err != nil {
+			return apiErrorf(http.StatusBadRequest, "%v", err)
+		}
+
+		node.AddActivity("assign_user", map[string]interface{}{
+			"assignee_id": request.AssigneeID,
+			"permission":  request.Permission,
+		}, userID)
+		return nil
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	// Check if user has admin permission
-	if !node.CheckPermission(userID, core.AdminPermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	assigneeUser := core.User{ID: request.AssigneeID}
-	if err := node.AssignUser(assigneeUser, request.Permission); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Log activity
-	node.AddActivity("assign_user", map[string]interface{}{
-		"assignee_id": request.AssigneeID,
-		"permission":  request.Permission,
-	}, userID)
-
-	// Write changes to file
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -101,28 +86,23 @@ func (server *Server) handleStartEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := server.getNodeFromPath(request.Path)
+	// The lookup, the permission check, the start and the persist are ONE exclusive hold on the
+	// forest. Split apart, the persist serialized a graph other requests were writing into, and the
+	// event this route had just acknowledged could be dropped out of the map it was inserted in.
+	// See forest_lock.go.
+	//
+	// The permission is checked HERE as well as inside StartEvent. core.StartEvent does close the
+	// hole, but it closes it by returning an error, and every error out of it was reported as 500 —
+	// so a refusal was indistinguishable from a server fault, and disagreed with /events/plan and
+	// /events/end.
+	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
+		if err := node.StartEvent(request.EventID, userID, nil, nil, request.Metadata); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "Start event error: %v", err)
+		}
+		return nil
+	})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Path error: %v", err), http.StatusNotFound)
-		return
-	}
-
-	// Checked HERE as well as inside StartEvent. core.StartEvent does close the hole, but it closes
-	// it by returning an error, and every error out of it was reported as 500 — so a refusal was
-	// indistinguishable from a server fault, and disagreed with /events/plan and /events/end.
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	if err := node.StartEvent(request.EventID, userID, nil, nil, request.Metadata); err != nil {
-		http.Error(w, fmt.Sprintf("Start event error: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Save state after event creation
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -147,26 +127,16 @@ func (server *Server) handleEndEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := server.getNodeFromPath(request.Path)
+	// Persisted inside the hold for the same reason a planned event is: an end that is never
+	// written is an event that comes back ongoing on the next start.
+	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
+		if err := node.EndEvent(request.EventID, userID); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "%v", err)
+		}
+		return nil
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	if err := node.EndEvent(request.EventID, userID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Persisted for the same reason a planned event is: an end that is never written is an event
-	// that comes back ongoing on the next start.
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -189,45 +159,30 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		log.Printf("Failed to decode request: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Looking for node at path: %s", request.Path)
-	node, err := server.getNodeFromPath(request.Path)
-	if err != nil {
-		log.Printf("Failed to get node: %v", err)
-		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
 	// The same explicit check, for the same reason: AppendToEvent refuses without write permission
 	// and its refusal was answered as 500.
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
+	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
+		entry := core.Entry{
+			Content:   request.Content,
+			Metadata:  request.Metadata,
+			UserID:    userID,
+			Timestamp: time.Now(),
+			CreatedBy: userID,
+			CreatedAt: time.Now(),
+		}
 
-	log.Printf("Appending to event %s", request.EventID)
-	entry := core.Entry{
-		Content:   request.Content,
-		Metadata:  request.Metadata,
-		UserID:    userID,
-		Timestamp: time.Now(),
-		CreatedBy: userID,
-		CreatedAt: time.Now(),
-	}
+		if err := node.AppendToEvent(request.EventID, userID, entry, request.Metadata); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "Failed to append to event: %v", err)
+		}
 
-	if err := node.AppendToEvent(request.EventID, userID, entry, request.Metadata); err != nil {
-		log.Printf("Failed to append to event: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to append to event: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		log.Printf("Failed to save state: %v", err)
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		return nil
+	})
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
@@ -256,38 +211,51 @@ func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	node, err := server.getNodeFromPath(request.Path)
+	var entries []core.Entry
+	err := server.readNode(request.Path, userID, core.ReadPermission, func(node *core.Node) error {
+		found, err := node.GetEventEntries(request.EventID)
+		if err != nil {
+			return apiErrorf(http.StatusInternalServerError, "%v", err)
+		}
+		entries = found
+		return nil
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeAPIError(w, err)
 		return
 	}
 
-	if !node.CheckPermission(userID, core.ReadPermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	entries, err := node.GetEventEntries(request.EventID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
+	// PROJECTED, and encoded outside the hold: an entry carries attachments, and an attachment
+	// carries the file's bytes.
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(entries)
+	json.NewEncoder(w).Encode(newEntryViews(entries))
 }
 
 // HTTP handler for getting tree
 func (server *Server) handleGetForest(w http.ResponseWriter, r *http.Request) {
 	// PROJECTED, not encoded directly: a node carries its users and a user carries a bcrypt hash.
+	//
+	// The projection is built under the READ hold and encoded outside it. Projecting walks every
+	// map in the graph, which is exactly the read that must not run beside a mutation; encoding is
+	// then over a value nothing else can reach, so a slow client cannot hold the forest.
+	var view nodeView
+	server.readForest(func() {
+		view = newNodeView(server.forest)
+	})
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(newNodeView(server.forest))
+	json.NewEncoder(w).Encode(view)
 }
 
 // HTTP handler for getting users
 func (server *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
+	var views []userView
+	server.readForest(func() {
+		views = newUserViews(server.forest.Users)
+	})
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(newUserViews(server.forest.Users))
+	json.NewEncoder(w).Encode(views)
 }
 
 func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
@@ -327,28 +295,18 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := server.getNodeFromPath(request.Path)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
 	// Checked HERE as well as inside PlanEvent, so that "you may not" answers 403 rather than the
-	// 500 every refusal used to be reported as.
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	if err := node.PlanEvent(request.EventID, userID, &startTime, &endTime, request.Metadata); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// PERSISTED. A planned event that is never written to the state file is gone on the next start,
-	// which is the whole span of time a plan is for.
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+	// 500 every refusal used to be reported as. PERSISTED inside the same hold: a planned event
+	// that is never written to the state file is gone on the next start, which is the whole span of
+	// time a plan is for.
+	err = server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
+		if err := node.PlanEvent(request.EventID, userID, &startTime, &endTime, request.Metadata); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "%v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
@@ -359,14 +317,17 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 func (server *Server) handleGetTree(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 
-	node, err := server.queuedGetNode(path)
+	// The projection is built inside the queue callback, which is where the forest is held for
+	// reading. Handing a *core.Node back out of the hold and projecting it afterwards would be
+	// projecting a node another request is free to be changing.
+	view, err := server.queuedNodeView(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(newNodeView(node))
+	json.NewEncoder(w).Encode(view)
 }
 
 // HTTP handler for getting server settings
@@ -400,15 +361,16 @@ func (server *Server) handleUpdateServerSettings(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Use the UpdateSettings helper instead of direct assignment
-	if err := server.UpdateSettings(userID, settings); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Save state after settings update
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+	// Use the UpdateSettings helper instead of direct assignment. It walks the root's user list,
+	// so it runs inside the hold like every other change to the forest.
+	err := server.changeForest(func() error {
+		if err := server.UpdateSettings(userID, settings); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "Failed to update settings: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 

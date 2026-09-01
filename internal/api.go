@@ -76,7 +76,9 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 		return nil, err
 	}
 
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
+	// Nothing is serving yet, so this is the one place the persist is reached without going
+	// through changeForest: there is no concurrent request to hold the forest against.
+	if err := server.persistLocked(server.statePath()); err != nil {
 		server.logger.Failure("failed to save state after user creation: %v", err)
 		return nil, err
 	}

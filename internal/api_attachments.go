@@ -34,18 +34,6 @@ func (server *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	path := r.FormValue("path")
-	node, err := server.forest.GetNode(path)
-	if err != nil {
-		http.Error(w, "Node not found", http.StatusNotFound)
-		return
-	}
-
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
 	attachment := &core.Attachment{
 		ID:         fmt.Sprintf("att-%d", time.Now().UnixNano()),
 		Name:       header.Filename,
@@ -55,19 +43,24 @@ func (server *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Requ
 		UploadedAt: time.Now(),
 	}
 
-	if err := node.AddAttachment(attachment, userID); err != nil {
-		http.Error(w, "Failed to add attachment to node", http.StatusInternalServerError)
+	// getNodeFromPath by way of changeNode, not forest.GetNode: the form field is a PATH and
+	// GetNode matches a generated node id, so this route could only ever answer "Node not found".
+	err = server.changeNode(r.FormValue("path"), userID, core.WritePermission, func(node *core.Node) error {
+		if err := node.AddAttachment(attachment, userID); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "Failed to add attachment to node")
+		}
+		return nil
+	})
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
-	// Save state after attachment upload
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
-		return
-	}
-
+	// PROJECTED: core.Attachment carries the file's bytes in a field tagged `json:"data"`, so
+	// encoding the stored value handed the uploader its own upload back inside the receipt — and
+	// every other route that echoes one would hand back somebody else's.
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(attachment)
+	json.NewEncoder(w).Encode(newAttachmentView(*attachment))
 }
 
 // handleGetAttachment retrieves an attachment
@@ -81,20 +74,20 @@ func (server *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request
 	attachmentID := vars["id"]
 	path := r.URL.Query().Get("path")
 
-	node, err := server.forest.GetNode(path)
-	if err != nil {
-		http.Error(w, "Node not found", http.StatusNotFound)
-		return
-	}
-
-	if !node.CheckPermission(userID, core.ReadPermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	attachment, err := node.GetAttachment(attachmentID)
-	if err != nil {
-		http.Error(w, "Attachment not found", http.StatusNotFound)
+	// The bytes are COPIED out under the read hold and written afterwards. This is the one route
+	// whose whole purpose is the file's contents, so it is also the one place they may leave.
+	var attachment *core.Attachment
+	if err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
+		stored, err := node.GetAttachment(attachmentID)
+		if err != nil {
+			return apiErrorf(http.StatusNotFound, "Attachment not found")
+		}
+		copied := *stored
+		copied.Data = append([]byte(nil), stored.Data...)
+		attachment = &copied
+		return nil
+	}); err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
@@ -115,16 +108,6 @@ func (server *Server) handleAddEntryAttachment(w http.ResponseWriter, r *http.Re
 	entryIndex := vars["entryIndex"]
 
 	path := r.URL.Query().Get("path")
-	node, err := server.forest.GetNode(path)
-	if err != nil {
-		http.Error(w, "Node not found", http.StatusNotFound)
-		return
-	}
-
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
 
 	// Parse multipart form
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
@@ -151,19 +134,18 @@ func (server *Server) handleAddEntryAttachment(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := node.AddEntryAttachment(eventID, index, attachment, userID); err != nil {
-		http.Error(w, "Failed to add attachment to entry", http.StatusInternalServerError)
-		return
-	}
-
-	// Save state
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+	if err := server.changeNode(path, userID, core.WritePermission, func(node *core.Node) error {
+		if err := node.AddEntryAttachment(eventID, index, attachment, userID); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "Failed to add attachment to entry")
+		}
+		return nil
+	}); err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(attachment)
+	json.NewEncoder(w).Encode(newAttachmentView(*attachment))
 }
 
 // handleDeleteAttachment deletes an attachment
@@ -177,25 +159,13 @@ func (server *Server) handleDeleteAttachment(w http.ResponseWriter, r *http.Requ
 	attachmentID := vars["id"]
 	path := r.URL.Query().Get("path")
 
-	node, err := server.forest.GetNode(path)
-	if err != nil {
-		http.Error(w, "Node not found", http.StatusNotFound)
-		return
-	}
-
-	if !node.CheckPermission(userID, core.WritePermission) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	if err := node.DeleteAttachment(attachmentID, userID); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete attachment: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Save state after deletion
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+	if err := server.changeNode(path, userID, core.WritePermission, func(node *core.Node) error {
+		if err := node.DeleteAttachment(attachmentID, userID); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "Failed to delete attachment: %v", err)
+		}
+		return nil
+	}); err != nil {
+		writeAPIError(w, err)
 		return
 	}
 

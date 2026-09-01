@@ -68,17 +68,15 @@ func (server *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add user to the root node
-	if err := server.forest.AssignUser(user, core.ReadPermission); err != nil {
-		server.logger.Failure("Failed to assign user: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Save state
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		server.logger.Failure("Failed to save state: %v", err)
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+	// Add user to the root node, under the same exclusive hold that persists it.
+	if err := server.changeForest(func() error {
+		if err := server.forest.AssignUser(user, core.ReadPermission); err != nil {
+			return apiErrorf(http.StatusInternalServerError, "%v", err)
+		}
+		return nil
+	}); err != nil {
+		server.logger.Failure("Failed to create user: %v", err)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -189,7 +187,11 @@ func (server *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	user, err := server.forest.GetUserProfile(userID)
+	var user *core.User
+	var err error
+	server.readForest(func() {
+		user, err = server.forest.GetUserProfile(userID)
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

@@ -3,6 +3,8 @@ package internal
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/vaziolabs/lumberjack/internal/core"
 )
 
 // The time-tracking routes: a span is opened, closed, and reported.
@@ -24,22 +26,16 @@ func (server *Server) handleStartTimeTracking(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// getNodeFromPath, not GetNode: the field is a PATH, and GetNode matches a node id. Node ids
-	// are generated, so no client can name one — these routes could only ever 404.
-	node, err := server.getNodeFromPath(request.Path)
+	// changeNode resolves a PATH, not a node id: GetNode matches ids, ids are generated, and no
+	// client can name one — these routes could only ever 404 when they used it.
+	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
+		if _, err := node.StartTimeTracking(userID); err != nil {
+			return apiErrorf(http.StatusForbidden, "%v", err)
+		}
+		return nil
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	if _, err := node.StartTimeTracking(userID); err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
-	}
-
-	// Write changes to file
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -63,25 +59,26 @@ func (server *Server) handleStopTimeTracking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	node, err := server.getNodeFromPath(request.Path)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	if _, err := node.StopTimeTracking(userID); err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
-	}
-
 	// Saved BEFORE the body is written: writing a body commits a 200, and a failure to persist
-	// after that is a success the caller cannot tell from a real one.
-	if err := server.writeChangesToFile(server.statePath()); err != nil {
-		http.Error(w, "Failed to save state", http.StatusInternalServerError)
+	// after that is a success the caller cannot tell from a real one. The summary is read inside
+	// the same hold, so it reports the span this call just closed and not one a later request
+	// opened.
+	var summary []map[string]interface{}
+	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
+		if _, err := node.StopTimeTracking(userID); err != nil {
+			return apiErrorf(http.StatusForbidden, "%v", err)
+		}
+		summary = node.GetTimeTrackingSummary(userID)
+		return nil
+	})
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
-	summary := node.GetTimeTrackingSummary(userID)
+	if summary == nil {
+		summary = []map[string]interface{}{}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(summary)
 }
@@ -98,13 +95,16 @@ func (server *Server) handleGetTimeTracking(w http.ResponseWriter, r *http.Reque
 	// so decoding one made the route unreachable — every caller got 400 "EOF".
 	path := r.URL.Query().Get("path")
 
-	node, err := server.getNodeFromPath(path)
+	var summary []map[string]interface{}
+	err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
+		summary = node.GetTimeTrackingSummary(userID)
+		return nil
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeAPIError(w, err)
 		return
 	}
 
-	summary := node.GetTimeTrackingSummary(userID)
 	if summary == nil {
 		summary = []map[string]interface{}{}
 	}

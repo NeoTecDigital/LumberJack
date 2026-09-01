@@ -62,16 +62,19 @@ type APIResponse struct {
 }
 
 type Server struct {
-	forest    *core.Node
-	cache     *Cache
-	apiQueue  *APIQueue
-	mutex     sync.Mutex
-	jwtConfig JWTConfig
-	logger    types.Logger
-	server    *http.Server
-	config    types.ServerConfig
-	logCache  *LogCache
-	lastHash  []byte
+	forest   *core.Node
+	cache    *Cache
+	apiQueue *APIQueue
+	// forestMutex is the ONE lock over the whole forest. Held exclusively across a mutation and
+	// the persist that acknowledges it, shared by everything that reads the graph. See
+	// forest_lock.go for why a per-node mutex cannot stand in for it.
+	forestMutex sync.RWMutex
+	jwtConfig   JWTConfig
+	logger      types.Logger
+	server      *http.Server
+	config      types.ServerConfig
+	logCache    *LogCache
+	lastHash    []byte
 	// logCloser releases the logger's file sink at shutdown. It is nil when the logger only writes
 	// to standard error, which is what an unconfigured log path leaves it doing.
 	logCloser io.Closer
