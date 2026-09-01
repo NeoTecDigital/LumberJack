@@ -51,6 +51,12 @@ func (server *Server) loadFromFile(filename string) error {
 		return fmt.Errorf("error validating data: %v", err)
 	}
 
+	// The DAG is REJOINED before anything can reach it. A node with two parents was written out
+	// under each of them, so it comes back as two objects with one id — see core.Canonicalize.
+	if forks := core.Canonicalize(&loadedForest); forks > 0 {
+		server.logger.Info("Rejoined %d duplicated occurrences of shared nodes while loading the state file", forks)
+	}
+
 	// Important: Copy the loaded forest to server's forest
 	server.forest = &loadedForest
 	// The forest is NOT logged. It carries its users, and its users carry bcrypt hashes; Debug is
