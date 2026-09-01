@@ -74,10 +74,14 @@ type eventView struct {
 }
 
 // nodeView is a node as a client may see one, users projected and children projected recursively.
+//
+// Reference marks a node whose BODY is somewhere else in the same document. The forest is a DAG, so
+// a node with two parents is reached twice; see forestProjector.
 type nodeView struct {
 	ID            string                    `json:"id"`
 	Type          core.NodeType             `json:"type"`
 	Name          string                    `json:"name"`
+	Reference     bool                      `json:"ref,omitempty"`
 	Parents       map[string]string         `json:"parents"`
 	Children      map[string]nodeView       `json:"children"`
 	Events        map[string]eventView      `json:"events"`
@@ -100,7 +104,7 @@ func newUserView(user core.User) userView {
 		Email:        user.Email,
 		Organization: user.Organization,
 		Phone:        user.Phone,
-		Permissions:  user.Permissions,
+		Permissions:  append([]core.Permission(nil), user.Permissions...),
 	}
 }
 
@@ -143,8 +147,8 @@ func newAttachmentViews(attachments map[string]core.Attachment) map[string]attac
 // newEntryView projects one entry.
 func newEntryView(entry core.Entry) entryView {
 	view := entryView{
-		Content:    entry.Content,
-		Metadata:   entry.Metadata,
+		Content:    copyValue(entry.Content),
+		Metadata:   copyMetadataMap(entry.Metadata),
 		UserID:     entry.UserID,
 		Timestamp:  entry.Timestamp,
 		CreatedBy:  entry.CreatedBy,
@@ -174,7 +178,7 @@ func newEventView(event core.Event) eventView {
 		StartTime:  event.StartTime,
 		EndTime:    event.EndTime,
 		Entries:    newEntryViews(event.Entries),
-		Metadata:   event.Metadata,
+		Metadata:   copyMetadataMap(event.Metadata),
 		Status:     event.Status,
 		Category:   event.Category,
 		Frequency:  event.Frequency,
@@ -193,50 +197,4 @@ func newEventViews(events map[string]core.Event) map[string]eventView {
 		views[id] = newEventView(event)
 	}
 	return views
-}
-
-// newNodeView projects a node and everything beneath it.
-func newNodeView(node *core.Node) nodeView {
-	return projectNode(node, map[string]bool{})
-}
-
-// projectNode is newNodeView carrying the set of nodes already on the path it is descending.
-//
-// The forest is a MULTI-PARENT DAG, not a tree: a node can be its own ancestor once an edge is
-// added, and plain recursion down Children then never terminates. A node already on the path is
-// projected without its children, which reports the edge without following it round again.
-func projectNode(node *core.Node, onPath map[string]bool) nodeView {
-	if node == nil {
-		return nodeView{}
-	}
-
-	view := nodeView{
-		ID:            node.ID,
-		Type:          node.Type,
-		Name:          node.Name,
-		Parents:       node.Parents,
-		Children:      make(map[string]nodeView, len(node.Children)),
-		Events:        newEventViews(node.Events),
-		PlannedEvents: newEventViews(node.PlannedEvents),
-		Users:         newUserViews(node.Users),
-		Entries:       newEntryViews(node.Entries),
-		Attachments:   newAttachmentViews(node.Attachments),
-		CreatedBy:     node.CreatedBy,
-		CreatedAt:     node.CreatedAt,
-		ModifiedBy:    node.ModifiedBy,
-		ModifiedAt:    node.ModifiedAt,
-	}
-
-	if onPath[node.ID] {
-		return view
-	}
-
-	onPath[node.ID] = true
-	defer delete(onPath, node.ID)
-
-	for id, child := range node.Children {
-		view.Children[id] = projectNode(child, onPath)
-	}
-
-	return view
 }

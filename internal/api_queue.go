@@ -79,23 +79,24 @@ func (server *Server) worker() {
 // projecting it in the handler afterwards would walk the maps of a node another request is free to
 // be writing into, which is the whole defect forest_lock.go exists to close. The hold is taken here
 // rather than in the handler because the handler's goroutine is not the one that does the reading.
-func (server *Server) queuedNodeView(path string) (nodeView, error) {
+//
+// readNode rather than readForest: it is the one place the lookup, the READ PERMISSION CHECK and
+// the projection all happen under the same hold, and this route had no permission check at all.
+func (server *Server) queuedNodeView(path, userID string) (nodeView, error) {
 	responseChan := make(chan APIResponse, 1)
 
 	request := APIRequest{
 		Type: "GET_NODE",
 		Path: path,
 		Callback: func(forest *core.Node) interface{} {
-			var result interface{}
-			server.readForest(func() {
-				node, err := server.getNodeFromPath(path)
-				if err != nil {
-					result = err
-					return
-				}
-				result = newNodeView(node)
-			})
-			return result
+			var view nodeView
+			if err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
+				view = newNodeView(node, userID)
+				return nil
+			}); err != nil {
+				return err
+			}
+			return view
 		},
 		Response: responseChan,
 	}

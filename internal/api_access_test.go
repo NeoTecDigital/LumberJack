@@ -439,3 +439,100 @@ func statMode(t *testing.T, path string) os.FileMode {
 	}
 	return info.Mode().Perm()
 }
+
+// readerOn grants a user ReadPermission on ONE node and nothing above it.
+//
+// addReadUser grants on the ROOT, which every route then sees on every node by inheritance. That
+// hides the whole question a permission filter exists to answer.
+func readerOn(t *testing.T, server *Server, username, path string) string {
+	t.Helper()
+
+	node, err := server.getNodeFromPath(path)
+	if err != nil {
+		t.Fatalf("Failed to find %s: %v", path, err)
+	}
+
+	user := core.User{ID: core.GenerateUserID(), Username: username}
+	if err := node.AssignUser(user, core.ReadPermission); err != nil {
+		t.Fatalf("Failed to grant read on %s: %v", path, err)
+	}
+	return user.ID
+}
+
+// partitionedForest is a forest with one branch the caller may read and one it may not, and the id
+// of a user granted read on the first of them alone.
+func partitionedForest(t *testing.T, server *Server, adminUserID string) string {
+	t.Helper()
+
+	leafFor(t, server, adminUserID, "org/secret/closed")
+	if code := post(t, server.handleCreateNode, adminUserID, map[string]interface{}{
+		"path": "org/public", "type": "branch",
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Create org/public: got %d, want %d", code, http.StatusOK)
+	}
+
+	readerID := readerOn(t, server, "reader", "org/public")
+	// Created AFTER the grant, so it inherits the reader the way every child inherits its parent's
+	// users. This is the node /query already reports and the listing routes did not.
+	leafFor(t, server, adminUserID, "org/public/open")
+	return readerID
+}
+
+// GET /forest shows a caller what it was granted and nothing else.
+//
+// handleGetForest never called userIDFrom or CheckPermission. /query filters per node; this route
+// answered the WHOLE forest to any valid session, which is a straight read of everybody's data.
+func TestForestListingFiltersByReadPermission(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+	readerID := partitionedForest(t, server, adminUserID)
+
+	body := get(t, server.handleGetForest, readerID, "/forest").Body.String()
+	for _, hidden := range []string{`"secret"`, `"closed"`} {
+		if strings.Contains(body, hidden) {
+			t.Errorf("GET /forest showed %s to a caller holding no permission on it", hidden)
+		}
+	}
+	// Granted deeper than the root, so the node has to survive being reported through two ancestors
+	// the caller may not read. Pruning at the first refusal would hide what was explicitly granted.
+	for _, shown := range []string{`"public"`, `"open"`} {
+		if !strings.Contains(body, shown) {
+			t.Errorf("GET /forest hid %s from the caller it was granted to", shown)
+		}
+	}
+}
+
+// GET /forest/tree refuses a subtree the caller may not read.
+//
+// It asked for no caller at all: any valid session could name any path and be given the subtree.
+func TestTreeRouteRefusesASubtreeTheCallerMayNotRead(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+	readerID := partitionedForest(t, server, adminUserID)
+
+	refused := get(t, server.handleGetTree, readerID, "/forest/tree?path=org/secret")
+	if refused.Code != http.StatusForbidden {
+		t.Errorf("GET /forest/tree on a secret subtree: got %d, want %d: %s",
+			refused.Code, http.StatusForbidden, refused.Body.String())
+	}
+
+	allowed := get(t, server.handleGetTree, readerID, "/forest/tree?path=org/public")
+	if allowed.Code != http.StatusOK {
+		t.Errorf("GET /forest/tree on the granted subtree: got %d, want %d: %s",
+			allowed.Code, http.StatusOK, allowed.Body.String())
+	}
+}
+
+// GET /users is administrative. It listed every account in the install to any valid session.
+func TestUserListingIsAdministrative(t *testing.T) {
+	server, _ := newStockServer(t)
+	adminUserID := adminID(t, server)
+	readerID := partitionedForest(t, server, adminUserID)
+
+	if code := get(t, server.handleGetUsers, readerID, "/users").Code; code != http.StatusForbidden {
+		t.Errorf("GET /users as a non-admin: got %d, want %d", code, http.StatusForbidden)
+	}
+	if code := get(t, server.handleGetUsers, adminUserID, "/users").Code; code != http.StatusOK {
+		t.Errorf("GET /users as the admin: got %d, want %d", code, http.StatusOK)
+	}
+}

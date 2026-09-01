@@ -221,13 +221,16 @@ func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var entries []core.Entry
+	// PROJECTED INSIDE THE HOLD: an entry carries attachments, and an attachment carries the file's
+	// bytes. GetEventEntries copies the SLICE, but every entry in it still points at the forest's
+	// own metadata map, so projecting after the hold was released was a read of a live map.
+	var entries []entryView
 	err := server.readNode(request.Path, userID, core.ReadPermission, func(node *core.Node) error {
 		found, err := node.GetEventEntries(request.EventID)
 		if err != nil {
 			return apiErrorf(http.StatusInternalServerError, "%v", err)
 		}
-		entries = found
+		entries = newEntryViews(found)
 		return nil
 	})
 	if err != nil {
@@ -235,22 +238,33 @@ func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// PROJECTED, and encoded outside the hold: an entry carries attachments, and an attachment
-	// carries the file's bytes.
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(newEntryViews(entries))
+	json.NewEncoder(w).Encode(entries)
 }
 
 // HTTP handler for getting tree
+//
+// FILTERED BY THE CALLER'S PERMISSIONS. It used to ask for no caller at all: POST /query filters
+// every node it reports with CheckPermission, and this route — which returns the same forest, whole
+// — answered all of it to any valid session. A user granted read on one branch was handed every
+// other branch in the install.
 func (server *Server) handleGetForest(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userIDFrom(r)
+	if !ok {
+		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return
+	}
+
 	// PROJECTED, not encoded directly: a node carries its users and a user carries a bcrypt hash.
 	//
 	// The projection is built under the READ hold and encoded outside it. Projecting walks every
-	// map in the graph, which is exactly the read that must not run beside a mutation; encoding is
-	// then over a value nothing else can reach, so a slow client cannot hold the forest.
+	// map in the graph, which is exactly the read that must not run beside a mutation; the view it
+	// produces COPIES every map and slice it exposes, so the encoding afterwards is over a value
+	// nothing else can reach and a slow client cannot hold up a writer. See forest_projection.go —
+	// the copies are the whole reason encoding outside the hold is allowed.
 	var view nodeView
 	server.readForest(func() {
-		view = newNodeView(server.forest)
+		view = newNodeView(server.forest, userID)
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -258,7 +272,15 @@ func (server *Server) handleGetForest(w http.ResponseWriter, r *http.Request) {
 }
 
 // HTTP handler for getting users
+//
+// ADMINISTRATIVE. The list of every account in the install — their names, their emails and what
+// each of them may reach — went to any valid session, which is the reconnaissance step before every
+// other route is tried.
 func (server *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := server.requireAdmin(w, r); !ok {
+		return
+	}
+
 	var views []userView
 	server.readForest(func() {
 		views = newUserViews(server.forest.Users)
@@ -336,15 +358,26 @@ func plannedSpan(start, end string) (time.Time, time.Time, error) {
 }
 
 // HTTP handler for getting a specific tree
+//
+// FILTERED BY THE CALLER'S PERMISSIONS, like GET /forest and for the same reason: this route asked
+// for no caller, so any valid session could name any path and be handed that subtree.
 func (server *Server) handleGetTree(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userIDFrom(r)
+	if !ok {
+		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return
+	}
+
 	path := r.URL.Query().Get("path")
 
 	// The projection is built inside the queue callback, which is where the forest is held for
 	// reading. Handing a *core.Node back out of the hold and projecting it afterwards would be
 	// projecting a node another request is free to be changing.
-	view, err := server.queuedNodeView(path)
+	view, err := server.queuedNodeView(path, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// writeAPIError, not a flat 404: a subtree the caller may not read is a 403, and telling it
+		// apart from "there is no such node" is the difference between a refusal and a lie.
+		writeAPIError(w, err)
 		return
 	}
 

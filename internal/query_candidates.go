@@ -281,20 +281,17 @@ func sortedEventIDs(events map[string]core.Event) []string {
 	return ids
 }
 
-// copyMetadata hands out a copy.
+// copyMetadata hands out a copy, and omits an empty one.
 //
 // The map belongs to the forest. A result that carried the live map would let a caller's JSON
 // encoder read it after the read hold was released, which is the race this phase exists to close.
+// The copy is DEEP, by copyMetadataMap: metadata is arbitrary JSON and a canvas layout is a nested
+// object, which a shallow copy would hand straight back out of the forest.
 func copyMetadata(metadata map[string]interface{}) map[string]interface{} {
 	if len(metadata) == 0 {
 		return nil
 	}
-
-	copied := make(map[string]interface{}, len(metadata))
-	for key, value := range metadata {
-		copied[key] = value
-	}
-	return copied
+	return copyMetadataMap(metadata)
 }
 
 // contentText renders an entry's content for a text search. Content is `interface{}`, so it is a

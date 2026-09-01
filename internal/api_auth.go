@@ -101,17 +101,8 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	server.logger.Info("Attempting login for user: %s", credentials.Username)
-	server.logger.Info("Number of users in system: %d", len(server.forest.Users))
 
-	// Get pointer to user to avoid copying
-	var foundUser *core.User
-	for i := range server.forest.Users {
-		if server.forest.Users[i].Username == credentials.Username {
-			foundUser = &server.forest.Users[i]
-			break
-		}
-	}
-
+	foundUser := server.findUserByName(credentials.Username)
 	if foundUser == nil {
 		server.logger.Failure("User not found: %s", credentials.Username)
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
@@ -138,6 +129,32 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"refresh_token": tokenPair.RefreshToken,
 	})
 	server.logger.Success("Login successful for user %s", foundUser.Username)
+}
+
+// findUserByName looks a credential up, WITH THE FOREST HELD FOR READING.
+//
+// The login route used to range server.forest.Users with no hold at all, while AssignUser appends
+// to that same slice under the exclusive one — an unsynchronized slice read against a concurrent
+// append, which is the defect forest_lock.go exists to close, on the one route every session starts
+// with.
+//
+// It returns a COPY. A pointer into the slice outlives the hold, and the next append can move the
+// backing array out from under it.
+func (server *Server) findUserByName(username string) *core.User {
+	var found *core.User
+	server.readForest(func() {
+		server.logger.Info("Number of users in system: %d", len(server.forest.Users))
+		for index := range server.forest.Users {
+			if server.forest.Users[index].Username != username {
+				continue
+			}
+			copied := server.forest.Users[index]
+			copied.Permissions = append([]core.Permission(nil), copied.Permissions...)
+			found = &copied
+			return
+		}
+	})
+	return found
 }
 
 // Add new handler for token refresh
@@ -187,10 +204,18 @@ func (server *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var user *core.User
+	// PROJECTED INSIDE THE HOLD. GetUserProfile hands back a copy of the User struct, but its
+	// Permissions field is still the forest's own slice — encoding it after the hold was released
+	// was a read of a slice AssignUser appends to.
+	var profile userView
 	var err error
 	server.readForest(func() {
+		var user *core.User
 		user, err = server.forest.GetUserProfile(userID)
+		if err != nil {
+			return
+		}
+		profile = newUserView(*user)
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -199,11 +224,11 @@ func (server *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"username":     user.Username,
-		"email":        user.Email,
-		"organization": user.Organization,
-		"phone":        user.Phone,
-		"permissions":  user.Permissions,
+		"username":     profile.Username,
+		"email":        profile.Email,
+		"organization": profile.Organization,
+		"phone":        profile.Phone,
+		"permissions":  profile.Permissions,
 	})
 }
 
@@ -278,7 +303,13 @@ func (server *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (stri
 		return "", false
 	}
 
-	if !server.forest.CheckPermission(userID, core.AdminPermission) {
+	// Under the read hold: CheckPermission ranges the root's Users, which AssignUser appends to
+	// under the exclusive one.
+	administers := false
+	server.readForest(func() {
+		administers = server.forest.CheckPermission(userID, core.AdminPermission)
+	})
+	if !administers {
 		http.Error(w, "Insufficient permissions", http.StatusForbidden)
 		return "", false
 	}
