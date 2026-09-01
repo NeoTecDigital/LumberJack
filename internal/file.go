@@ -21,6 +21,11 @@ import (
 const stateFileMode os.FileMode = 0600
 
 // loadFromFile loads the forest data from the file.
+//
+// It reads BOTH shapes. The flat node table this program now writes is recognised by the banner in
+// front of its hash; anything without that banner is a file from a build that wrote the forest as
+// nested JSON, and it is read as one. See state_codec.go for why the sniff cannot live inside the
+// document.
 func (server *Server) loadFromFile(filename string) error {
 	server.logger.Enter("loadFromFile")
 	defer server.logger.Exit("loadFromFile")
@@ -31,38 +36,101 @@ func (server *Server) loadFromFile(filename string) error {
 	}
 	defer file.Close()
 
-	// Read hash first. io.ReadFull, not Read: Read is allowed to return fewer bytes than the buffer
-	// holds without erring, and a short read here leaves the rest of the hash zeroed — which fails
-	// the integrity check further down as if the database were corrupt.
-	hash := make([]byte, sha256.Size)
-	if _, err := io.ReadFull(file, hash); err != nil {
+	forest, err := server.readState(file)
+	if err != nil {
 		return err
 	}
 
-	// Read and decompress remaining data
-	data, err := server.loadCompressedData(file)
-	if err != nil {
-		return fmt.Errorf("error loading compressed data: %v", err)
-	}
-
-	// Create a new forest and unmarshal into it
-	var loadedForest core.Node
-	if err := server.validateAndUnmarshal(data, hash, &loadedForest); err != nil {
-		return fmt.Errorf("error validating data: %v", err)
-	}
-
-	// The DAG is REJOINED before anything can reach it. A node with two parents was written out
-	// under each of them, so it comes back as two objects with one id — see core.Canonicalize.
-	if forks := core.Canonicalize(&loadedForest); forks > 0 {
-		server.logger.Info("Rejoined %d duplicated occurrences of shared nodes while loading the state file", forks)
-	}
-
-	// Important: Copy the loaded forest to server's forest
-	server.forest = &loadedForest
+	server.forest = forest
 	// The forest is NOT logged. It carries its users, and its users carry bcrypt hashes; Debug is
 	// ungated and the log file it writes to is the one GET /logs serves.
 	server.logger.Debug("Loaded forest with %d users and %d children", len(server.forest.Users), len(server.forest.Children))
 	return nil
+}
+
+// readState reads whichever shape the file is in and answers the forest it holds.
+func (server *Server) readState(file *os.File) (*core.Node, error) {
+	flat, err := hasStateMagic(file)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := server.readSealedPayload(file)
+	if err != nil {
+		return nil, err
+	}
+
+	if flat {
+		forest, err := decodeState(data)
+		if err != nil {
+			server.logger.Failure("Failed to read the node table: %v", err)
+			return nil, fmt.Errorf("error reading the node table: %v", err)
+		}
+		return forest, nil
+	}
+
+	return server.readNestedState(data)
+}
+
+// readNestedState reads a file written before the node table existed, and REJOINS it.
+//
+// Such a file writes a node once per path to it, so a node with two parents comes back as two
+// objects carrying one id — see core.Canonicalize. The rejoin is exact because every occurrence of
+// one id in such a file is a serialization of the same object.
+func (server *Server) readNestedState(data []byte) (*core.Node, error) {
+	var loadedForest core.Node
+	if err := json.Unmarshal(data, &loadedForest); err != nil {
+		server.logger.Failure("Failed to unmarshal data: %v", err)
+		return nil, fmt.Errorf("error validating data: %v", err)
+	}
+
+	if forks := core.Canonicalize(&loadedForest); forks > 0 {
+		server.logger.Info("Rejoined %d duplicated occurrences of shared nodes while loading the state file", forks)
+	}
+	return &loadedForest, nil
+}
+
+// hasStateMagic reports whether the file begins with the banner, leaving the reader positioned
+// after it when it does and back at the start when it does not.
+//
+// A file SHORTER than the banner is an old file, not a broken one: the old shape's first bytes are
+// a 32-byte hash and a gzip stream, and the smallest of those is well under this length.
+func hasStateMagic(file *os.File) (bool, error) {
+	banner := make([]byte, len(stateMagic))
+	_, err := io.ReadFull(file, banner)
+	switch {
+	case err == nil && string(banner) == stateMagic:
+		return true, nil
+	case err == nil, err == io.EOF, err == io.ErrUnexpectedEOF:
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return false, err
+		}
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// readSealedPayload reads the sha256 header and the compressed document behind it, and refuses
+// anything the header does not vouch for.
+func (server *Server) readSealedPayload(reader io.Reader) ([]byte, error) {
+	// io.ReadFull, not Read: Read is allowed to return fewer bytes than the buffer holds without
+	// erring, and a short read here leaves the rest of the hash zeroed — which fails the integrity
+	// check further down as if the database were corrupt.
+	hash := make([]byte, sha256.Size)
+	if _, err := io.ReadFull(reader, hash); err != nil {
+		return nil, err
+	}
+
+	data, err := server.loadCompressedData(reader)
+	if err != nil {
+		return nil, fmt.Errorf("error loading compressed data: %v", err)
+	}
+
+	if err := server.validatePayload(data, hash); err != nil {
+		return nil, fmt.Errorf("error validating data: %v", err)
+	}
+	return data, nil
 }
 
 // TODO: Encrypt this
@@ -78,7 +146,7 @@ func (server *Server) persistLocked(filename string) error {
 	defer server.logger.Exit("persistLocked")
 
 	// Always save the entire forest state
-	jsonData, err := json.Marshal(server.forest)
+	jsonData, err := encodeState(server.forest)
 	if err != nil {
 		server.logger.Failure("Failed to marshal forest: %v", err)
 		return err
@@ -187,6 +255,15 @@ func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) err
 		return err
 	}
 
+	// The banner goes in FRONT of the hash, which is the one place a build that predates this
+	// format cannot ignore it: that build reads the first 32 bytes as the hash and opens a gzip
+	// stream at offset 32, so it fails on the gzip header rather than reading a document it does
+	// not understand and rewriting the file without the parts it dropped. See state_codec.go.
+	if _, err := file.WriteString(stateMagic); err != nil {
+		server.logger.Failure("Failed to write the state banner to temporary file: %v", err)
+		return err
+	}
+
 	if _, err := file.Write(hash); err != nil {
 		server.logger.Failure("Failed to write hash to temporary file: %v", err)
 		return err
@@ -229,9 +306,10 @@ func (server *Server) loadCompressedData(reader io.Reader) ([]byte, error) {
 	return io.ReadAll(gzipReader)
 }
 
-func (server *Server) validateAndUnmarshal(data []byte, hash []byte, target interface{}) error {
-	server.logger.Enter("validateAndUnmarshal")
-	defer server.logger.Exit("validateAndUnmarshal")
+// validatePayload refuses a document the hash in front of it does not vouch for.
+func (server *Server) validatePayload(data []byte, hash []byte) error {
+	server.logger.Enter("validatePayload")
+	defer server.logger.Exit("validatePayload")
 
 	dataHash := sha256.New()
 	dataHash.Write(data)
@@ -240,13 +318,8 @@ func (server *Server) validateAndUnmarshal(data []byte, hash []byte, target inte
 		return fmt.Errorf("data hash mismatch, file may be corrupted")
 	}
 
-	if err := json.Unmarshal(data, target); err != nil {
-		server.logger.Failure("Failed to unmarshal data: %v", err)
-		return err
-	}
-
 	server.lastHash = hash
-	// The unmarshalled value is NOT logged: it is the forest, and the forest carries password hashes.
-	server.logger.Debug("Unmarshalled %d bytes of state", len(data))
+	// The payload is NOT logged: it is the forest, and the forest carries password hashes.
+	server.logger.Debug("Validated %d bytes of state", len(data))
 	return nil
 }

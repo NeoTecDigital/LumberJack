@@ -53,8 +53,23 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	// branch, and promoteToBranch writes Type under a DIFFERENT request's hold. Two ordinary
 	// POST /nodes — one making `work/n` and one making `work/n/c` — were therefore a write to Type
 	// against this handler's read of it.
+	created, err := server.createNodeUnderHold(path, nodeType, userID)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+
+	canonical := server.canonicalPath(path)
+	server.publish(mutation(mutationNodeCreated, canonical))
+	writeCreatedNode(w, created, canonical)
+	server.logger.Success("Created node at %s", path)
+}
+
+// createNodeUnderHold makes the path and reports what the answer needs to say about it.
+func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, userID string) (nodeAnswer, error) {
 	var created nodeAnswer
-	err = server.changeForest(func() error {
+
+	err := server.changeForest(func() error {
 		node, err := server.createNodePath(path, nodeType, userID)
 		if err != nil {
 			server.logger.Failure("Failed to create node %s: %v", path, err)
@@ -63,16 +78,13 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		created = nodeAnswer{id: node.ID, name: node.Name, nodeType: node.Type}
 		return nil
 	})
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
+	return created, err
+}
 
-	canonical := server.canonicalPath(path)
-	server.publish(mutation(mutationNodeCreated, canonical))
-
-	// The node itself is NOT the answer: it carries its users, and its users carry password
-	// hashes. What a client needs to go on with is where the thing it just made lives.
+// writeCreatedNode answers with where the thing the caller just made lives.
+//
+// The node itself is NOT the answer: it carries its users, and its users carry password hashes.
+func writeCreatedNode(w http.ResponseWriter, created nodeAnswer, canonical string) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":   created.id,
@@ -80,7 +92,6 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		"path": canonical,
 		"type": nodeTypeName(created.nodeType),
 	})
-	server.logger.Success("Created node at %s", path)
 }
 
 // nodeAnswer is everything the response says about the node that was made, COPIED out of it while
