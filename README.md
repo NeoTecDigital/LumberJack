@@ -210,14 +210,30 @@ curl -X POST http://localhost:8080/nodes \
 ```
 
 #### Get Forest
+
+Filtered by the caller's permissions: a node the session may not read is not in the answer, and
+neither are its own users, events or entries. A node granted DEEPER than the root still appears —
+the projection descends through the ancestors the caller may not read rather than pruning at the
+first refusal, which is the same rule `POST /query` applies.
+
+The forest is a multi-parent DAG, so a node can be reached by more than one path. Each node's body
+appears exactly ONCE in the document. Every later reach of it carries `"ref": true`, its id, its
+name, its type and its parents, and empty `children`, `events`, `planned_events`, `users` and
+`entries`; the body is elsewhere in the same document under the same id. A forest without shared
+nodes is unaffected, because nothing in it is ever reached twice.
+
 ```bash
 curl -X GET http://localhost:8080/forest \
   -H "Authorization: Bearer <token>"
 ```
 
 #### Get Tree
+
+The same projection over one subtree. A path the caller may not read is refused with 403, and a
+path that does not exist with 404.
+
 ```bash
-curl -X GET http://localhost:8080/forest/tree \
+curl -X GET http://localhost:8080/forest/tree?path=work/projects \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -344,9 +360,13 @@ curl -X POST http://localhost:8080/users/create \
 ```
 
 #### Get Users
+
+Administrative, like creating one: the list of every account in the install, their names, their
+emails and what each of them may reach. A non-administrative session is refused with 403.
+
 ```bash
 curl -X GET http://localhost:8080/users \
-  -H "Authorization: Bearer <token>"
+  -H "Authorization: Bearer <admin token>"
 ```
 
 #### Get User Profile
