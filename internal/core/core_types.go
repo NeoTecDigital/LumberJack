@@ -67,11 +67,17 @@ type Node struct {
 	Users         []User                `json:"users"`
 	Entries       []Entry               `json:"entries"`
 	Attachments   map[string]Attachment `json:"attachments,omitempty"`
-	mutex         sync.RWMutex          `json:"-"`
-	CreatedBy     string                `json:"created_by,omitempty"`
-	CreatedAt     time.Time             `json:"created_at,omitempty"`
-	ModifiedBy    string                `json:"modified_by,omitempty"`
-	ModifiedAt    time.Time             `json:"modified_at,omitempty"`
+	// Metadata is the node's own annotations, which is where a canvas layout lives under the
+	// reserved CanvasMetadataKey. It is on the NODE rather than in a parallel store so that a node
+	// and its placement cannot drift apart: deleting the node deletes the placement, and there is
+	// no second thing to keep in step. Absent from a state file written before it existed, which
+	// unmarshals as nil and is created on first write.
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	mutex      sync.RWMutex           `json:"-"`
+	CreatedBy  string                 `json:"created_by,omitempty"`
+	CreatedAt  time.Time              `json:"created_at,omitempty"`
+	ModifiedBy string                 `json:"modified_by,omitempty"`
+	ModifiedAt time.Time              `json:"modified_at,omitempty"`
 }
 
 // Add to existing types

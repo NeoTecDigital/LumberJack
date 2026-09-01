@@ -175,6 +175,9 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/events/append", s.authMiddleware(s.handleAppendToEvent)).Methods("POST")
 	router.HandleFunc("/events/end", s.authMiddleware(s.handleEndEvent)).Methods("POST")
 	router.HandleFunc("/nodes", s.authMiddleware(s.handleCreateNode)).Methods("POST")
+	// The query layer. One predicate grammar, two entry points, and the discovery routes that are
+	// thin wrappers over the first of them rather than a second implementation.
+	router.HandleFunc("/query", s.authMiddleware(s.handleQuery)).Methods("POST")
 	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
 	router.HandleFunc("/forest/tree", s.authMiddleware(s.handleGetTree)).Methods("GET")
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")

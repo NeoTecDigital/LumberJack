@@ -18,23 +18,34 @@ func (n *Node) GetPlannedEvents() (map[string]Event, error) {
 }
 
 // TODO: Allow it to search for nodes by name or ID
-// GetNode retrieves a node by its ID
+// GetNode retrieves a node by its ID.
+//
+// The forest is a MULTI-PARENT DAG, so this carries a visit set: a node reachable by two paths is
+// searched once, and an edge that closes a loop terminates instead of recursing until the stack
+// runs out. It used to recurse down Children unguarded, which took the process down.
 func (n *Node) GetNode(nodeID string) (*Node, error) {
-	if n.ID == nodeID {
-		return n, nil
+	if node := n.findNode(nodeID, map[string]bool{}); node != nil {
+		return node, nil
 	}
+	return nil, fmt.Errorf("node not found: %s", nodeID)
+}
 
-	if nodeID == "forest" {
-		return n, nil
+// findNode is GetNode carrying the set of nodes already searched.
+func (n *Node) findNode(nodeID string, visited map[string]bool) *Node {
+	if n.ID == nodeID || nodeID == "forest" {
+		return n
 	}
+	if visited[n.ID] {
+		return nil
+	}
+	visited[n.ID] = true
 
 	for _, child := range n.Children {
-		if node, err := child.GetNode(nodeID); err == nil {
-			return node, nil
+		if node := child.findNode(nodeID, visited); node != nil {
+			return node
 		}
 	}
-
-	return nil, fmt.Errorf("node not found: %s", nodeID)
+	return nil
 }
 
 // GetEventSummary returns a summary of the event's current status

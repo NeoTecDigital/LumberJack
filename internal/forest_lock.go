@@ -129,3 +129,9 @@ func (server *Server) readNode(path, userID string, permission core.Permission, 
 
 	return read(node)
 }
+
+// asAPIError reports whether an error carries a status, and hands it back if so. It exists so tests
+// and callers can ask about the status without importing errors at every use.
+func asAPIError(err error, target **apiError) bool {
+	return errors.As(err, target)
+}
