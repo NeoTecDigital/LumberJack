@@ -71,6 +71,14 @@ type stateDocument struct {
 // persisted without this file having to be told about it — a serializer that lists the fields it
 // knows is a serializer that silently stops saving the next one. The outer Children shadows
 // core.Node's own by JSON's shallower-field rule, which is what turns the nesting into ids.
+//
+// THE TRAP THE SHADOW SETS. Any field added HERE whose json name collides with one of core.Node's
+// swallows that field the same way and says nothing, and a second core.Node field tagged
+// `json:"children"` would make encoding/json drop BOTH of them, so the real children would stop
+// being written while the outer list kept the key populated. Neither is caught by anything at
+// compile time. state_codec_test.go asserts, reflectively and over whatever core.Node holds at the
+// time, that every field a node carries reaches the file, that `children` is the only shadow, and
+// that no two node fields claim one name.
 type nodeRecord struct {
 	*core.Node
 	Children []string `json:"children"`
