@@ -269,7 +269,7 @@ func TestAggregateRefusesWhatCannotMeanAnything(t *testing.T) {
 		name    string
 		request map[string]interface{}
 	}{
-		{name: "unknown select", request: map[string]interface{}{"select": "nodes"}},
+		{name: "unknown select", request: map[string]interface{}{"select": "attachments"}},
 		{name: "unknown group", request: map[string]interface{}{"select": "events", "group": []string{"quarter"}}},
 		{name: "unknown metric", request: map[string]interface{}{"select": "events", "metric": []string{"median"}}},
 		{
@@ -414,5 +414,48 @@ func TestAggregateBucketsAnEventOnWhenItHappens(t *testing.T) {
 	})
 	if count := bucketFor(t, byEntry, map[string]string{groupMonth: enteredIn}).Count; count != 1 {
 		t.Errorf("bucket_field=created_at counted %d in %s, want 1", count, enteredIn)
+	}
+}
+
+// /aggregate counts NODES.
+//
+// It accepted events, entries and time only, so the one thing a table's facet controls need in
+// order to populate for `select: "nodes"` — how many nodes there are per path, per user, per day —
+// could not be asked for at all, even though /query already selects nodes and the aggregator reads
+// nothing but candidates.
+func TestAggregateCountsNodes(t *testing.T) {
+	server, _ := newStockServer(t)
+	userID := adminID(t, server)
+	leafFor(t, server, userID, "org/alpha/work")
+	leafFor(t, server, userID, "org/beta/work")
+
+	total := aggregateOf(t, server, userID, map[string]interface{}{
+		"select": "nodes",
+		"scope":  "org",
+	})
+	if len(total.Buckets) != 1 || total.Buckets[0].Count != 5 {
+		t.Fatalf("Counted %v, want one bucket of 5: org, alpha, beta and the two leaves", total.Buckets)
+	}
+
+	byPath := aggregateOf(t, server, userID, map[string]interface{}{
+		"select": "nodes",
+		"scope":  "org",
+		"group":  []string{"node_path"},
+	})
+	if len(byPath.Buckets) != 5 {
+		t.Fatalf("Grouped into %d buckets, want 5", len(byPath.Buckets))
+	}
+	if got := byPath.Buckets[0].Key["node_path"]; got != "forest/org" {
+		t.Errorf("The first bucket is %q, want the canonical path of the scope root", got)
+	}
+
+	// A node has no start time, so a day bucketing reads the time a node HAS: when it was created.
+	byDay := aggregateOf(t, server, userID, map[string]interface{}{
+		"select": "nodes",
+		"scope":  "org",
+		"group":  []string{"day"},
+	})
+	if len(byDay.Buckets) != 1 || byDay.Buckets[0].Key["day"] == "" {
+		t.Fatalf("Bucketed by day into %v, want one named day", byDay.Buckets)
 	}
 }

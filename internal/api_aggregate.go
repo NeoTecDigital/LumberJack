@@ -95,9 +95,9 @@ func (server *Server) handleAggregate(w http.ResponseWriter, r *http.Request) {
 
 // runAggregate is the route's body without the HTTP of it.
 func (server *Server) runAggregate(userID string, request aggregateRequest) (*aggregateResponse, error) {
-	if !validSelect(request.Select, selectEvents, selectEntries, selectTime) {
+	if !validSelect(request.Select, selectNodes, selectEvents, selectEntries, selectTime) {
 		return nil, apiErrorf(http.StatusBadRequest,
-			"select must be %q, %q or %q", selectEvents, selectEntries, selectTime)
+			"select must be %q, %q, %q or %q", selectNodes, selectEvents, selectEntries, selectTime)
 	}
 
 	group, err := compileGrouping(request.Group, request.BucketField, request.Select)
@@ -156,12 +156,17 @@ func compileGrouping(dimensions []string, bucketField, selecting string) (*group
 // WHEN THE WORK HAPPENS, not when the record of it was made. An event's span is what a calendar
 // draws and what a report of a period is about, so it is the event's start; an entry has no span —
 // the thing that happened IS the entry — so it is the entry's own timestamp. A closed time span
-// starts when the clock was started.
+// starts when the clock was started. A NODE has no span either and no timestamp of its own: it is
+// a place work is recorded, and the only moment it has is the one it came into existence at.
 func defaultBucketField(selecting string) string {
-	if selecting == selectEntries {
+	switch selecting {
+	case selectEntries:
 		return timeFieldTimestamp
+	case selectNodes:
+		return timeFieldCreatedAt
+	default:
+		return timeFieldStart
 	}
-	return timeFieldStart
 }
 
 // key builds a candidate's bucket key.
