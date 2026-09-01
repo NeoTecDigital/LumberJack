@@ -97,6 +97,16 @@ To delete configuration:
 - **Leaf Node**: End points for tracking events
 - Each node can have multiple parents, enabling flexible organizational structures
 
+### Node paths
+A path names a node by the sequence of names from the forest root down to it, and every route
+EMITS the same form: rooted at the forest's own name, `forest/work/project-alpha`. It is rooted
+because the root is a real node — it holds every user and is what a permission is granted on — and
+a path that leaves it out has to call it the empty string, which no client can group on or link to.
+
+The root-relative form is still ACCEPTED wherever a path is taken, so `work/project-alpha` and
+`forest/work/project-alpha` name the same node, `forest` alone names the root, and
+`forest/forest` names a child of the root that happens to be called `forest`.
+
 ### Events
 An Event represents a tracked activity with start/end times and associated entries.
 
@@ -204,7 +214,7 @@ curl -X POST http://localhost:8080/nodes \
 {
   "id": "user-1786229776411046621",
   "name": "project-alpha",
-  "path": "work/projects/project-alpha",
+  "path": "forest/work/projects/project-alpha",
   "type": "leaf"
 }
 ```

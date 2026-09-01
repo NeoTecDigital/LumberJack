@@ -334,6 +334,24 @@ func TestANewBuildReadsAnOldStateFileWithADiamondInIt(t *testing.T) {
 	if len(alpha.Parents) != 2 {
 		t.Errorf("The shared node came back with %d parents, want 2", len(alpha.Parents))
 	}
+
+	// Loading does not rewrite the file — loading is a read. The FIRST MUTATION migrates it, and
+	// what it writes is a file in the new shape that an older build refuses rather than truncates.
+	path := filepath.Join(dir, "stock.dat")
+	if err := readTheOldWay(path); err != nil {
+		t.Errorf("Loading an old file rewrote it: %v", err)
+	}
+	if code := post(t, loaded.handleCreateNode, userID, map[string]interface{}{
+		"path": "org/alpha/after-the-migration",
+	}).Code; code != http.StatusOK {
+		t.Fatalf("Create a node on a migrated database: got %d, want %d", code, http.StatusOK)
+	}
+	if err := readTheOldWay(path); err == nil {
+		t.Error("The first mutation left the file in a shape an older build would rewrite")
+	}
+	if _, err := reloadServer(t, dir).getNodeFromPath("org/beta/shared"); err != nil {
+		t.Errorf("The migrated file is not one this build can read: %v", err)
+	}
 }
 
 // Everything a node carries survives the round trip.
