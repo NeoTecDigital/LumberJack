@@ -370,7 +370,10 @@ func createConfig(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		config = types.Config{
-			Version:   "0.1.1-alpha",
+			// The build's own version, not a literal: this one said 0.1.1-alpha long after the
+			// engine had stopped being 0.1.1-alpha, so every config written since recorded a
+			// version no running binary answered to.
+			Version:   internal.Version,
 			Databases: make(map[string]types.ProcessInfo),
 		}
 	}
