@@ -135,11 +135,16 @@ func (n *Node) AppendToEvent(eventID string, userID string, content interface{},
 		return fmt.Errorf("cannot append to event that hasn't started")
 	}
 
+	now := time.Now()
 	entry := Entry{
-		Timestamp: time.Now(),
-		Content:   content,
-		Metadata:  metadata,
-		UserID:    userID,
+		Timestamp:  now,
+		Content:    content,
+		Metadata:   metadata,
+		UserID:     userID,
+		CreatedBy:  userID,
+		CreatedAt:  now,
+		ModifiedBy: userID,
+		ModifiedAt: now,
 	}
 
 	event.Entries = append(event.Entries, entry)

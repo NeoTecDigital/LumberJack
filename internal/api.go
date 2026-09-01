@@ -178,6 +178,17 @@ func (s *Server) routes() *mux.Router {
 	// The query layer. One predicate grammar, two entry points, and the discovery routes that are
 	// thin wrappers over the first of them rather than a second implementation.
 	router.HandleFunc("/query", s.authMiddleware(s.handleQuery)).Methods("POST")
+	router.HandleFunc("/aggregate", s.authMiddleware(s.handleAggregate)).Methods("POST")
+	// GET /events is the DISCOVERY primitive: POST /events needs an event_id the caller must
+	// already possess, so until now there was no way to find out what events exist at all.
+	router.HandleFunc("/events", s.authMiddleware(s.handleListEvents)).Methods("GET")
+	router.HandleFunc("/entries", s.authMiddleware(s.handleListEntries)).Methods("GET")
+	// The canvas routes. Registered BEFORE the {path} catch-all: gorilla matches in registration
+	// order, and a catch-all registered first would swallow /nodes/link.
+	router.HandleFunc("/nodes/link", s.authMiddleware(s.handleLinkNode)).Methods("POST")
+	router.HandleFunc("/nodes/link", s.authMiddleware(s.handleUnlinkNode)).Methods("DELETE")
+	router.HandleFunc("/nodes/{path:.*}/metadata", s.authMiddleware(s.handlePatchNodeMetadata)).Methods("PATCH")
+	router.HandleFunc("/nodes/{path:.*}", s.authMiddleware(s.handleGetNode)).Methods("GET")
 	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
 	router.HandleFunc("/forest/tree", s.authMiddleware(s.handleGetTree)).Methods("GET")
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")

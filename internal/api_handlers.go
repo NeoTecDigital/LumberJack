@@ -165,17 +165,13 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 
 	// The same explicit check, for the same reason: AppendToEvent refuses without write permission
 	// and its refusal was answered as 500.
+	// The CONTENT is passed, not an Entry built around it. AppendToEvent's third argument IS the
+	// content and it wraps whatever it is given in an entry of its own, so handing it a whole
+	// core.Entry stored an entry whose content was an entry: a client that appended "inspection
+	// complete" read back an object with a timestamp and a user id nested inside it, and a text
+	// search over entry content was searching the printed form of a struct.
 	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		entry := core.Entry{
-			Content:   request.Content,
-			Metadata:  request.Metadata,
-			UserID:    userID,
-			Timestamp: time.Now(),
-			CreatedBy: userID,
-			CreatedAt: time.Now(),
-		}
-
-		if err := node.AppendToEvent(request.EventID, userID, entry, request.Metadata); err != nil {
+		if err := node.AppendToEvent(request.EventID, userID, request.Content, request.Metadata); err != nil {
 			return apiErrorf(http.StatusInternalServerError, "Failed to append to event: %v", err)
 		}
 
