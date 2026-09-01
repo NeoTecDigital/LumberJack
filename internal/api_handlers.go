@@ -106,6 +106,9 @@ func (server *Server) handleStartEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	announced := mutation(mutationEventStarted, request.Path)
+	announced.EventID = request.EventID
+	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -140,6 +143,9 @@ func (server *Server) handleEndEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	announced := mutation(mutationEventEnded, request.Path)
+	announced.EventID = request.EventID
+	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -170,11 +176,15 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 	// core.Entry stored an entry whose content was an entry: a client that appended "inspection
 	// complete" read back an object with a timestamp and a user id nested inside it, and a text
 	// search over entry content was searching the printed form of a struct.
+	entryIndex := -1
 	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
 		if err := node.AppendToEvent(request.EventID, userID, request.Content, request.Metadata); err != nil {
 			return apiErrorf(http.StatusInternalServerError, "Failed to append to event: %v", err)
 		}
 
+		// Read back INSIDE the hold: the index of what was just appended is only this entry's index
+		// for as long as nothing else appends.
+		entryIndex = len(node.Events[request.EventID].Entries) - 1
 		return nil
 	})
 	if err != nil {
@@ -182,6 +192,10 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	announced := mutation(mutationEntryAdded, request.Path)
+	announced.EventID = request.EventID
+	announced.EntryIndex = entryIndex
+	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -306,6 +320,9 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	announced := mutation(mutationEventPlanned, request.Path)
+	announced.EventID = request.EventID
+	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -75,6 +75,10 @@ type Server struct {
 	config      types.ServerConfig
 	logCache    *LogCache
 	lastHash    []byte
+	// mutations is the fan-out behind GET /stream. Published to AFTER a change is persisted and
+	// acknowledged, never before: announcing something that has not been written is the same lie
+	// as a 200 for it.
+	mutations *mutationStream
 	// logCloser releases the logger's file sink at shutdown. It is nil when the logger only writes
 	// to standard error, which is what an unconfigured log path leaves it doing.
 	logCloser io.Closer

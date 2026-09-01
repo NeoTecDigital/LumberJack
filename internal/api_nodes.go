@@ -72,6 +72,8 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	server.publish(mutation(mutationNodeCreated, request.Path))
+
 	// The node itself is NOT the answer: it carries its users, and its users carry password
 	// hashes. What a client needs to go on with is where the thing it just made lives.
 	w.Header().Set("Content-Type", "application/json")

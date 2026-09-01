@@ -39,6 +39,7 @@ func (server *Server) handleStartTimeTracking(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	server.publish(mutation(mutationEntryAdded, request.Path))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -79,6 +80,8 @@ func (server *Server) handleStopTimeTracking(w http.ResponseWriter, r *http.Requ
 	if summary == nil {
 		summary = []map[string]interface{}{}
 	}
+
+	server.publish(mutation(mutationEntryAdded, request.Path))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(summary)
 }

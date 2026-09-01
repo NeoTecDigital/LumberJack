@@ -54,6 +54,8 @@ func (server *Server) handlePatchNodeMetadata(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	server.publish(mutation(mutationMetadataSet, path))
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"path": path, "metadata": merged})
 }
@@ -90,7 +92,7 @@ type linkRequest struct {
 // person's work belongs to their own tree and to an organisation's at the same time. That was
 // creatable in core and reachable from nowhere.
 func (server *Server) handleLinkNode(w http.ResponseWriter, r *http.Request) {
-	server.changeEdge(w, r, func(parent, child *core.Node, userID string) error {
+	server.changeEdge(w, r, mutationNodeLinked, func(parent, child *core.Node, userID string) error {
 		if parent.ID == child.ID {
 			return apiErrorf(http.StatusBadRequest, "a node cannot be its own parent")
 		}
@@ -122,7 +124,7 @@ func (server *Server) handleLinkNode(w http.ResponseWriter, r *http.Request) {
 // reachable from the root, so it would be persisted by nothing and lost on the next start — a
 // deletion nobody asked for, reported as a successful unlink.
 func (server *Server) handleUnlinkNode(w http.ResponseWriter, r *http.Request) {
-	server.changeEdge(w, r, func(parent, child *core.Node, userID string) error {
+	server.changeEdge(w, r, mutationNodeUnlinked, func(parent, child *core.Node, userID string) error {
 		if _, linked := parent.Children[child.ID]; !linked {
 			return apiErrorf(http.StatusNotFound, "%s is not under %s", child.Name, parent.Name)
 		}
@@ -143,7 +145,7 @@ func (server *Server) handleUnlinkNode(w http.ResponseWriter, r *http.Request) {
 //
 // Both ends are checked. An edge is a change to the parent and to the child, and a caller that may
 // write only one of them may not make it.
-func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, change func(parent, child *core.Node, userID string) error) {
+func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, announce string, change func(parent, child *core.Node, userID string) error) {
 	userID, ok := userIDFrom(r)
 	if !ok {
 		http.Error(w, "No user in session", http.StatusUnauthorized)
@@ -190,6 +192,7 @@ func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, change 
 		return
 	}
 
+	server.publish(mutation(announce, childPath))
 	w.WriteHeader(http.StatusOK)
 }
 

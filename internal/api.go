@@ -85,6 +85,7 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 
 	server.initCache()
 	server.initAPIQueue(5) // Start with 5 workers
+	server.mutations = newMutationStream()
 
 	return server, nil
 }
@@ -125,6 +126,7 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 	// a restart fatal to the whole /events/* surface.
 	server.initCache()
 	server.initAPIQueue(5) // Start with 5 workers
+	server.mutations = newMutationStream()
 
 	server.logger.Info("Loaded existing database from %s", dbPath)
 	return server, nil
@@ -201,6 +203,8 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleDeleteAttachment)).Methods("DELETE")
 	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
 	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
+	// The live feed. Registered last because it never returns while a client is connected.
+	router.HandleFunc("/stream", s.authMiddleware(s.handleStream)).Methods("GET")
 
 	return router
 }
