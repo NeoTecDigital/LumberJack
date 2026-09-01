@@ -57,7 +57,7 @@ func (server *Server) handlePatchNodeMetadata(w http.ResponseWriter, r *http.Req
 	server.publish(mutation(mutationMetadataSet, path))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"path": path, "metadata": merged})
+	json.NewEncoder(w).Encode(map[string]interface{}{"path": server.canonicalPath(path), "metadata": merged})
 }
 
 // mergeMetadata applies a patch to a node's metadata.

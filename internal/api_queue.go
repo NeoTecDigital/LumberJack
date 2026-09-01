@@ -15,7 +15,13 @@ func (server *Server) initCache() {
 	}
 }
 
-func (server *Server) getFromCache(path string) (*core.Node, error) {
+// getFromCache resolves path segments against the last forest that was persisted.
+//
+// BY NAME, which is what a path is. It used to hand the whole path string to core.GetNode, which
+// searches by ID — so a real path never hit and cost a full DAG search before the walk that
+// answered it, and the literal string "forest" resolved to the ROOT at any position, which is a
+// second and contradictory rule for what a path means.
+func (server *Server) getFromCache(segments []string) (*core.Node, error) {
 	server.cache.mutex.RLock()
 	defer server.cache.mutex.RUnlock()
 
@@ -23,11 +29,10 @@ func (server *Server) getFromCache(path string) (*core.Node, error) {
 		return nil, fmt.Errorf("cache miss")
 	}
 
-	if path == "" {
-		return server.cache.Forest, nil
+	if node, found := walkNames(server.cache.Forest, segments); found {
+		return node, nil
 	}
-
-	return server.cache.Forest.GetNode(path)
+	return nil, fmt.Errorf("cache miss")
 }
 
 func (server *Server) updateCache() error {

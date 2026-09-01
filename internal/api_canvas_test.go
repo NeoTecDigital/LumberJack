@@ -149,13 +149,15 @@ func TestGetNodeAnswersOneNode(t *testing.T) {
 	var answer map[string]interface{}
 	decodeBody(t, serveRoute(t, server, "GET", "/nodes/one/two", userID, nil), &answer)
 
+	// The path comes back CANONICAL — rooted at the forest's own name — whichever of the two forms
+	// the request was made in. See node_path.go.
 	node := answer["node"].(map[string]interface{})
-	if node["path"] != "one/two" || node["name"] != "two" {
-		t.Errorf("Answered %v, want one/two", node)
+	if node["path"] != "forest/one/two" || node["name"] != "two" {
+		t.Errorf("Answered %v, want forest/one/two", node)
 	}
 
 	children := answer["children"].([]interface{})
-	if len(children) != 1 || children[0].(map[string]interface{})["path"] != "one/two/three" {
+	if len(children) != 1 || children[0].(map[string]interface{})["path"] != "forest/one/two/three" {
 		t.Errorf("Children were %v, want the one node below", children)
 	}
 

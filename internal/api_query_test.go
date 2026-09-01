@@ -100,7 +100,7 @@ func TestQueryCountsAMultiParentNodeOnce(t *testing.T) {
 	// This is asserted as an exact path rather than as "the same answer twice". Two draws from a
 	// randomized order agree about half the time, so a repeat-until-different check passes against
 	// a broken implementation often enough to be no check at all.
-	if !containsString(pathsOf(t, answer.Results), "shared-fixture/left/twice") {
+	if !containsString(pathsOf(t, answer.Results), "forest/shared-fixture/left/twice") {
 		t.Errorf("The shared node was not reported under the name-ordered path: %v", pathsOf(t, answer.Results))
 	}
 }
@@ -385,4 +385,34 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+// A result copies its content OUT of the forest.
+//
+// api_views.go copies an entry's content through copyValue and query_candidates.go did not, so the
+// two layers that project the same field disagreed about who owns it — the same shape as the
+// aliasing the projection was fixed for. Nothing stores a container in Content today, which is why
+// this never bit; a producer that starts to is not something the query layer should have to be
+// told about.
+func TestEntryResultsCopyContentOutOfTheForest(t *testing.T) {
+	node := core.NewNode(core.LeafNode, "leaf")
+	node.Entries = append(node.Entries, core.Entry{
+		Content: map[string]interface{}{"note": "original"},
+	})
+
+	candidates := entryCandidates(visit{node: node, path: "forest/leaf"})
+	if len(candidates) != 1 {
+		t.Fatalf("Flattened %d entries, want 1", len(candidates))
+	}
+	view := candidates[0].View.(entryResultView)
+
+	node.Entries[0].Content.(map[string]interface{})["note"] = "changed underneath the answer"
+
+	content, ok := view.Content.(map[string]interface{})
+	if !ok {
+		t.Fatalf("The result's content was %#v", view.Content)
+	}
+	if content["note"] != "original" {
+		t.Errorf("The result aliased the forest: content is now %q", content["note"])
+	}
 }

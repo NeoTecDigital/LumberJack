@@ -174,8 +174,10 @@ func TestStreamEmitsWithin100msOfAMutation(t *testing.T) {
 	if event.Type != mutationEventStarted {
 		t.Errorf("type: got %q, want %q", event.Type, mutationEventStarted)
 	}
-	if event.NodePath != path || event.EventID != "live-1" {
-		t.Errorf("The event named %s/%s, want %s/live-1", event.NodePath, event.EventID, path)
+	// The feed names the node in the CANONICAL path form, which is the one /query answers with —
+	// a feed that named it differently could not be joined against anything a query returned.
+	if event.NodePath != server.canonicalPath(path) || event.EventID != "live-1" {
+		t.Errorf("The event named %s/%s, want %s/live-1", event.NodePath, event.EventID, server.canonicalPath(path))
 	}
 	if event.EntryIndex != -1 {
 		t.Errorf("entry_index: got %d, want -1 for a mutation that is not about an entry", event.EntryIndex)
@@ -451,8 +453,8 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 	if added.Type != mutationAttachmentAdded {
 		t.Errorf("type: got %q, want %q", added.Type, mutationAttachmentAdded)
 	}
-	if added.NodePath != path {
-		t.Errorf("node_path: got %q, want %q", added.NodePath, path)
+	if added.NodePath != server.canonicalPath(path) {
+		t.Errorf("node_path: got %q, want %q", added.NodePath, server.canonicalPath(path))
 	}
 
 	// An attachment on an ENTRY is the same mutation, and names the entry it landed on.
@@ -494,7 +496,7 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 	if removed.Type != mutationAttachmentRemoved {
 		t.Errorf("type: got %q, want %q", removed.Type, mutationAttachmentRemoved)
 	}
-	if removed.NodePath != path {
-		t.Errorf("node_path: got %q, want %q", removed.NodePath, path)
+	if removed.NodePath != server.canonicalPath(path) {
+		t.Errorf("node_path: got %q, want %q", removed.NodePath, server.canonicalPath(path))
 	}
 }

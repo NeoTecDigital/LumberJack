@@ -3,7 +3,6 @@ package internal
 import (
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/vaziolabs/lumberjack/internal/core"
 )
@@ -45,10 +44,11 @@ func (server *Server) walkScope(scope string, depth *int, visitor func(visit)) e
 		return apiErrorf(http.StatusBadRequest, "depth cannot be negative")
 	}
 
-	rootPath := strings.Trim(scope, "/")
-	if rootPath == "" {
-		rootPath = root.Name
-	}
+	// The scope's own CANONICAL path, which is what every node_path below it is built from. It
+	// used to be the scope string as the caller wrote it, so an unscoped query rooted its answers
+	// at the forest's name and a scoped one rooted them at whatever the caller typed — two forms
+	// out of one route. See node_path.go.
+	rootPath := server.canonicalPath(scope)
 
 	visited := map[string]bool{root.ID: true}
 	queue := []visit{{node: root, path: rootPath, depth: 0}}

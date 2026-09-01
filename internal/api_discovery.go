@@ -68,11 +68,13 @@ func (server *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := strings.Trim(mux.Vars(r)["path"], "/")
+	// The path is accepted in either form and ANSWERED in the canonical one, so what this route
+	// emits can be fed straight back to it and to /query's scope. See node_path.go.
+	path := mux.Vars(r)["path"]
 
 	var answer map[string]interface{}
 	err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
-		answer = nodeDetail(node, path)
+		answer = nodeDetail(node, server.canonicalPath(path))
 		return nil
 	})
 	if err != nil {

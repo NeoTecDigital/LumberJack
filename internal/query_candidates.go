@@ -183,10 +183,14 @@ func entryCandidate(at visit, eventID string, index int, entry core.Entry, categ
 		NodePath:   at.path,
 		EventID:    eventID,
 		EntryIndex: index,
-		Content:    entry.Content,
-		Metadata:   copyMetadata(entry.Metadata),
-		UserID:     entry.UserID,
-		Timestamp:  entry.Timestamp,
+		// COPIED, like every other thing a result carries out of the forest. Content is arbitrary
+		// JSON: nothing puts a container in it today, but api_views.go already copies the same
+		// field, and two layers projecting one field under different rules is how the aliasing this
+		// phase closed got in.
+		Content:   copyValue(entry.Content),
+		Metadata:  copyMetadata(entry.Metadata),
+		UserID:    entry.UserID,
+		Timestamp: entry.Timestamp,
 	}
 	for _, attachment := range entry.Attachments {
 		view.Attachments = append(view.Attachments, newAttachmentView(attachment))

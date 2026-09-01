@@ -47,14 +47,20 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	// Creating the path and persisting it are ONE exclusive hold on the forest: createNodePath
 	// walks and writes the Children map of every node on the path, which is the same map the
 	// persist serializes.
-	var node *core.Node
+	//
+	// WHAT THE ANSWER SAYS IS READ INSIDE THE HOLD. A *core.Node carried out of changeForest is a
+	// node another request may already be writing: AddBranchChild promotes a childless leaf to a
+	// branch, and promoteToBranch writes Type under a DIFFERENT request's hold. Two ordinary
+	// POST /nodes — one making `work/n` and one making `work/n/c` — were therefore a write to Type
+	// against this handler's read of it.
+	var created nodeAnswer
 	err = server.changeForest(func() error {
-		created, err := server.createNodePath(path, nodeType, userID)
+		node, err := server.createNodePath(path, nodeType, userID)
 		if err != nil {
 			server.logger.Failure("Failed to create node %s: %v", path, err)
 			return apiErrorf(statusForNodeError(err), "%v", err)
 		}
-		node = created
+		created = nodeAnswer{id: node.ID, name: node.Name, nodeType: node.Type}
 		return nil
 	})
 	if err != nil {
@@ -62,18 +68,27 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server.publish(mutation(mutationNodeCreated, path))
+	canonical := server.canonicalPath(path)
+	server.publish(mutation(mutationNodeCreated, canonical))
 
 	// The node itself is NOT the answer: it carries its users, and its users carry password
 	// hashes. What a client needs to go on with is where the thing it just made lives.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":   node.ID,
-		"name": node.Name,
-		"path": path,
-		"type": nodeTypeName(node.Type),
+		"id":   created.id,
+		"name": created.name,
+		"path": canonical,
+		"type": nodeTypeName(created.nodeType),
 	})
 	server.logger.Success("Created node at %s", path)
+}
+
+// nodeAnswer is everything the response says about the node that was made, COPIED out of it while
+// the forest is still held. It exists so that nothing below reaches back into a live node.
+type nodeAnswer struct {
+	id       string
+	name     string
+	nodeType core.NodeType
 }
 
 // decodeNodeRequest reads the path a client wants and the type it wants there.
@@ -99,11 +114,14 @@ func decodeNodeRequest(r *http.Request) (string, core.NodeType, error) {
 // The write permission is checked on EACH PARENT rather than once at the root: a user who may
 // extend one branch has not thereby been given the rest of the forest.
 func (server *Server) createNodePath(path string, nodeType core.NodeType, userID string) (*core.Node, error) {
-	if path == "" {
+	// Either form of the path, reduced to the segments below the root: a client that round-trips a
+	// canonical `forest/work/x` back into this route must not create a node literally named
+	// `forest` under the root. See node_path.go.
+	parts := server.segmentsFrom(path)
+	if len(parts) == 0 {
 		return nil, fmt.Errorf("path is required: the root already exists")
 	}
 
-	parts := strings.Split(path, "/")
 	parent := server.forest
 
 	for i, part := range parts {

@@ -160,6 +160,10 @@ func (server *Server) publish(event mutationEvent) {
 	if server.mutations == nil {
 		return
 	}
+	// The path is CANONICALISED here, once, rather than at each of the eleven call sites: a feed
+	// that names a node differently depending on which route changed it cannot be joined against
+	// anything the query surface returned. See node_path.go.
+	event.NodePath = server.canonicalPath(event.NodePath)
 	server.mutations.publish(event)
 }
 
