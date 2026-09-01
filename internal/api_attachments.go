@@ -2,11 +2,11 @@ package internal
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/vaziolabs/lumberjack/internal/core"
@@ -19,6 +19,17 @@ import (
 // appearing on a node and about one going away. A client told about every OTHER mutation stops
 // polling, so a silent route is worse than no feed.
 
+// multipartMemoryBudget is how much of a multipart body is held in memory; past it the form spills
+// to a temporary file it owns and cleans up. It is a BUDGET and never was a limit — the limit is
+// maxUploadBody, enforced on the body, and core.MaxAttachmentSize, enforced on the file.
+const multipartMemoryBudget = 1 << 20
+
+// maxUploadBody is the largest request an upload route will read: the file cap plus room for the
+// multipart envelope — boundaries, part headers, and the `path` field that says where the file
+// goes. The slack is deliberately generous, because the body cap exists to stop an unbounded read
+// and the exact refusal belongs to core.AttachmentStore, which measures the file itself.
+const maxUploadBody = core.MaxAttachmentSize + (1 << 16)
+
 // handleUploadAttachment handles file uploads and creates attachments
 func (server *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	userID, ok := userIDFrom(r)
@@ -27,24 +38,17 @@ func (server *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	file, header, err := readUpload(r)
+	attachment, err := storeUpload(w, r, userID)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	defer file.Close()
-
-	attachment := &core.Attachment{
-		ID:         fmt.Sprintf("att-%d", time.Now().UnixNano()),
-		Name:       header.Filename,
-		Type:       header.Header.Get("Content-Type"),
-		Size:       header.Size,
-		UploadedBy: userID,
-		UploadedAt: time.Now(),
-	}
 
 	// getNodeFromPath by way of changeNode, not forest.GetNode: the form field is a PATH and
 	// GetNode matches a generated node id, so this route could only ever answer "Node not found".
+	//
+	// The path is read AFTER storeUpload because it is a form field, and there is no parsed form to
+	// read it out of until the multipart body has been parsed.
 	path := r.FormValue("path")
 	err = server.changeNode(path, userID, core.WritePermission, func(node *core.Node) error {
 		if err := node.AddAttachment(attachment, userID); err != nil {
@@ -66,12 +70,47 @@ func (server *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(newAttachmentView(*attachment))
 }
 
+// storeUpload is HOW A FILE GETS INTO THE ENGINE, and it is the only way.
+//
+// THE DEFECT it closes: POST /attachments/upload built the attachment from the multipart HEADER —
+// the declared name, type and size — and never read the file. Data was nil, Hash was "", and the
+// route answered 200 with a receipt describing bytes it had thrown away. The entry attachment route
+// called core.AttachmentStore.Store, which reads and hashes and measures. Two upload routes, one
+// verb, opposite meanings. Both go through here now so they cannot part company again.
+func storeUpload(w http.ResponseWriter, r *http.Request, userID string) (*core.Attachment, error) {
+	file, header, err := readUpload(w, r)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	attachment, err := core.NewAttachmentStore().Store(file, header, userID)
+	if err != nil {
+		if errors.Is(err, core.ErrAttachmentTooLarge) {
+			return nil, tooLarge()
+		}
+		return nil, apiErrorf(http.StatusInternalServerError, "Failed to store attachment")
+	}
+	return attachment, nil
+}
+
 // readUpload takes the one file a multipart request carries. The caller closes it.
 //
-// TEN MEGABYTES are held in memory; anything past that spills to a temporary file the form owns.
-func readUpload(r *http.Request) (multipart.File, *multipart.FileHeader, error) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		return nil, nil, apiErrorf(http.StatusBadRequest, "File too large")
+// THE CAP IS ON THE BODY, before anything is buffered. ParseMultipartForm's argument is a MEMORY
+// budget and not a limit — past it the form SPILLS TO A TEMPORARY FILE and parsing succeeds — so an
+// oversized upload used to be accepted, written to the server's disk, and then measured. The only
+// real cap lived in AttachmentStore, which the node route never reached. MaxBytesReader is what
+// makes it a refusal: the request is cut off at the cap plus the envelope the form needs around
+// it, and core.AttachmentStore.Store then decides on the file itself.
+func readUpload(w http.ResponseWriter, r *http.Request) (multipart.File, *multipart.FileHeader, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
+
+	if err := r.ParseMultipartForm(multipartMemoryBudget); err != nil {
+		var oversized *http.MaxBytesError
+		if errors.As(err, &oversized) {
+			return nil, nil, tooLarge()
+		}
+		return nil, nil, apiErrorf(http.StatusBadRequest, "Invalid file upload")
 	}
 
 	file, header, err := r.FormFile("file")
@@ -79,6 +118,13 @@ func readUpload(r *http.Request) (multipart.File, *multipart.FileHeader, error) 
 		return nil, nil, apiErrorf(http.StatusBadRequest, "Invalid file upload")
 	}
 	return file, header, nil
+}
+
+// tooLarge is the ONE refusal both upload routes give for a file over the cap, and it names the
+// cap: a caller told only "413" cannot tell how much smaller to make the file.
+func tooLarge() error {
+	return apiErrorf(http.StatusRequestEntityTooLarge,
+		"File too large: the limit is %d bytes", core.MaxAttachmentSize)
 }
 
 // handleGetAttachment retrieves an attachment
@@ -127,16 +173,9 @@ func (server *Server) handleAddEntryAttachment(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	file, header, err := readUpload(r)
+	attachment, err := storeUpload(w, r, userID)
 	if err != nil {
 		writeAPIError(w, err)
-		return
-	}
-	defer file.Close()
-
-	attachment, err := core.NewAttachmentStore().Store(file, header, userID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to store attachment: %v", err), http.StatusInternalServerError)
 		return
 	}
 

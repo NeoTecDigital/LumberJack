@@ -338,9 +338,16 @@ func (n *Node) AddAttachment(attachment *Attachment, userID string) error {
 	if n.Attachments == nil {
 		n.Attachments = make(map[string]Attachment)
 	}
-	n.Attachments[attachment.ID] = *attachment
+	// Stamped BEFORE the copy goes into the map. These two lines used to run AFTER it, so the
+	// stored attachment kept whatever the caller had put in those fields and only the caller's own
+	// copy — the one echoed back in the receipt — carried the uploader and the time: the receipt
+	// and the stored file could disagree about who uploaded it. The uploader is the authenticated
+	// caller and is written unconditionally, so it cannot be supplied from outside.
 	attachment.UploadedBy = userID
-	attachment.UploadedAt = time.Now()
+	if attachment.UploadedAt.IsZero() {
+		attachment.UploadedAt = time.Now()
+	}
+	n.Attachments[attachment.ID] = *attachment
 	return nil
 }
 
