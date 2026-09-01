@@ -245,6 +245,8 @@ func timeSpanCandidates(at visit) []candidate {
 
 // timeSpanCandidate flattens one closed span.
 func timeSpanCandidate(at visit, index int, started, stopped core.Entry) candidate {
+	// UNITS: the view reports duration_ms in MILLISECONDS, truncated. The same span is SECONDS as
+	// /aggregate's duration_sum and NANOSECONDS as GET /time's duration.
 	duration := stopped.Timestamp.Sub(started.Timestamp)
 	milliseconds := duration.Milliseconds()
 

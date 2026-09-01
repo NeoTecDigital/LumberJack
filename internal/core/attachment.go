@@ -95,7 +95,10 @@ func IsCompressibleType(mimeType string) bool {
 	return !compressedTypes[mimeType]
 }
 
-// GetAttachmentData returns the attachment data
+// GetAttachment is the node's OWN map and nothing else, which is a question about WHERE a file is
+// kept. It is not how a route resolves an id — that is FindAttachment in attachment_locate.go,
+// which searches every holder. Answering an id lookup with this one is the defect that made entry
+// attachments write-only.
 func (n *Node) GetAttachment(attachmentID string) (*Attachment, error) {
 	if attachment, exists := n.Attachments[attachmentID]; exists {
 		return &attachment, nil
@@ -103,7 +106,8 @@ func (n *Node) GetAttachment(attachmentID string) (*Attachment, error) {
 	return nil, fmt.Errorf("attachment not found: %s", attachmentID)
 }
 
-// GetEntryAttachment returns an attachment from an event entry
+// GetEntryAttachment is one named entry of one named event, which is again a question about WHERE.
+// A caller that has only an id wants FindAttachment.
 func (n *Node) GetEntryAttachment(eventID string, entryIndex int, attachmentID string) (*Attachment, error) {
 	event, exists := n.Events[eventID]
 	if !exists {

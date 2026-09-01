@@ -48,9 +48,13 @@ func (server *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 // runQuery is the route's whole body, separated from the HTTP of it so the discovery routes in
 // api_discovery.go are the same query rather than a second implementation of one.
 func (server *Server) runQuery(userID string, request queryRequest) (*queryResponse, error) {
-	if !validSelect(request.Select, selectNodes, selectEvents, selectEntries) {
+	// selectTime is on this list because the gatherer has always produced time spans and /aggregate
+	// has always accepted them — /query alone refused the word, so the one surface that can page,
+	// filter and sort tracked time answered 400 for it. A capability that exists and cannot be
+	// asked for is the same defect as a route that answers 200 and stores nothing.
+	if !validSelect(request.Select, selectNodes, selectEvents, selectEntries, selectTime) {
 		return nil, apiErrorf(http.StatusBadRequest,
-			"select must be %q, %q or %q", selectNodes, selectEvents, selectEntries)
+			"select must be %q, %q, %q or %q", selectNodes, selectEvents, selectEntries, selectTime)
 	}
 
 	// EVERYTHING that can be rejected is rejected before the forest is touched. A caller that

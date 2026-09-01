@@ -111,7 +111,12 @@ func (n *Node) GetEventEntries(eventID string) ([]Entry, error) {
 	return entries, nil
 }
 
-// GetTimeTrackingSummary returns a summary of the time tracking for the node
+// GetTimeTrackingSummary returns a summary of the time tracking for the node.
+//
+// UNITS: "duration" is a time.Duration, which encodes as an integer count of NANOSECONDS. It is
+// what GET /time and POST /time/stop answer with and it is unchanged. The same quantity appears as
+// MILLISECONDS (`duration_ms`) on a /query time result and as SECONDS (`duration_sum`) on an
+// /aggregate bucket — three units for one thing, each named where it is returned.
 func (n *Node) GetTimeTrackingSummary(userID string) []map[string]interface{} {
 	n.mutex.RLock()
 	defer n.mutex.RUnlock()

@@ -58,6 +58,10 @@ type aggregateRequest struct {
 // Durations are in SECONDS, and the average is over the candidates that HAVE a duration rather than
 // over all of them: an ongoing event counts, but dividing a total by things that contributed
 // nothing to it reports an average that is not the average of anything.
+// UNITS: duration_sum and duration_avg are SECONDS, as a fraction. One quantity is reported in
+// three units across this API and the only defence is naming each of them where it is returned:
+// SECONDS here, MILLISECONDS as `duration_ms` on a /query result, NANOSECONDS as `duration` on a
+// /time session. None of the three is changed by this note; all three are now stated.
 type bucketView struct {
 	Key             map[string]string `json:"key"`
 	Count           int               `json:"count"`

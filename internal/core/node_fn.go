@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sync/atomic"
@@ -154,6 +155,11 @@ func (n *Node) AppendToEvent(eventID string, userID string, content interface{},
 	return nil
 }
 
+// ErrEventAlreadyStarted is what a plan over a live id is refused with. A SENTINEL, so the route
+// can answer 409 Conflict for it: the caller asked for something this node cannot mean, rather than
+// something the server failed to do.
+var ErrEventAlreadyStarted = errors.New("event has already started")
+
 // PlanEvent plans a future event
 func (n *Node) PlanEvent(eventID string, userID string, plannedStart, plannedEnd *time.Time, metadata map[string]interface{}) error {
 	if n.Type != LeafNode {
@@ -167,6 +173,18 @@ func (n *Node) PlanEvent(eventID string, userID string, plannedStart, plannedEnd
 
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
+
+	// A PLAN FOR AN EVENT THAT HAS ALREADY STARTED IS NOT A PLAN. This was an unconditional upsert,
+	// so planning over a live id answered success and wrote into PlannedEvents — where every
+	// reader that flattens the two maps drops it, because one id is one event and the live one
+	// wins. The write was accepted and then invisible to /events and /query, which is a success
+	// reported for something the caller can never see again.
+	//
+	// Re-planning something that is still only a PLAN is untouched: moving a meeting is the whole
+	// point of the route.
+	if _, started := n.Events[eventID]; started {
+		return fmt.Errorf("%w: %s", ErrEventAlreadyStarted, eventID)
+	}
 
 	event := Event{
 		Metadata:  metadata,
@@ -374,23 +392,6 @@ func (n *Node) AddEntryAttachment(eventID string, entryIndex int, attachment *At
 	return nil
 }
 
-// DeleteAttachment removes an attachment from a node
-func (n *Node) DeleteAttachment(attachmentID string, userID string) error {
-	if !n.CheckPermission(userID, WritePermission) {
-		return fmt.Errorf("insufficient permissions")
-	}
-
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
-
-	if n.Attachments == nil {
-		return fmt.Errorf("attachment not found: %s", attachmentID)
-	}
-
-	if _, exists := n.Attachments[attachmentID]; !exists {
-		return fmt.Errorf("attachment not found: %s", attachmentID)
-	}
-
-	delete(n.Attachments, attachmentID)
-	return nil
-}
+// DeleteAttachment lives in attachment_locate.go, with the lookup it has to agree with. It used to
+// be here and it searched the node's own map alone, so it could not remove — or even find — a file
+// that had been attached to an entry.

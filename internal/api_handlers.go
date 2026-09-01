@@ -2,6 +2,7 @@ package internal
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -321,7 +322,17 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 	// that is never written to the state file is gone on the next start, which is the whole span of
 	// time a plan is for.
 	err = server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		if err := node.PlanEvent(request.EventID, userID, &startTime, &endTime, request.Metadata); err != nil {
+		err := node.PlanEvent(request.EventID, userID, &startTime, &endTime, request.Metadata)
+		// A CONFLICT, not a success and not a server failure. This route was an upsert: planning
+		// over an id that is already a live event answered 200 and wrote a plan into PlannedEvents
+		// that /events and /query then dropped in favour of the live event — the write was
+		// accepted and immediately unobservable.
+		if errors.Is(err, core.ErrEventAlreadyStarted) {
+			return apiErrorf(http.StatusConflict,
+				"Event %q has already started on this node: a plan cannot be made for it",
+				request.EventID)
+		}
+		if err != nil {
 			return apiErrorf(http.StatusInternalServerError, "%v", err)
 		}
 		return nil

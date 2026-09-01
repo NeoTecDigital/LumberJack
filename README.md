@@ -221,6 +221,15 @@ An upload is stored **by its contents**: the bytes are read, hashed with sha256,
 attachment's `id`. The same file uploaded twice is one stored attachment, and `GET /attachments/{id}`
 returns exactly the bytes that went up.
 
+**An id resolves without knowing where the file is kept.** A node holds attachments in more than one
+place — its own store, its own entries, and the entries of each of its events and plans — and
+`GET`/`DELETE /attachments/{id}` search all of them. The caller supplies the **node** (`path`) and the
+**id**; which entry of which event the file was hung on is the engine's bookkeeping. Because the id
+is the hash of the contents, an id names bytes rather than a place, so this cannot be ambiguous.
+
+`DELETE /attachments/{id}` removes the file from **every** holder on that node that carries the id,
+which is what keeps it consistent with the lookup. An id that is not on the node is `404`.
+
 **The limit is 10,485,760 bytes (10 MiB) per file.** A larger upload is refused with
 `413 Request Entity Too Large` and nothing is stored — it is not accepted and truncated. Both upload
 routes below enforce it identically.
@@ -234,6 +243,7 @@ curl -X POST http://localhost:8080/attachments/upload \
 ```
 
 #### Get Attachment
+Works for a file uploaded to the node and for one uploaded to an event entry alike.
 ```bash
 curl -X GET http://localhost:8080/attachments/{id} \
   -H "Authorization: Bearer <token>" \
@@ -354,6 +364,10 @@ curl -X POST http://localhost:8080/events/start \
 ```
 
 #### Plan Event
+A plan is for an event that has **not started**. Planning over an `event_id` that is already a live
+event on that node is refused with `409 Conflict` and nothing is written — one id is one event, and a
+plan stored under a live id is invisible to `GET /events` and `POST /query`, which report the live
+event for that id. Re-planning something that is still only a plan is allowed and moves it.
 ```bash
 curl -X POST http://localhost:8080/events/plan \
   -H "Content-Type: application/json" \
@@ -418,13 +432,14 @@ curl -X POST http://localhost:8080/time/stop \
 ```
 
 #### Get Time Tracking
+**A scope is a subtree**, as it is on `/query`, `/aggregate`, `/entries` and `/events`: asking a branch
+reports every span tracked on it and on everything beneath it, and each span names the node it was
+tracked on in `node_path`. `scope` and `path` are the same parameter under two names. `depth` bounds
+the walk — `depth=0` is the named node alone, an absent `depth` is unbounded.
 ```bash
 curl -X GET http://localhost:8080/time \
-  -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
-  -d '{
-    "path": "work/projects/project-alpha"
-  }'
+  -G --data-urlencode "scope=work/projects" --data-urlencode "depth=2"
 ```
 
 ### User Management
@@ -500,9 +515,14 @@ curl -X POST http://localhost:8080/settings/update \
 ```
 
 ### Time Tracking Summary Response
+`duration` is in **NANOSECONDS**. The same span is reported in **MILLISECONDS** as `duration_ms` by
+`POST /query` with `"select": "time"`, and in **SECONDS** as `duration_sum` by `POST /aggregate`.
+Three units for one quantity: each is named where it is returned, and none of the three wire values
+has been changed.
 ```json
 [
   {
+    "node_path": "forest/work/projects/project-alpha",
     "start_time": "2024-01-04T09:00:00Z",
     "end_time": "2024-01-04T17:00:00Z",
     "duration": 28800000000000
@@ -517,6 +537,7 @@ All endpoints return standard HTTP status codes:
 - 401: Unauthorized
 - 403: Forbidden
 - 404: Not Found
+- 409: Conflict (a plan for an event id that has already started)
 - 413: Request Entity Too Large (an upload over the attachment size limit)
 - 500: Internal Server Error
 

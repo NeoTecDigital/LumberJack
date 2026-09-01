@@ -138,17 +138,20 @@ func (server *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request
 	attachmentID := vars["id"]
 	path := r.URL.Query().Get("path")
 
+	// RESOLVED BY ID ALONE, wherever the file is kept. This route used to search Node.Attachments
+	// and nothing else, so every file uploaded to an ENTRY answered 404 here — for an id this
+	// server had just handed out. A caller has an id and a node; which entry of which event holds
+	// the bytes is the engine's bookkeeping and not something the caller can be asked to remember.
+	//
 	// The bytes are COPIED out under the read hold and written afterwards. This is the one route
 	// whose whole purpose is the file's contents, so it is also the one place they may leave.
 	var attachment *core.Attachment
 	if err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
-		stored, err := node.GetAttachment(attachmentID)
+		found, _, err := node.FindAttachment(attachmentID)
 		if err != nil {
 			return apiErrorf(http.StatusNotFound, "Attachment not found")
 		}
-		copied := *stored
-		copied.Data = append([]byte(nil), stored.Data...)
-		attachment = &copied
+		attachment = found
 		return nil
 	}); err != nil {
 		writeAPIError(w, err)
@@ -223,8 +226,16 @@ func (server *Server) handleDeleteAttachment(w http.ResponseWriter, r *http.Requ
 	attachmentID := vars["id"]
 	path := r.URL.Query().Get("path")
 
+	// The SAME resolution the download route uses, and the same refusal: an id that is not there
+	// is 404 and not 500. Both used to be wrong here — the delete searched the node's own map
+	// alone, so an entry attachment could not be removed, and it reported that as the server
+	// having broken, which is a thing a client retries forever.
 	if err := server.changeNode(path, userID, core.WritePermission, func(node *core.Node) error {
-		if err := node.DeleteAttachment(attachmentID, userID); err != nil {
+		err := node.DeleteAttachment(attachmentID, userID)
+		if errors.Is(err, core.ErrAttachmentNotFound) {
+			return apiErrorf(http.StatusNotFound, "Attachment not found")
+		}
+		if err != nil {
 			return apiErrorf(http.StatusInternalServerError, "Failed to delete attachment: %v", err)
 		}
 		return nil
