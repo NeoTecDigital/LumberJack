@@ -46,6 +46,73 @@ To delete configuration:
 ./lumberjack delete
 ```
 
+## The state file
+
+Everything the engine holds lives in one file, `<name>.dat`, in the configured database path. It is
+a sha256 header over a gzip stream, and **as of v0.3.0-alpha the shape inside that stream changed.**
+This is the one change in the project with **no undo**, so read this before upgrading.
+
+### What changed
+
+The forest is a **DAG** — a node can have several parents — and JSON is a **tree**. Serializing the
+root wrote every node once *per path to it*, so a chain of shared nodes cost 2^n: 50 nodes came to
+149 MB and 353 ms on every mutation, under the exclusive forest lock. The file is now a **flat table
+of nodes keyed by id**, each naming its children by id — one entry per node however many parents it
+has. The same 50 nodes are 29,930 bytes and 86 µs, and the shared structure survives the round trip
+exactly instead of being flattened and rejoined by guesswork.
+
+A file in the new shape begins with a **banner**, in front of the sha256 header:
+
+```
+LUMBERJACK-STATE-2
+this file is a flat node table
+```
+
+### Rolling back to an older build
+
+**An older build cannot read the new file, and it will say so.** That is deliberate. It reads the
+first 32 bytes as the hash and opens a gzip stream at byte 32, which lands inside the banner, so it
+fails at the reader:
+
+```
+error loading compressed data: gzip: invalid header
+```
+
+This is the **safe** failure. Without the banner, an older build would parse the new document with
+`json.Unmarshal`, which ignores fields it does not know, see no node table, silently load an empty
+forest, and **write that back over your database on the next mutation**. A file it refuses is better
+than a file it quietly empties.
+
+**There is no downgrade converter.** The rollback path is to **restore a backup taken before the new
+build first wrote**:
+
+```bash
+# Before upgrading, with the engine stopped:
+cp /path/to/database/<name>.dat /path/to/database/<name>.dat.pre-v0.3.0
+
+# To roll back, with the engine stopped:
+cp /path/to/database/<name>.dat.pre-v0.3.0 /path/to/database/<name>.dat
+```
+
+Any work recorded after the migration is in the new file only, and an older build cannot read it.
+
+### Migrating an existing database
+
+Files written by any earlier build have **no banner**, and they are still read: the loader
+recognises the absence of the banner and reads the old nested shape, and a node that was written out
+once per path to it is rejoined into the single object it was serialized from.
+
+**Loading does not rewrite the file — loading is a read.** The file is converted by the **first
+mutation** after the new build starts. So a new build that is only ever read from leaves the old
+file exactly as it found it, and the point of no return is the first write, not the first start.
+
+The version the engine answers with is on `GET /health`, which needs no credentials:
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok","version":"0.3.0-alpha"}
+```
+
 ## TODOS:
  - [ ] Improved Testing
     - [ ] Fix Testing Logging and Scoping to create Run directives
@@ -150,6 +217,14 @@ curl -X POST http://localhost:8080/login \
 
 ### Attachments
 
+An upload is stored **by its contents**: the bytes are read, hashed with sha256, and the hash is the
+attachment's `id`. The same file uploaded twice is one stored attachment, and `GET /attachments/{id}`
+returns exactly the bytes that went up.
+
+**The limit is 10,485,760 bytes (10 MiB) per file.** A larger upload is refused with
+`413 Request Entity Too Large` and nothing is stored — it is not accepted and truncated. Both upload
+routes below enforce it identically.
+
 #### Upload Attachment
 ```bash
 curl -X POST http://localhost:8080/attachments/upload \
@@ -181,13 +256,15 @@ curl -X POST http://localhost:8080/events/{eventId}/entries/{entryIndex}/attachm
 ```
 
 ### Attachment Response
+The receipt never carries the file's bytes. `id` and `hash` are the same sha256, and `size` is the
+number of bytes actually stored, not the size the upload declared.
 ```json
 {
-  "id": "att-123",
+  "id": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "name": "document.pdf",
   "type": "application/pdf",
   "size": 1048576,
-  "hash": "sha256-hash",
+  "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "uploaded_by": "user-123",
   "uploaded_at": "2024-01-15T10:30:00Z"
 }
@@ -440,6 +517,7 @@ All endpoints return standard HTTP status codes:
 - 401: Unauthorized
 - 403: Forbidden
 - 404: Not Found
+- 413: Request Entity Too Large (an upload over the attachment size limit)
 - 500: Internal Server Error
 
 Error responses include a message:
