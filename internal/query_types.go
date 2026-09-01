@@ -117,6 +117,24 @@ func (c candidate) timeOf(field string) time.Time {
 	return c.Times[field]
 }
 
+// inEvent reports whether the candidate IS an event or was recorded inside one, which is what
+// decides whether status, category and event_id are fields it carries at all.
+//
+// An entry recorded on the node itself — which is what time tracking and the activity log write —
+// is in no event, so its status is ABSENT rather than empty. A node and a time span are never in an
+// event; /aggregate refuses to group either by those dimensions before it reaches this, and this
+// answers the same way regardless, so the two cannot drift into disagreeing.
+func (c candidate) inEvent() bool {
+	switch c.Kind {
+	case selectEvents:
+		return true
+	case selectEntries:
+		return c.ID != ""
+	default:
+		return false
+	}
+}
+
 // nodeSummaryView is a node as a QUERY result: itself, not the subtree under it.
 //
 // newNodeView projects a node and everything beneath it, which is the right answer for "give me the

@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,10 @@ const (
 	groupMonth = "month"
 )
 
+// absentDimension marks, inside a bucket's identity text, a dimension the bucket has no value for.
+// It is never sent on the wire — the answer says the same thing by omitting the key.
+const absentDimension = "\x1e"
+
 // The metrics a bucket can carry.
 const (
 	metricCount       = "count"
@@ -29,13 +34,69 @@ const (
 	metricDurationAvg = "duration_avg"
 )
 
-// groupFields are the dimensions read straight off a candidate.
-var groupFields = map[string]func(candidate) string{
-	"node_path": func(item candidate) string { return item.NodePath },
-	"status":    func(item candidate) string { return item.Status },
-	"category":  func(item candidate) string { return item.Category },
-	"user_id":   func(item candidate) string { return item.UserID },
-	"event_id":  func(item candidate) string { return item.ID },
+// groupFields are the dimensions read straight off a candidate, and WHETHER THE CANDIDATE CARRIES
+// THEM. The second result is the whole difference between a value that is empty and no value at
+// all: an entry recorded on the node itself is in no event, so its event_id, status and category
+// are ABSENT, where an entry inside an uncategorised event has a category and it is "".
+//
+// node_path and user_id are fields of every kind and are always present; an empty user_id is a
+// record that names no user, which is a value.
+var groupFields = map[string]func(candidate) (string, bool){
+	"node_path": func(item candidate) (string, bool) { return item.NodePath, true },
+	"user_id":   func(item candidate) (string, bool) { return item.UserID, true },
+	"status":    func(item candidate) (string, bool) { return item.Status, item.inEvent() },
+	"category":  func(item candidate) (string, bool) { return item.Category, item.inEvent() },
+	"event_id":  func(item candidate) (string, bool) { return item.ID, item.inEvent() },
+}
+
+// dimensionKinds names, for each dimension, the kinds of candidate that HAVE it as a field.
+//
+// It is the other half of groupFields: one says how a dimension is read, this says of what. A node
+// has no status, no category and no event, so "how many nodes per status" is not a question about
+// nodes — it is a category error, and compileGrouping refuses it rather than answering with one
+// bucket of everything keyed on nothing. Grouping nodes by event_id was the sharpest case: the
+// reader returns candidate.ID, which for a node is the NODE's id, so the answer came back labelled
+// `event_id` and carrying something that is not one.
+var dimensionKinds = map[string][]string{
+	"node_path": {selectNodes, selectEvents, selectEntries, selectTime},
+	"user_id":   {selectNodes, selectEvents, selectEntries, selectTime},
+	"status":    {selectEvents, selectEntries},
+	"category":  {selectEvents, selectEntries},
+	"event_id":  {selectEvents, selectEntries},
+}
+
+// kindTimeFields names the times each kind of candidate CARRIES, which is what query_candidates.go
+// puts in its Times map and nothing more.
+//
+// The same rule as dimensionKinds, for the field a day, week or month bucketing reads: a node has
+// no start_time, so bucketing nodes on one is a request with no answer rather than one whose every
+// bucket is nameless. An event's end_time IS carried — by the events that have ended — so it is
+// allowed, and the ones still running fall in the bucket with no day. Absent on a RECORD and absent
+// on a KIND are different facts and are answered differently.
+var kindTimeFields = map[string][]string{
+	selectNodes:   {timeFieldCreatedAt, timeFieldModifiedAt, timeFieldTimestamp},
+	selectEvents:  {timeFieldCreatedAt, timeFieldModifiedAt, timeFieldTimestamp, timeFieldStart, timeFieldEnd},
+	selectEntries: {timeFieldTimestamp, timeFieldCreatedAt, timeFieldModifiedAt},
+	selectTime:    {timeFieldStart, timeFieldEnd, timeFieldTimestamp},
+}
+
+// kindNouns name a kind in a refusal, so the sentence reads as the statement about the data that it
+// is: `cannot group nodes by "status": a node has no status`.
+var kindNouns = map[string]string{
+	selectNodes:   "a node",
+	selectEvents:  "an event",
+	selectEntries: "an entry",
+	selectTime:    "a time span",
+}
+
+// carriesDimension reports whether a kind of candidate has a dimension as a field at all.
+func carriesDimension(selecting, dimension string) bool {
+	return slices.Contains(dimensionKinds[dimension], selecting)
+}
+
+// carriesTimeField reports whether a kind of candidate carries a named time at all.
+func carriesTimeField(selecting, field string) bool {
+	return slices.Contains(kindTimeFields[selecting], field)
 }
 
 // aggregateRequest is POST /aggregate.
@@ -62,6 +123,11 @@ type aggregateRequest struct {
 // three units across this API and the only defence is naming each of them where it is returned:
 // SECONDS here, MILLISECONDS as `duration_ms` on a /query result, NANOSECONDS as `duration` on a
 // /time session. None of the three is changed by this note; all three are now stated.
+//
+// Key CARRIES ONLY THE DIMENSIONS THE BUCKET HAS A VALUE FOR. A dimension the members do not carry
+// is ABSENT from the map; a dimension whose value is genuinely the empty string is present and
+// empty; and a dimension the selected kind has no field for is refused by compileGrouping and never
+// reaches a bucket at all. Those are three different facts and used to be one empty string.
 type bucketView struct {
 	Key             map[string]string `json:"key"`
 	Count           int               `json:"count"`
@@ -137,13 +203,9 @@ type grouping struct {
 // An EMPTY group is the whole selection as one bucket, which is what "how many are there" asks for.
 func compileGrouping(dimensions []string, bucketField, selecting string) (*grouping, error) {
 	for _, dimension := range dimensions {
-		if _, known := groupFields[dimension]; known {
-			continue
+		if err := checkDimension(dimension, selecting); err != nil {
+			return nil, err
 		}
-		if dimension == groupDay || dimension == groupWeek || dimension == groupMonth {
-			continue
-		}
-		return nil, apiErrorf(http.StatusBadRequest, "cannot group by %q", dimension)
 	}
 
 	if bucketField == "" {
@@ -152,7 +214,33 @@ func compileGrouping(dimensions []string, bucketField, selecting string) (*group
 	if !timeFieldsAllowed[bucketField] {
 		return nil, apiErrorf(http.StatusBadRequest, "cannot bucket on %q", bucketField)
 	}
+	if !carriesTimeField(selecting, bucketField) {
+		return nil, apiErrorf(http.StatusBadRequest,
+			"cannot bucket %s on %q: %s has no %s", selecting, bucketField, kindNouns[selecting], bucketField)
+	}
 	return &grouping{dimensions: dimensions, bucketField: bucketField}, nil
+}
+
+// checkDimension refuses a dimension that is not one, and a dimension the selected kind has no
+// field for.
+//
+// THE SECOND REFUSAL IS THE POINT. Grouping nodes by status used to answer 200 with every node in
+// one bucket keyed `{"status": ""}`, which is a report that looks like data; grouping them by
+// event_id answered with the NODE's id under the name `event_id`, which is worse than
+// uninformative. Neither is a question about nodes, and the request is refused where it is
+// compiled — before the forest is read, so the answer does not depend on what happens to be in it.
+func checkDimension(dimension, selecting string) error {
+	if dimension == groupDay || dimension == groupWeek || dimension == groupMonth {
+		return nil
+	}
+	if _, known := groupFields[dimension]; !known {
+		return apiErrorf(http.StatusBadRequest, "cannot group by %q", dimension)
+	}
+	if !carriesDimension(selecting, dimension) {
+		return apiErrorf(http.StatusBadRequest,
+			"cannot group %s by %q: %s has no %s", selecting, dimension, kindNouns[selecting], dimension)
+	}
+	return nil
 }
 
 // defaultBucketField is the time a bucketing means when the caller does not name one.
@@ -173,29 +261,49 @@ func defaultBucketField(selecting string) string {
 	}
 }
 
-// key builds a candidate's bucket key.
+// key builds a candidate's bucket key, CARRYING ONLY THE DIMENSIONS THE CANDIDATE HAS A VALUE FOR.
+//
+// A dimension the record does not carry is left out of the map rather than written as "". The empty
+// string is a value — an uncategorised event's category really is empty — so spending it as a
+// sentinel for "no value" leaves a consumer no way to tell the two apart, and no way to render
+// either: an empty key sorts first and draws as a blank axis label. Absence is the absence of the
+// key, which is what JSON already has a way to say.
 func (g *grouping) key(item candidate) map[string]string {
 	key := make(map[string]string, len(g.dimensions))
 	for _, dimension := range g.dimensions {
-		if read, known := groupFields[dimension]; known {
-			key[dimension] = read(item)
-			continue
+		if value, present := g.valueOf(item, dimension); present {
+			key[dimension] = value
 		}
-		key[dimension] = timeBucket(item.timeOf(g.bucketField), dimension)
 	}
 	return key
 }
 
-// timeBucket names the day, week or month an instant falls in.
+// valueOf reads one dimension off a candidate, and says whether the candidate has it.
+//
+// A TIME dimension is absent when the candidate carries no such instant: an event that has not
+// ended has no end_time, so bucketing it on end_time places it in no day rather than in a nameless
+// one. That is a fact about the RECORD; a kind that carries no such time at all is refused by
+// compileGrouping before any of this runs.
+func (g *grouping) valueOf(item candidate, dimension string) (string, bool) {
+	if read, known := groupFields[dimension]; known {
+		return read(item)
+	}
+
+	at := item.timeOf(g.bucketField)
+	if at.IsZero() {
+		return "", false
+	}
+	return timeBucket(at, dimension), true
+}
+
+// timeBucket names the day, week or month an instant falls in. The caller establishes that there IS
+// an instant: naming the bucket of a time that was never set is the caller's question, not this
+// function's, and answering it with "" here is what made three unrelated facts one wire value.
 //
 // UTC, so a bucket is the same bucket wherever it is asked from; and a WEEK starts on Monday and is
 // named by that Monday's date, because ISO weeks are what every report in this domain means by a
 // week and naming a week by its first day is the only naming that also sorts.
 func timeBucket(at time.Time, unit string) string {
-	if at.IsZero() {
-		return ""
-	}
-
 	moment := at.UTC()
 	switch unit {
 	case groupMonth:
@@ -265,10 +373,19 @@ func bucketize(matches []candidate, group *grouping, metrics []string) []bucketV
 // one built from the values alone in the caller's order to key the map, another from `name=value`
 // in alphabetical order to sort the answer — which is two ways to say what a bucket is, and no
 // reason for them to stay in step.
+//
+// An ABSENT dimension is marked rather than written as `name=`, so that a bucket with no value for
+// a dimension is a different bucket from one whose value is the empty string. Ranging `key` alone
+// would give them the same text and sum them together, which is the same conflation the wire had.
+// The marker sorts before "=", so the bucket with no value comes first among that dimension's.
 func bucketIdentity(dimensions []string, key map[string]string) string {
 	parts := make([]string, 0, len(dimensions))
 	for _, dimension := range dimensions {
-		parts = append(parts, dimension+"="+key[dimension])
+		if value, present := key[dimension]; present {
+			parts = append(parts, dimension+"="+value)
+			continue
+		}
+		parts = append(parts, dimension+absentDimension)
 	}
 	return strings.Join(parts, "\x1f")
 }

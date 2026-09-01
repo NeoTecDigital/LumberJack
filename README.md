@@ -530,6 +530,29 @@ has been changed.
 ]
 ```
 
+### Aggregate Bucket Keys
+`POST /aggregate` answers with buckets, and a bucket's `key` **carries only the dimensions that
+bucket has a value for**. Three different facts used to share one wire value — the empty string —
+and a consumer reading the answer could not tell them apart:
+
+| the fact | how the answer says it |
+|---|---|
+| the members carry no value for that dimension | the dimension is **absent from `key`** |
+| the value is genuinely the empty string | the dimension is **present and `""`** |
+| the selected kind has no such field at all | **400**, before any bucket is built |
+
+An event that has not ended has no `end_time`, so bucketing on it puts that event in a bucket whose
+`key` has no `day` — not in one named `""`. An event with no category has a category, and it is
+`""`, so its bucket keeps the key. And a node has no status, no category and no event, so
+`{"select": "nodes", "group": ["status"]}` is refused with
+`cannot group nodes by "status": a node has no status` rather than answered with every node in one
+nameless bucket. The same rule applies to `bucket_field`: a node carries no `start_time`, so asking
+for one is a 400 and not an answer whose every bucket is blank.
+
+Nothing was added to the wire to say this. A dimension with no value is the **absence of the key**,
+which is what JSON already has a way to express and what a client that reads only the response can
+already see.
+
 ## Error Handling
 All endpoints return standard HTTP status codes:
 - 200: Success
