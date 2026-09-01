@@ -90,6 +90,21 @@ func (server *Server) persistLocked(filename string) error {
 		return nil
 	}
 
+	if err := server.publishState(filename, newHash, jsonData); err != nil {
+		return err
+	}
+
+	server.lastHash = newHash
+	server.logger.Debug("Saved changes to file: %s", filename)
+	return nil
+}
+
+// publishState writes the serialized forest and makes it the state file, durably.
+//
+// A temporary file that is renamed, and BOTH are flushed: os.Rename is atomic with respect to the
+// directory entry and says nothing about the bytes behind it or about the entry itself surviving a
+// power loss. This function's answer is what a handler turns into 200.
+func (server *Server) publishState(filename string, newHash, jsonData []byte) error {
 	// The directory is ensured at every write, not just the first: it holds this file, and this
 	// file holds the hashes. A relative name with no directory part is left alone — chmodding the
 	// working directory is not this function's business.
@@ -112,16 +127,10 @@ func (server *Server) persistLocked(filename string) error {
 		return err
 	}
 
-	// The RENAME is flushed too, not just the bytes. A rename that is still only in the page cache
-	// is a state file that does not exist after a power loss, and this function's answer is what a
-	// handler turns into 200.
 	if err := syncDir(filepath.Dir(filename)); err != nil {
 		server.logger.Failure("Failed to flush the state directory: %v", err)
 		return err
 	}
-
-	server.lastHash = newHash
-	server.logger.Debug("Saved changes to file: %s", filename)
 	return nil
 }
 

@@ -16,6 +16,29 @@ import (
 func nodeCandidate(at visit) candidate {
 	node := at.node
 
+	return candidate{
+		Kind:     selectNodes,
+		NodePath: at.path,
+		NodeID:   node.ID,
+		ID:       node.ID,
+		Index:    -1,
+		UserID:   node.CreatedBy,
+		Text:     []string{node.Name, at.path},
+		Times: map[string]time.Time{
+			timeFieldCreatedAt:  node.CreatedAt,
+			timeFieldModifiedAt: node.ModifiedAt,
+			timeFieldTimestamp:  node.ModifiedAt,
+		},
+		Metadata:  copyMetadata(node.Metadata),
+		Timestamp: node.ModifiedAt,
+		View:      newNodeSummaryView(at),
+	}
+}
+
+// newNodeSummaryView projects a node as a query result: itself, and how much is under it.
+func newNodeSummaryView(at visit) nodeSummaryView {
+	node := at.node
+
 	attachmentIDs := make([]string, 0, len(node.Attachments))
 	for id := range node.Attachments {
 		attachmentIDs = append(attachmentIDs, id)
@@ -33,7 +56,7 @@ func nodeCandidate(at visit) candidate {
 		entryCount += len(event.Entries)
 	}
 
-	view := nodeSummaryView{
+	return nodeSummaryView{
 		ID:            node.ID,
 		Path:          at.path,
 		Name:          node.Name,
@@ -48,24 +71,6 @@ func nodeCandidate(at visit) candidate {
 		CreatedAt:     node.CreatedAt,
 		ModifiedBy:    node.ModifiedBy,
 		ModifiedAt:    node.ModifiedAt,
-	}
-
-	return candidate{
-		Kind:     selectNodes,
-		NodePath: at.path,
-		NodeID:   node.ID,
-		ID:       node.ID,
-		Index:    -1,
-		UserID:   node.CreatedBy,
-		Text:     []string{node.Name, at.path},
-		Times: map[string]time.Time{
-			timeFieldCreatedAt:  node.CreatedAt,
-			timeFieldModifiedAt: node.ModifiedAt,
-			timeFieldTimestamp:  node.ModifiedAt,
-		},
-		Metadata:  copyMetadata(node.Metadata),
-		Timestamp: node.ModifiedAt,
-		View:      view,
 	}
 }
 
@@ -91,23 +96,7 @@ func eventCandidates(at visit) []candidate {
 
 // eventCandidate flattens one event.
 func eventCandidate(at visit, eventID string, event core.Event) candidate {
-	view := eventResultView{
-		NodePath:   at.path,
-		EventID:    eventID,
-		Status:     event.Status,
-		Category:   event.Category,
-		Frequency:  event.Frequency,
-		Pattern:    event.Pattern,
-		StartTime:  event.StartTime,
-		EndTime:    event.EndTime,
-		EntryCount: len(event.Entries),
-		Metadata:   copyMetadata(event.Metadata),
-		CreatedBy:  event.CreatedBy,
-		CreatedAt:  event.CreatedAt,
-		ModifiedBy: event.ModifiedBy,
-		ModifiedAt: event.ModifiedAt,
-	}
-
+	view := newEventResultView(at.path, eventID, event)
 	item := candidate{
 		Kind:      selectEvents,
 		NodePath:  at.path,
@@ -145,6 +134,28 @@ func eventCandidate(at visit, eventID string, event core.Event) candidate {
 
 	item.View = view
 	return item
+}
+
+// newEventResultView projects an event as a query result: where it lives and how much of it there
+// is, but not its entries — those are selectable in their own right, and embedding them makes the
+// size of a page unbounded in a dimension the caller did not ask about.
+func newEventResultView(path, eventID string, event core.Event) eventResultView {
+	return eventResultView{
+		NodePath:   path,
+		EventID:    eventID,
+		Status:     event.Status,
+		Category:   event.Category,
+		Frequency:  event.Frequency,
+		Pattern:    event.Pattern,
+		StartTime:  event.StartTime,
+		EndTime:    event.EndTime,
+		EntryCount: len(event.Entries),
+		Metadata:   copyMetadata(event.Metadata),
+		CreatedBy:  event.CreatedBy,
+		CreatedAt:  event.CreatedAt,
+		ModifiedBy: event.ModifiedBy,
+		ModifiedAt: event.ModifiedAt,
+	}
 }
 
 // entryCandidates flattens every entry on a node: the ones inside its events, and the ones recorded

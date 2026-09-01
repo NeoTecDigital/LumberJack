@@ -37,13 +37,7 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Streaming is not supported by this connection", http.StatusInternalServerError)
 		return
 	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// Proxies that buffer a response defeat the whole point of one that is never supposed to end.
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
+	writeStreamHeaders(w)
 
 	after, resuming := resumeFrom(r)
 	client := server.mutations.subscribe(after, resuming)
@@ -59,6 +53,21 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
+	pump(r, w, flusher, client)
+}
+
+// writeStreamHeaders opens a response that is never supposed to end.
+func writeStreamHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// A proxy that buffers a response defeats the whole point of one that never finishes.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+}
+
+// pump writes mutations to a client until it goes away.
+func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription) {
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
 

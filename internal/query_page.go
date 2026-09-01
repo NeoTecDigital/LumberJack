@@ -216,19 +216,9 @@ func (o *ordering) signature() string {
 // total is the number of MATCHES, not the size of the page: a client needs to know how much there
 // is in order to say so, and it cannot learn that from a page.
 func paginate(matches []candidate, order *ordering, page *pageRequest) ([]candidate, string, int, error) {
-	limit := defaultPageLimit
-	position := ""
-	if page != nil {
-		if page.Limit > 0 {
-			limit = page.Limit
-		}
-		if page.Limit > maxPageLimit {
-			return nil, "", 0, apiErrorf(http.StatusBadRequest, "page limit above the maximum of %d", maxPageLimit)
-		}
-		if page.Limit < 0 {
-			return nil, "", 0, apiErrorf(http.StatusBadRequest, "page limit cannot be negative")
-		}
-		position = page.Cursor
+	limit, position, err := resolvePage(page)
+	if err != nil {
+		return nil, "", 0, err
 	}
 
 	after, err := decodeCursor(order, position)
@@ -271,6 +261,26 @@ func paginate(matches []candidate, order *ordering, page *pageRequest) ([]candid
 		next = encodeCursor(order, pageOf[len(pageOf)-1])
 	}
 	return pageOf, next, total, nil
+}
+
+// resolvePage reads the limit and the position out of an optional page.
+//
+// A limit above the maximum is REFUSED rather than quietly clamped: a caller that asked for ten
+// thousand and silently received a thousand would page as if it had them all.
+func resolvePage(page *pageRequest) (int, string, error) {
+	if page == nil {
+		return defaultPageLimit, "", nil
+	}
+	if page.Limit < 0 {
+		return 0, "", apiErrorf(http.StatusBadRequest, "page limit cannot be negative")
+	}
+	if page.Limit > maxPageLimit {
+		return 0, "", apiErrorf(http.StatusBadRequest, "page limit above the maximum of %d", maxPageLimit)
+	}
+	if page.Limit == 0 {
+		return defaultPageLimit, page.Cursor, nil
+	}
+	return page.Limit, page.Cursor, nil
 }
 
 // ranking is a candidate beside its position in the order, so the position is computed once.

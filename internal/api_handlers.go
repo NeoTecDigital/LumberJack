@@ -293,15 +293,9 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	startTime, err := time.Parse(time.RFC3339, request.StartTime)
+	startTime, endTime, err := plannedSpan(request.StartTime, request.EndTime)
 	if err != nil {
-		http.Error(w, "Invalid start time format", http.StatusBadRequest)
-		return
-	}
-
-	endTime, err := time.Parse(time.RFC3339, request.EndTime)
-	if err != nil {
-		http.Error(w, "Invalid end time format", http.StatusBadRequest)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -324,6 +318,21 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 	announced.EventID = request.EventID
 	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
+}
+
+// plannedSpan reads the two ends of a plan. Both are required and both are RFC3339: a plan with no
+// span is not a plan.
+func plannedSpan(start, end string) (time.Time, time.Time, error) {
+	startTime, err := time.Parse(time.RFC3339, start)
+	if err != nil {
+		return time.Time{}, time.Time{}, apiErrorf(http.StatusBadRequest, "Invalid start time format")
+	}
+
+	endTime, err := time.Parse(time.RFC3339, end)
+	if err != nil {
+		return time.Time{}, time.Time{}, apiErrorf(http.StatusBadRequest, "Invalid end time format")
+	}
+	return startTime, endTime, nil
 }
 
 // HTTP handler for getting a specific tree

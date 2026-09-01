@@ -161,6 +161,16 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/health", s.handleHealth).Methods("GET")
 	router.HandleFunc("/login", s.handleLogin).Methods("POST")
 	router.HandleFunc("/refresh", s.handleRefreshToken).Methods("POST")
+
+	s.registerRecordRoutes(router)
+	s.registerQueryRoutes(router)
+	s.registerAccountRoutes(router)
+	return router
+}
+
+// registerRecordRoutes registers the routes that WRITE to the forest, and the ones that read one
+// thing back by name.
+func (s *Server) registerRecordRoutes(router *mux.Router) {
 	// Protected routes
 	//
 	// /users/create IS ONE OF THEM. It was public, which meant anyone who could reach the port could
@@ -177,6 +187,18 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/events/append", s.authMiddleware(s.handleAppendToEvent)).Methods("POST")
 	router.HandleFunc("/events/end", s.authMiddleware(s.handleEndEvent)).Methods("POST")
 	router.HandleFunc("/nodes", s.authMiddleware(s.handleCreateNode)).Methods("POST")
+	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
+	router.HandleFunc("/forest/tree", s.authMiddleware(s.handleGetTree)).Methods("GET")
+	router.HandleFunc("/attachments/upload", s.authMiddleware(s.handleUploadAttachment)).Methods("POST")
+	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleGetAttachment)).Methods("GET")
+	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleDeleteAttachment)).Methods("DELETE")
+	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
+	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
+}
+
+// registerQueryRoutes registers the query layer, the listings built on it, the canvas routes and
+// the live feed.
+func (s *Server) registerQueryRoutes(router *mux.Router) {
 	// The query layer. One predicate grammar, two entry points, and the discovery routes that are
 	// thin wrappers over the first of them rather than a second implementation.
 	router.HandleFunc("/query", s.authMiddleware(s.handleQuery)).Methods("POST")
@@ -191,22 +213,17 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/nodes/link", s.authMiddleware(s.handleUnlinkNode)).Methods("DELETE")
 	router.HandleFunc("/nodes/{path:.*}/metadata", s.authMiddleware(s.handlePatchNodeMetadata)).Methods("PATCH")
 	router.HandleFunc("/nodes/{path:.*}", s.authMiddleware(s.handleGetNode)).Methods("GET")
-	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
-	router.HandleFunc("/forest/tree", s.authMiddleware(s.handleGetTree)).Methods("GET")
+	// The live feed. Registered last of these because it never returns while a client is connected.
+	router.HandleFunc("/stream", s.authMiddleware(s.handleStream)).Methods("GET")
+}
+
+// registerAccountRoutes registers the user and settings routes.
+func (s *Server) registerAccountRoutes(router *mux.Router) {
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")
 	router.HandleFunc("/users/assign", s.authMiddleware(s.handleAssignUser)).Methods("POST")
 	router.HandleFunc("/users/profile", s.authMiddleware(s.handleGetUserProfile)).Methods("GET")
 	router.HandleFunc("/settings/", s.authMiddleware(s.handleGetServerSettings)).Methods("GET")
 	router.HandleFunc("/settings/update", s.authMiddleware(s.handleUpdateServerSettings)).Methods("POST")
-	router.HandleFunc("/attachments/upload", s.authMiddleware(s.handleUploadAttachment)).Methods("POST")
-	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleGetAttachment)).Methods("GET")
-	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleDeleteAttachment)).Methods("DELETE")
-	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
-	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
-	// The live feed. Registered last because it never returns while a client is connected.
-	router.HandleFunc("/stream", s.authMiddleware(s.handleStream)).Methods("GET")
-
-	return router
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
