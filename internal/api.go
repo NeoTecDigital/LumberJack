@@ -43,7 +43,7 @@ func newServerShell(config types.ServerConfig) (*Server, error) {
 	}
 
 	logger, logCloser := newServerLogger(config)
-	return &Server{
+	server := &Server{
 		forest:    core.NewForest("forest"),
 		jwtConfig: jwtConfig,
 		logger:    logger,
@@ -53,7 +53,11 @@ func newServerShell(config types.ServerConfig) (*Server, error) {
 			Handler: mux.NewRouter(),
 		},
 		config: config,
-	}, nil
+	}
+	// The writer is the only thing that touches the state file, and it does so with the forest
+	// unheld. Both entrypoints go through here, so both get one.
+	server.stateWriter = newStateWriter(server.publishSnapshot)
+	return server, nil
 }
 
 // startRuntime brings up what a forest needs in order to be SERVED: the read cache, the worker pool
@@ -90,7 +94,7 @@ func (server *Server) installAdmin(adminUser core.User) error {
 		server.logger.Failure("failed to save admin user: %v", err)
 		return err
 	}
-	if err := server.persistLocked(server.statePath()); err != nil {
+	if err := server.persistState(server.statePath()); err != nil {
 		server.logger.Failure("failed to save state after user creation: %v", err)
 		return err
 	}

@@ -134,43 +134,83 @@ func (server *Server) readSealedPayload(reader io.Reader) ([]byte, error) {
 }
 
 // TODO: Encrypt this
-// persistLocked persists the WHOLE forest to the state file. It took a `data interface{}` that it
+// persistState serializes the forest and makes it durable. It took a `data interface{}` that it
 // never looked at — callers passed a node or the forest and got the forest either way.
+//
+// It takes the exclusive hold ITSELF, for the encode only, and lets go of it before the disk is
+// touched. Nothing may call it while already holding the forest: that is what put an fsync inside
+// the exclusive hold and stalled every other request behind it. Routes reach the disk through
+// changeForest, which encodes under the hold and commits outside it; this shape is for the places
+// that are not serving yet, and for tests.
+func (server *Server) persistState(filename string) error {
+	server.logger.Enter("persistState")
+	defer server.logger.Exit("persistState")
+
+	snapshot, err := server.snapshotForest(filename)
+	if err != nil {
+		return err
+	}
+	return server.commitState(snapshot)
+}
+
+// snapshotForest takes the exclusive hold and answers a serialization of the forest under it.
+func (server *Server) snapshotForest(filename string) (stateSnapshot, error) {
+	server.forestMutex.Lock()
+	defer server.forestMutex.Unlock()
+
+	return server.encodeStateLocked(filename)
+}
+
+// encodeStateLocked serializes the WHOLE forest and answers the snapshot that has to reach the disk
+// before the change in it may be acknowledged.
 //
 // THE CALLER MUST HOLD server.forestMutex EXCLUSIVELY. That is what the name says, and it is not a
 // nicety: this marshals the entire object graph, so a mutation running beside it is an
-// unsynchronized map read against a concurrent map write. Routes reach it through changeForest,
-// which is the only thing that takes the lock; NewServer reaches it before the server is serving.
-func (server *Server) persistLocked(filename string) error {
-	server.logger.Enter("persistLocked")
-	defer server.logger.Exit("persistLocked")
-
-	// Always save the entire forest state
+// unsynchronized map read against a concurrent map write.
+//
+// NO DISK IS TOUCHED HERE. The bytes this answers share nothing with the forest, which is what
+// lets the write and the fsyncs behind it happen with the hold released — see state_writer.go. The
+// sequence number is assigned here, inside the same critical section as the encode, so that
+// sequence order is the order the forest actually passed through these states.
+func (server *Server) encodeStateLocked(filename string) (stateSnapshot, error) {
 	jsonData, err := encodeState(server.forest)
 	if err != nil {
 		server.logger.Failure("Failed to marshal forest: %v", err)
-		return err
+		return stateSnapshot{}, err
 	}
 
 	hash := sha256.New()
 	hash.Write(jsonData)
 	newHash := hash.Sum(nil)
 
-	// The skip is an ACKNOWLEDGMENT that the caller's change is already on disk, so it is only
-	// honest while the file it went to is still there. An install whose data directory was cleared
-	// underneath it was otherwise told every write succeeded while nothing was ever written.
-	if server.lastHash != nil && compareHashes(server.lastHash, newHash) && stateFileExists(filename) {
-		server.logger.Debug("No changes to save")
-		return nil
-	}
+	server.stateSeq++
+	// lastHash is the cache's invalidation token: the hash of the newest state the forest has
+	// been in, not of the file. The read cache is a view of the forest in memory, so the token
+	// that invalidates it has to move when the forest does, not when the disk catches up.
+	server.lastHash = newHash
 
-	if err := server.publishState(filename, newHash, jsonData); err != nil {
+	return stateSnapshot{seq: server.stateSeq, hash: newHash, data: jsonData, path: filename}, nil
+}
+
+// commitState makes a snapshot durable and MUST be called with no hold on the forest.
+//
+// It answers only once the bytes are on the disk, so a 200 behind it still means the change is in
+// the state file and not merely in memory.
+func (server *Server) commitState(snapshot stateSnapshot) error {
+	server.logger.Enter("commitState")
+	defer server.logger.Exit("commitState")
+
+	if err := server.stateWriter.commit(snapshot); err != nil {
 		return err
 	}
 
-	server.lastHash = newHash
-	server.logger.Debug("Saved changes to file: %s", filename)
+	server.logger.Debug("Saved changes to file: %s", snapshot.path)
 	return nil
+}
+
+// publishSnapshot is the writer's disk side: the durable publish of one serialized forest.
+func (server *Server) publishSnapshot(snapshot stateSnapshot) error {
+	return server.publishState(snapshot.path, snapshot.hash, snapshot.data)
 }
 
 // publishState writes the serialized forest and makes it the state file, durably.
@@ -319,6 +359,9 @@ func (server *Server) validatePayload(data []byte, hash []byte) error {
 	}
 
 	server.lastHash = hash
+	// The file this hash came out of IS the state file, so the writer may skip a first persist
+	// that would rewrite it byte for byte — which is what the skip did before it moved.
+	server.stateWriter.markDurable(hash)
 	// The payload is NOT logged: it is the forest, and the forest carries password hashes.
 	server.logger.Debug("Validated %d bytes of state", len(data))
 	return nil

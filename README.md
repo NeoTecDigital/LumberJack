@@ -106,6 +106,28 @@ once per path to it is rejoined into the single object it was serialized from.
 mutation** after the new build starts. So a new build that is only ever read from leaves the old
 file exactly as it found it, and the point of no return is the first write, not the first start.
 
+### What a 200 promises, and when a write is on the disk
+
+A mutating request is not answered until the state file **contains** the change. The engine holds
+one exclusive lock over the forest for the mutation and for the **serialization** of the forest, and
+lets go of it there; the write, the fsync of the temporary file, and the fsync of the directory that
+publishes the rename all happen with the lock **released**. Before v0.3.0-alpha the fsync was inside
+the exclusive hold, so every other request — reads included — queued behind the disk, and a
+congested host turned a working engine into one that answered `/health` in 25 ms while timing out
+every write.
+
+Concurrent writers are **coalesced**. Each write serializes the whole forest, so a newer
+serialization already contains every change in an older one: a caller waiting behind an in-flight
+flush is answered by the next flush rather than by one of its own. Forty concurrent writes cost two
+flushes, not forty. Serializations are numbered under the exclusive hold, and the writer never
+publishes a lower number after a higher one, so the file cannot be rolled back by a slow writer.
+
+**After a 200, the change is lost only if the storage lied about fsync** — a disk or virtual disk
+with a volatile write cache it does not honour, or a filesystem mounted `nobarrier`. A crash at any
+other moment loses only writes that were never acknowledged. A write that fails to reach the disk is
+answered **500**, and the change stays in memory: the process is then serving a forest newer than
+its file, and it must be restarted, which drops back to the last state that was acknowledged.
+
 The version the engine answers with is on `GET /health`, which needs no credentials:
 
 ```bash

@@ -108,7 +108,7 @@ func setupTestForest(t *testing.T) *Server {
 	root.AddChild(testNode)
 
 	// Save initial state
-	if err := server.persistLocked(testDbFile); err != nil {
+	if err := server.persistState(testDbFile); err != nil {
 		logger.Failure("Failed to write initial state: %v", err)
 	} else {
 		logger.Success("Saved initial state to file")
@@ -141,7 +141,7 @@ func TestForestOperations(t *testing.T) {
 		rootNode.Children[childNode2.ID] = childNode2
 		rootNode.Children[childNode3.ID] = childNode3
 
-		if err := server.persistLocked(testDbFile); err != nil {
+		if err := server.persistState(testDbFile); err != nil {
 			logger.Failure("Failed to write state to file: %v", err)
 			t.Errorf("Failed to write state to file: %v", err)
 		} else {
@@ -247,7 +247,7 @@ func TestForestOperations(t *testing.T) {
 			logger.Success("Event found in storage")
 		}
 
-		if err := server.persistLocked(testDbFile); err != nil {
+		if err := server.persistState(testDbFile); err != nil {
 			logger.Failure("Failed to write state to file: %v", err)
 		} else {
 			logger.Success("State saved to file")
@@ -343,7 +343,7 @@ func TestForestOperations(t *testing.T) {
 		logger.Enter("Persistence Verification")
 		defer logger.Exit("Persistence Verification")
 
-		if err := server.persistLocked(testDbFile); err != nil {
+		if err := server.persistState(testDbFile); err != nil {
 			logger.Failure("Failed to save final state: %v", err)
 			t.Error(err)
 		} else {
@@ -508,7 +508,7 @@ func TestHandleAssignUser(t *testing.T) {
 	}
 
 	// Save state
-	if err := app.persistLocked(testDbFile); err != nil {
+	if err := app.persistState(testDbFile); err != nil {
 		logger.Failure("Failed to save state: %v", err)
 		t.Fatalf("Failed to save state: %v", err)
 	} else {

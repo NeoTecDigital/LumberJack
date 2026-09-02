@@ -191,13 +191,13 @@ func TestPersistDoesNotSkipWhenTheStateFileIsGone(t *testing.T) {
 	}
 
 	// And the skip itself: persisting the very same forest twice must leave the file there.
-	if err := server.persistLocked(statePath); err != nil {
+	if err := server.persistState(statePath); err != nil {
 		t.Fatalf("Second persist: %v", err)
 	}
 	if err := os.Remove(statePath); err != nil {
 		t.Fatalf("Failed to clear the state file again: %v", err)
 	}
-	if err := server.persistLocked(statePath); err != nil {
+	if err := server.persistState(statePath); err != nil {
 		t.Fatalf("Persist after the file was cleared: %v", err)
 	}
 	if _, err := os.Stat(statePath); err != nil {

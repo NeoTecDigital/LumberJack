@@ -74,7 +74,17 @@ type Server struct {
 	server      *http.Server
 	config      types.ServerConfig
 	logCache    *LogCache
-	lastHash    []byte
+	// lastHash is the read cache's invalidation token: the hash of the newest state the forest
+	// has been serialized into. It is written under forestMutex, beside the encode that produces
+	// it, and read under forestMutex by getFromCache.
+	lastHash []byte
+	// stateSeq numbers those serializations. It is bumped under forestMutex in the same critical
+	// section as the encode, which is what makes sequence order the order the forest passed
+	// through its states — and so what lets the writer refuse to put an older state on the disk
+	// after a newer one.
+	stateSeq uint64
+	// stateWriter makes snapshots durable with the forest UNHELD. See state_writer.go.
+	stateWriter *stateWriter
 	// mutations is the fan-out behind GET /stream. Published to AFTER a change is persisted and
 	// acknowledged, never before: announcing something that has not been written is the same lie
 	// as a 200 for it.

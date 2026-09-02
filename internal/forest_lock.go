@@ -26,6 +26,11 @@ import (
 // both the mutation and the persist that acknowledges it, and held SHARED by everything that reads
 // the graph — including the read routes, which serialize it just as thoroughly.
 //
+// AND THE DISK IS OUTSIDE IT. The mutation and the marshal are inside the exclusive hold; the
+// write and the fsyncs that publish the marshalled bytes are not. See state_writer.go: an fsync
+// under this lock stalled every other request behind it, reads included, for as long as the disk
+// took.
+//
 // ONLY THE HANDLERS TAKE IT. Anything below them (getNodeFromPath, the queue workers, core) must
 // not, because Go's RWMutex queues a waiting writer ahead of later readers: a second RLock taken
 // underneath a first one deadlocks the moment a writer is waiting between them.
@@ -67,26 +72,52 @@ func (server *Server) readForest(read func()) {
 	read()
 }
 
-// changeForest runs change with the forest held EXCLUSIVELY, and persists the result before it
-// lets go.
+// changeForest runs change with the forest held EXCLUSIVELY, serializes the result under the same
+// hold, and makes it durable OUTSIDE it before answering.
 //
-// The persist is inside the same hold as the change on purpose. A persist outside it serializes a
-// forest that another request may be halfway through changing, which is the defect this file
-// exists to close; and an acknowledgment sent before the state file has the change in it is a
-// success reported for something that did not happen.
+// THE MARSHAL IS STILL INSIDE THE HOLD. That is the guarantee c95ef33 exists for and it has not
+// moved: a serialization of the forest and a mutation of the forest still cannot overlap, so the
+// snapshot the writer takes away is a whole consistent state, and nothing it touches is shared with
+// a concurrent request.
+//
+// THE DISK IS NOT. Flushing inside the hold made every request — reads included — queue behind an
+// fsync, which under host congestion ran to nineteen seconds and read to the relay in front as an
+// unreachable datastore. The write and its two fsyncs now happen with the forest free.
+//
+// The acknowledgment is unchanged in strength: this still does not return until the snapshot
+// containing the change is on the disk. See state_writer.go for how concurrent snapshots are kept
+// in order and coalesced.
 func (server *Server) changeForest(change func() error) error {
-	server.forestMutex.Lock()
-	defer server.forestMutex.Unlock()
-
-	if err := change(); err != nil {
+	snapshot, err := server.applyChangeLocked(change)
+	if err != nil {
 		return err
 	}
 
-	if err := server.persistLocked(server.statePath()); err != nil {
+	if err := server.commitState(snapshot); err != nil {
 		server.logger.Failure("Failed to save state: %v", err)
 		return apiErrorf(http.StatusInternalServerError, "Failed to save state")
 	}
 	return nil
+}
+
+// applyChangeLocked makes the change and serializes the forest it produced, both under one
+// exclusive hold, and answers the snapshot the caller must make durable.
+//
+// The hold ends when this returns. Nothing below it may touch the disk.
+func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
+	server.forestMutex.Lock()
+	defer server.forestMutex.Unlock()
+
+	if err := change(); err != nil {
+		return stateSnapshot{}, err
+	}
+
+	snapshot, err := server.encodeStateLocked(server.statePath())
+	if err != nil {
+		server.logger.Failure("Failed to save state: %v", err)
+		return stateSnapshot{}, apiErrorf(http.StatusInternalServerError, "Failed to save state")
+	}
+	return snapshot, nil
 }
 
 // changeNode is the shape every mutating route has: find the node a path names, confirm the caller

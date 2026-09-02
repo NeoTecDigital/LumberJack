@@ -171,7 +171,7 @@ func countNodes(root *core.Node) int {
 
 // What the persist COSTS is bounded by the size of the forest.
 //
-// THE DEFECT: persistLocked marshalled the forest as a TREE, so a node reachable by k paths was
+// THE DEFECT: persistState marshalled the forest as a TREE, so a node reachable by k paths was
 // serialized k times — and a chain of diamonds makes k exponential in the number of nodes. Twelve
 // rungs is 38 real nodes and 9.2 MB; sixteen rungs is 50 nodes and 149 MB, built IN MEMORY, UNDER
 // THE EXCLUSIVE FOREST LOCK, on EVERY mutation. That is about sixty ordinary API calls from any
