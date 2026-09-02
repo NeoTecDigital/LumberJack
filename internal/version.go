@@ -17,4 +17,4 @@ package internal
 // Not derived from debug.ReadBuildInfo: for a repository build that reports "(devel)" or a
 // VCS-stamped pseudo-version, so the service would answer something no release is called. The
 // declared value is the release's name; the test is what makes it true.
-const Version = "0.3.0-alpha"
+const Version = "0.3.1-alpha"
