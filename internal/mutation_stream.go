@@ -26,6 +26,17 @@ const (
 	// NEITHER: upload and delete were the two mutations the feed never mentioned.
 	mutationAttachmentAdded   = "attachment_added"
 	mutationAttachmentRemoved = "attachment_removed"
+
+	// THE REMOVALS. There were NO delete kinds at all, because there were almost no delete routes —
+	// and a delete that does not publish is worse than one that does not exist: a client that has
+	// been told about every other mutation stops polling, so it keeps rendering a node, an event or
+	// an entry the engine no longer has. The Seam's generation counter is driven by this feed too,
+	// so a silent delete leaves a stale projection cacheable forever.
+	mutationNodeDeleted     = "node_deleted"
+	mutationEventDeleted    = "event_deleted"
+	mutationEventUpdated    = "event_updated"
+	mutationEntryDeleted    = "entry_deleted"
+	mutationTimeSpanDeleted = "time_span_deleted"
 )
 
 // mutationEvent is what /stream emits.
@@ -33,12 +44,21 @@ const (
 // EntryIndex is -1 when the mutation is not about an entry, rather than 0: zero is a real index, and
 // a client cannot tell a real first entry from an absent one.
 type mutationEvent struct {
-	Sequence   uint64    `json:"sequence"`
-	Type       string    `json:"type"`
-	NodePath   string    `json:"node_path"`
-	EventID    string    `json:"event_id,omitempty"`
-	EntryIndex int       `json:"entry_index"`
-	Timestamp  time.Time `json:"timestamp"`
+	Sequence uint64 `json:"sequence"`
+	Type     string `json:"type"`
+	NodePath string `json:"node_path"`
+	EventID  string `json:"event_id,omitempty"`
+	// EntryID names the entry a mutation is about. EntryIndex names where it was; the two are not
+	// interchangeable, because an index is invalidated by the very deletions this feed reports and
+	// the id is not. Both are carried: the index is what an attachment route still addresses an
+	// entry by, and the id is what survives.
+	EntryID    string `json:"entry_id,omitempty"`
+	EntryIndex int    `json:"entry_index"`
+	// PreviousEventID is set only by a rename, and names what the event was called before it. A
+	// client holding the old id has no other way to learn that the event it is watching is the one
+	// that just appeared under a new name.
+	PreviousEventID string    `json:"previous_event_id,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 // replayBufferSize is how far back a reconnecting client can be caught up.

@@ -42,8 +42,20 @@ type EventSummary struct {
 // NodeType represents the type of a node in the tree-forest
 type NodeType int
 
-// Entry represents an entry in the node
+// Entry represents an entry in the node.
+//
+// ID IS THE ENTRY'S IDENTITY, and until it existed there was none. An entry was addressed by
+// (node_path, event_id, entry_index), and an index is invalidated by every insertion and every
+// deletion before it — so two clients holding the same address held it for two different entries
+// the moment anything was removed, and a delete keyed on an index deletes whatever has slid into
+// that position. Reply-to, edit, delete, react, permalink and read-receipt all need a name for one
+// entry that survives the entries around it changing.
+//
+// It is minted at creation and never rewritten. An entry read out of a state file written before
+// this field existed carries the empty string, and is given a DERIVED id at load — see
+// entry_identity.go, which explains why the derivation has to be deterministic rather than fresh.
 type Entry struct {
+	ID          string                 `json:"id"`
 	Content     interface{}            `json:"content"`
 	Metadata    map[string]interface{} `json:"metadata"`
 	UserID      string                 `json:"user_id"`

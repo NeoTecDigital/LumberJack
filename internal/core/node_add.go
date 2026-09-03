@@ -10,6 +10,7 @@ func (n *Node) AddActivity(content interface{}, metadata map[string]interface{},
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 	entry := Entry{
+		ID:        GenerateEntryID(),
 		Content:   content,
 		Metadata:  metadata,
 		UserID:    userID,

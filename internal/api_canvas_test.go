@@ -50,6 +50,51 @@ func registerTestRoutes(router *mux.Router, server *Server) {
 	router.HandleFunc("/nodes/link", server.handleUnlinkNode).Methods("DELETE")
 	router.HandleFunc("/nodes/{path:.*}/metadata", server.handlePatchNodeMetadata).Methods("PATCH")
 	router.HandleFunc("/nodes/{path:.*}", server.handleGetNode).Methods("GET")
+	// The removals and the event patch, in the order routes() registers them — which for
+	// DELETE /nodes/{path} is AFTER /nodes/link, because a catch-all in front of it would swallow
+	// every edge removal. Registering them here in a different order would make these tests agree
+	// with a routing table the server does not have.
+	router.HandleFunc("/nodes/{path:.*}", server.handleDeleteNode).Methods("DELETE")
+	router.HandleFunc("/events/{id}", server.handleDeleteEvent).Methods("DELETE")
+	router.HandleFunc("/events/{id}", server.handleUpdateEvent).Methods("PATCH")
+	router.HandleFunc("/entries/{id}", server.handleDeleteEntry).Methods("DELETE")
+	router.HandleFunc("/time/{id}", server.handleDeleteTimeSpan).Methods("DELETE")
+}
+
+// answered is a request driven through the routing table whose answer the test wants to inspect
+// whatever the status was.
+func answered(t *testing.T, recorder *httptest.ResponseRecorder, into interface{}) {
+	t.Helper()
+
+	if err := json.Unmarshal(recorder.Body.Bytes(), into); err != nil {
+		t.Fatalf("Answer was not JSON: %v: %s", err, recorder.Body.String())
+	}
+}
+
+// publishedKinds is the sequence of mutation kinds the server has announced.
+func publishedKinds(server *Server) []string {
+	server.mutations.mutex.Lock()
+	defer server.mutations.mutex.Unlock()
+
+	kinds := make([]string, 0, len(server.mutations.recent))
+	for _, event := range server.mutations.recent {
+		kinds = append(kinds, event.Type)
+	}
+	return kinds
+}
+
+// publishedOfKind is every mutation of one kind the server has announced.
+func publishedOfKind(server *Server, kind string) []mutationEvent {
+	server.mutations.mutex.Lock()
+	defer server.mutations.mutex.Unlock()
+
+	var found []mutationEvent
+	for _, event := range server.mutations.recent {
+		if event.Type == kind {
+			found = append(found, event)
+		}
+	}
+	return found
 }
 
 // decodeBody reads a JSON answer.

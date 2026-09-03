@@ -182,10 +182,15 @@ func (server *Server) handleAddEntryAttachment(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	entryID := ""
 	if err := server.changeNode(path, userID, core.WritePermission, func(node *core.Node) error {
 		if err := node.AddEntryAttachment(eventID, index, attachment, userID); err != nil {
 			return apiErrorf(http.StatusInternalServerError, "Failed to add attachment to entry")
 		}
+		// The entry this landed on, NAMED. The route addresses it by index because that is the URL
+		// it has always had; the feed says the id, because an index is invalidated by the deletes
+		// that now exist and a client watching one entry needs a name that is not.
+		entryID = node.Events[eventID].Entries[index].ID
 		return nil
 	}); err != nil {
 		writeAPIError(w, err)
@@ -197,6 +202,7 @@ func (server *Server) handleAddEntryAttachment(w http.ResponseWriter, r *http.Re
 	announced := mutation(mutationAttachmentAdded, path)
 	announced.EventID = eventID
 	announced.EntryIndex = index
+	announced.EntryID = entryID
 	server.publish(announced)
 
 	w.Header().Set("Content-Type", "application/json")

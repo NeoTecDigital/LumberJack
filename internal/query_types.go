@@ -185,6 +185,11 @@ type eventResultView struct {
 // EventID is empty for an entry recorded on the node itself rather than inside an event, which is
 // what time tracking and the activity log write.
 type entryResultView struct {
+	// ID is the entry's own identity. EntryIndex is still reported, because it is what an
+	// attachment route still addresses an entry by and what a client that pages results reads as a
+	// position — but it is a POSITION and not a name: it moves under every insertion and every
+	// deletion before it, and only the id survives them.
+	ID         string                 `json:"id"`
 	NodePath   string                 `json:"node_path"`
 	EventID    string                 `json:"event_id,omitempty"`
 	EntryIndex int                    `json:"entry_index"`

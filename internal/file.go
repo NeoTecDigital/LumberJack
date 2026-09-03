@@ -41,6 +41,15 @@ func (server *Server) loadFromFile(filename string) error {
 		return err
 	}
 
+	// EVERY ENTRY GETS AN IDENTITY BEFORE THE FOREST IS SERVED. A file written before Entry.ID
+	// existed carries entries with none, and an entry with no id is one DELETE /entries/{id} can
+	// never name. The ids are DERIVED from the position the file already records, so they are the
+	// same on every load of that file rather than fresh on every start, and the ordinary persist
+	// carries them to disk at the first mutation. See core/entry_identity.go.
+	if named := core.BackfillEntryIDs(forest); named > 0 {
+		server.logger.Info("Named %d entries that were written before entries had ids", named)
+	}
+
 	server.forest = forest
 	// The forest is NOT logged. It carries its users, and its users carry bcrypt hashes; Debug is
 	// ungated and the log file it writes to is the one GET /logs serves.

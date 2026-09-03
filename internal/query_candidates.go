@@ -180,6 +180,7 @@ func entryCandidates(at visit) []candidate {
 // query can select the entries of ongoing inspections without first selecting the events.
 func entryCandidate(at visit, eventID string, index int, entry core.Entry, category, status string) candidate {
 	view := entryResultView{
+		ID:         entry.ID,
 		NodePath:   at.path,
 		EventID:    eventID,
 		EntryIndex: index,
@@ -244,6 +245,12 @@ func timeSpanCandidates(at visit) []candidate {
 }
 
 // timeSpanCandidate flattens one closed span.
+//
+// The span is NAMED BY THE ENTRY THAT OPENS IT. Its id used to be "span-<index>", built from the
+// position of the STOP — which moves under every insertion and every deletion before it, so the
+// same span answered to a different name after any edit and the name pointed at a different span.
+// A span is not stored, so the start's id is the only identity it can have. DELETE /time/{id} takes
+// exactly this id.
 func timeSpanCandidate(at visit, index int, started, stopped core.Entry) candidate {
 	// UNITS: the view reports duration_ms in MILLISECONDS, truncated. The same span is SECONDS as
 	// /aggregate's duration_sum and NANOSECONDS as GET /time's duration.
@@ -254,7 +261,7 @@ func timeSpanCandidate(at visit, index int, started, stopped core.Entry) candida
 		Kind:      selectTime,
 		NodePath:  at.path,
 		NodeID:    at.node.ID,
-		ID:        fmt.Sprintf("span-%d", index),
+		ID:        started.ID,
 		Index:     index,
 		UserID:    started.UserID,
 		Text:      []string{at.node.Name, at.path},
@@ -268,6 +275,7 @@ func timeSpanCandidate(at visit, index int, started, stopped core.Entry) candida
 		Duration:    duration,
 		HasDuration: true,
 		View: map[string]interface{}{
+			"id":          started.ID,
 			"node_path":   at.path,
 			"user_id":     started.UserID,
 			"start_time":  started.Timestamp,

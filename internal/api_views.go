@@ -45,7 +45,11 @@ type attachmentView struct {
 }
 
 // entryView is an entry as a client may see one, attachments projected.
+//
+// ID is carried because an entry that cannot be named cannot be replied to, edited or deleted: it
+// is the whole reason core.Entry has one. Every route that returns an entry returns it.
 type entryView struct {
+	ID          string                 `json:"id"`
 	Content     interface{}            `json:"content"`
 	Metadata    map[string]interface{} `json:"metadata"`
 	UserID      string                 `json:"user_id"`
@@ -147,6 +151,7 @@ func newAttachmentViews(attachments map[string]core.Attachment) map[string]attac
 // newEntryView projects one entry.
 func newEntryView(entry core.Entry) entryView {
 	view := entryView{
+		ID:         entry.ID,
 		Content:    copyValue(entry.Content),
 		Metadata:   copyMetadataMap(entry.Metadata),
 		UserID:     entry.UserID,

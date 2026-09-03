@@ -29,10 +29,16 @@ func (server *Server) handleStartTimeTracking(w http.ResponseWriter, r *http.Req
 
 	// changeNode resolves a PATH, not a node id: GetNode matches ids, ids are generated, and no
 	// client can name one — these routes could only ever 404 when they used it.
+	// The opening entry's id is read back inside the hold, because it is the NAME OF THE SPAN: a
+	// span is two entries read as a pair and is not stored, so the start's id is the only identity
+	// it has, and DELETE /time/{id} takes exactly this one.
+	spanID := ""
 	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		if _, err := node.StartTimeTracking(userID); err != nil {
+		started, err := node.StartTimeTracking(userID)
+		if err != nil {
 			return apiErrorf(http.StatusForbidden, "%v", err)
 		}
+		spanID = started.ID
 		return nil
 	})
 	if err != nil {
@@ -40,8 +46,15 @@ func (server *Server) handleStartTimeTracking(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	server.publish(mutation(mutationEntryAdded, request.Path))
-	w.WriteHeader(http.StatusOK)
+	announced := mutation(mutationEntryAdded, request.Path)
+	announced.EntryID = spanID
+	server.publish(announced)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":        spanID,
+		"node_path": server.canonicalPath(request.Path),
+	})
 }
 
 // HTTP handler for stopping time tracking
@@ -66,10 +79,13 @@ func (server *Server) handleStopTimeTracking(w http.ResponseWriter, r *http.Requ
 	// the same hold, so it reports the span this call just closed and not one a later request
 	// opened.
 	var summary []map[string]interface{}
+	stoppedID := ""
 	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		if _, err := node.StopTimeTracking(userID); err != nil {
+		stopped, err := node.StopTimeTracking(userID)
+		if err != nil {
 			return apiErrorf(http.StatusForbidden, "%v", err)
 		}
+		stoppedID = stopped.ID
 		summary = node.GetTimeTrackingSummary(userID)
 		return nil
 	})
@@ -90,7 +106,10 @@ func (server *Server) handleStopTimeTracking(w http.ResponseWriter, r *http.Requ
 		session["node_path"] = trackedOn
 	}
 
-	server.publish(mutation(mutationEntryAdded, request.Path))
+	announced := mutation(mutationEntryAdded, request.Path)
+	announced.EntryID = stoppedID
+	server.publish(announced)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(summary)
 }

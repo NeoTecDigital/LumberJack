@@ -193,6 +193,16 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 	router.HandleFunc("/events/start", s.authMiddleware(s.handleStartEvent)).Methods("POST")
 	router.HandleFunc("/events/append", s.authMiddleware(s.handleAppendToEvent)).Methods("POST")
 	router.HandleFunc("/events/end", s.authMiddleware(s.handleEndEvent)).Methods("POST")
+	// Cancelling an event and moving one. Registered AFTER the named /events/* verbs, and matching
+	// only DELETE and PATCH, so /events/plan can never be read as an event whose id is "plan":
+	// gorilla matches in registration order and by method, and both guards are wanted here rather
+	// than either alone.
+	router.HandleFunc("/events/{id}", s.authMiddleware(s.handleDeleteEvent)).Methods("DELETE")
+	router.HandleFunc("/events/{id}", s.authMiddleware(s.handleUpdateEvent)).Methods("PATCH")
+	// Retracting one entry, and removing one tracked span. Both address the thing by ID and take
+	// the node as ?path=, which is what DELETE /attachments/{id} already does.
+	router.HandleFunc("/entries/{id}", s.authMiddleware(s.handleDeleteEntry)).Methods("DELETE")
+	router.HandleFunc("/time/{id}", s.authMiddleware(s.handleDeleteTimeSpan)).Methods("DELETE")
 	router.HandleFunc("/nodes", s.authMiddleware(s.handleCreateNode)).Methods("POST")
 	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
 	router.HandleFunc("/forest/tree", s.authMiddleware(s.handleGetTree)).Methods("GET")
@@ -220,6 +230,13 @@ func (s *Server) registerQueryRoutes(router *mux.Router) {
 	router.HandleFunc("/nodes/link", s.authMiddleware(s.handleUnlinkNode)).Methods("DELETE")
 	router.HandleFunc("/nodes/{path:.*}/metadata", s.authMiddleware(s.handlePatchNodeMetadata)).Methods("PATCH")
 	router.HandleFunc("/nodes/{path:.*}", s.authMiddleware(s.handleGetNode)).Methods("GET")
+	// DELETE /nodes/{path} removes a NODE. It is registered HERE, in the same block as the canvas
+	// routes and AFTER /nodes/link, rather than beside the other mutating routes above — because
+	// registerRecordRoutes runs first, and a {path} catch-all registered there would swallow
+	// DELETE /nodes/link and turn every edge removal into an attempt to delete a node called
+	// "link". The two operations are different and the router must not be able to confuse them
+	// either. See api_node_delete.go for why they are different.
+	router.HandleFunc("/nodes/{path:.*}", s.authMiddleware(s.handleDeleteNode)).Methods("DELETE")
 	// The live feed. Registered last of these because it never returns while a client is connected.
 	router.HandleFunc("/stream", s.authMiddleware(s.handleStream)).Methods("GET")
 }

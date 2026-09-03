@@ -178,14 +178,18 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 	// complete" read back an object with a timestamp and a user id nested inside it, and a text
 	// search over entry content was searching the printed form of a struct.
 	entryIndex := -1
+	entryID := ""
 	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
 		if err := node.AppendToEvent(request.EventID, userID, request.Content, request.Metadata); err != nil {
 			return apiErrorf(http.StatusInternalServerError, "Failed to append to event: %v", err)
 		}
 
 		// Read back INSIDE the hold: the index of what was just appended is only this entry's index
-		// for as long as nothing else appends.
-		entryIndex = len(node.Events[request.EventID].Entries) - 1
+		// for as long as nothing else appends. The ID read here is why that no longer matters to
+		// anyone downstream — it names this entry after the index has moved on.
+		appended := node.Events[request.EventID].Entries
+		entryIndex = len(appended) - 1
+		entryID = appended[entryIndex].ID
 		return nil
 	})
 	if err != nil {
@@ -196,8 +200,19 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 	announced := mutation(mutationEntryAdded, request.Path)
 	announced.EventID = request.EventID
 	announced.EntryIndex = entryIndex
+	announced.EntryID = entryID
 	server.publish(announced)
-	w.WriteHeader(http.StatusOK)
+
+	// The id is ANSWERED, not only announced. A client that has just posted a message needs to be
+	// able to name it — to edit it, delete it or be replied to — without going back to the feed and
+	// guessing which of the entries there is the one it wrote.
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":          entryID,
+		"event_id":    request.EventID,
+		"entry_index": entryIndex,
+		"node_path":   server.canonicalPath(request.Path),
+	})
 }
 
 // HTTP handler for getting event entries

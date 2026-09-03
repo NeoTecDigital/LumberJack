@@ -37,6 +37,15 @@ func GenerateNodeID() string {
 	return generateID("node")
 }
 
+// GenerateEntryID generates a unique ID for an entry.
+//
+// EVERY entry gets one, wherever it is written from — an event append, a time-tracking sentinel or
+// the activity log — because a route that addresses an entry by id must be able to address any
+// entry, and an entry with no id is one no client can name.
+func GenerateEntryID() string {
+	return generateID("entry")
+}
+
 // StartEvent starts a new event or schedules it for the future
 func (n *Node) StartEvent(eventID string, userID string, plannedStart, plannedEnd *time.Time, metadata map[string]interface{}) error {
 	if n.Type != LeafNode {
@@ -138,6 +147,7 @@ func (n *Node) AppendToEvent(eventID string, userID string, content interface{},
 
 	now := time.Now()
 	entry := Entry{
+		ID:         GenerateEntryID(),
 		Timestamp:  now,
 		Content:    content,
 		Metadata:   metadata,
@@ -249,6 +259,7 @@ func (n *Node) StartTimeTracking(userID string) (*Entry, error) {
 	defer n.mutex.Unlock()
 
 	entry := Entry{
+		ID:        GenerateEntryID(),
 		Timestamp: time.Now(),
 		UserID:    userID,
 		Content:   TimeEntryStart,
@@ -269,6 +280,7 @@ func (n *Node) StopTimeTracking(userID string) (*Entry, error) {
 	defer n.mutex.Unlock()
 
 	entry := Entry{
+		ID:        GenerateEntryID(),
 		Timestamp: time.Now(),
 		UserID:    userID,
 		Content:   TimeEntryStop,

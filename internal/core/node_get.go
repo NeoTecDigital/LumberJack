@@ -130,6 +130,11 @@ func (n *Node) GetTimeTrackingSummary(userID string) []map[string]interface{} {
 			} else if entry.Content == TimeEntryStop && startTime != nil {
 				duration := entry.Timestamp.Sub(startTime.Timestamp)
 				summary = append(summary, map[string]interface{}{
+					// A SPAN IS NAMED BY THE ENTRY THAT OPENS IT. A span is not stored — it is two
+					// entries read as a pair — so it has no identity of its own to carry, and the
+					// start's id is the only name for it that survives an entry being inserted
+					// before it. DELETE /time/{id} takes exactly this id.
+					"id":         startTime.ID,
 					"start_time": startTime.Timestamp,
 					"end_time":   entry.Timestamp,
 					"duration":   duration,
