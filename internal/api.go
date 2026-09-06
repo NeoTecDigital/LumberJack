@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -33,6 +35,33 @@ func newJWTConfig() (JWTConfig, error) {
 	}, nil
 }
 
+// LoopbackHost is where the engine listens unless it is told otherwise, IN SO MANY WORDS.
+//
+// The address used to be built as ":" + port, which is every interface the host has — here that is
+// the LAN address, a Tailscale address and a VPN address as well as loopback, with no TLS and no
+// CORS anywhere in front of the login route. The relay in front of the engine binds loopback by
+// default for exactly this reason (RELAY_HOST in backend/.env.example); the engine now says the
+// same thing, so the two agree and neither is the hole.
+const LoopbackHost = "127.0.0.1"
+
+// ListenAddr resolves what the HTTP server binds.
+//
+// An unset BindHost is read as LOOPBACK rather than passed through, because passing it through is
+// what net/http turns into every interface. Reaching the engine from another machine is a
+// deliberate act: `lumberjack serve --host`, or LUMBERJACK_HOST.
+//
+// EXPORTED so the entrypoint that resolves the host can be tested against the same function the
+// listener is built from. cmd holds the flag and the environment; this holds the rule; and the one
+// line that carries the first into the second is testable only if both sides are reachable from
+// one test. See TestServeBindHostReachesTheListener.
+func ListenAddr(process types.ProcessInfo) string {
+	host := strings.TrimSpace(process.BindHost)
+	if host == "" {
+		host = LoopbackHost
+	}
+	return net.JoinHostPort(host, process.ServerPort)
+}
+
 // newServerShell builds what BOTH entrypoints start from: a fresh forest, the signing key, the
 // logger and the HTTP server. NewServer and LoadServer differ in what they put IN the forest, not
 // in how the shell around it is made, and the block was written out twice.
@@ -49,7 +78,7 @@ func newServerShell(config types.ServerConfig) (*Server, error) {
 		logger:    logger,
 		logCloser: logCloser,
 		server: &http.Server{
-			Addr:    ":" + config.Process.ServerPort,
+			Addr:    ListenAddr(config.Process),
 			Handler: mux.NewRouter(),
 		},
 		config: config,
@@ -146,7 +175,7 @@ func (s *Server) Start() error {
 
 	s.server.Handler = s.routes()
 	go func() {
-		s.logger.Info("API server starting on http://localhost" + s.server.Addr)
+		s.logger.Info("API server starting on http://" + s.server.Addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.logger.Failure("API server error: %v", err)
 		}

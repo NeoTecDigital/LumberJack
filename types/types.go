@@ -1,10 +1,15 @@
 package types
 
 type ProcessInfo struct {
-	ID            string `json:"id"`
-	PID           int    `json:"pid"`
-	Name          string `json:"name"`
-	ServerURL     string `json:"server_url"`
+	ID        string `json:"id"`
+	PID       int    `json:"pid"`
+	Name      string `json:"name"`
+	ServerURL string `json:"server_url"`
+	// BindHost is the address the API server LISTENS on, and is deliberately separate from
+	// ServerURL, which is the address callers are told to reach it at and which the settings route
+	// lets a session change. An empty value is not "every interface": internal.ListenAddr reads it
+	// as loopback. Binding anywhere else is an explicit act — see `lumberjack serve --host`.
+	BindHost      string `json:"bind_host,omitempty"`
 	ServerPort    string `json:"server_port"`
 	DashboardPort string `json:"dashboard_port"`
 	DashboardURL  string `json:"dashboard_url,omitempty"`
