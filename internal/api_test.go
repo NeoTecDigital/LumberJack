@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 var (

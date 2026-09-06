@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/viper"
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // compares two byte slices for equality

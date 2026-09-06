@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // The one lock over the forest, and the shapes every route uses to take it.

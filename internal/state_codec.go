@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // What the state file holds, and why it is not the forest as JSON.

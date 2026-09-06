@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // eventIDRequired is what a caller is told when it names no event. An event is stored UNDER its id,

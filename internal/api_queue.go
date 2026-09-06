@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // The read cache over the forest, and the worker pool that reads through it.

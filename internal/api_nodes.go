@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // The node types a client may ask for by name. The forest is branches and leaves; events live on

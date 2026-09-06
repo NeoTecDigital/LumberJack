@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 type DashboardServer struct {

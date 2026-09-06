@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/types"
 	"golang.org/x/exp/rand"
 )
 

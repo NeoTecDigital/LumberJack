@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // The listing routes. Each one is a QUERY, not a second implementation of one.

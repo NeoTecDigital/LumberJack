@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // queryOf runs POST /query and decodes the answer.

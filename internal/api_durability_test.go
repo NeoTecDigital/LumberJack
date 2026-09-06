@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // THE DEFECT: POST /events/start answered 200 for an event that afterwards existed neither in the

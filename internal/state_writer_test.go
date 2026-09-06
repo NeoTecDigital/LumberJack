@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // THE DEFECT: the state file was fsynced INSIDE the exclusive forest hold, so every request queued

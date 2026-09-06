@@ -8,9 +8,9 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"github.com/vaziolabs/lumberjack/internal"
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // adminPassEnv is the other way to give the first admin a password. There is no third way: the

@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // The state file holds the WHOLE forest, and the forest holds every user's bcrypt hash. It is

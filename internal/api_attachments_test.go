@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // THE DEFECT: POST /attachments/upload answered 200 and kept NOTHING. It built the attachment out

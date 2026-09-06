@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // What a route may never emit, and the shape of the forest it has to survive emitting.

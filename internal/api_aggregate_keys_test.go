@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // What a bucket KEY means, as opposed to what a bucket counts.

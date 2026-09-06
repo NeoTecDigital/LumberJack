@@ -14,10 +14,10 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/vaziolabs/lumberjack/internal"
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/internal/dashboard"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/dashboard"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // The directories the CLI keeps its logs, databases and process records in. Variables rather than

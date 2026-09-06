@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // How long a lookup over two process records is allowed to take before we call it wedged. The

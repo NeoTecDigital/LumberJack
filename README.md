@@ -7,12 +7,12 @@ The LumberJack API provides a hierarchical event tracking system where nodes can
 
 ### Using as a Package
 ```bash
-go get github.com/vaziolabs/lumberjack
+go get github.com/NeoTecDigital/LumberJack
 ```
 
 ### Building from Source
 ```bash
-git clone https://github.com/vaziolabs/lumberjack.git
+git clone https://github.com/NeoTecDigital/LumberJack.git
 cd lumberjack
 go build
 ```

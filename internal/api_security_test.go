@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
-	"github.com/vaziolabs/lumberjack/types"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 // bcryptPrefixes are what a bcrypt hash starts with. Finding one in a response body means the

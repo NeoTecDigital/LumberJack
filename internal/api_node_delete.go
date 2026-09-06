@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // DELETE /nodes/{path} — remove a NODE. Not an edge.

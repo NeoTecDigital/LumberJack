@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // DELETE /nodes/{path}.

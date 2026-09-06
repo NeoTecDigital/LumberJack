@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vaziolabs/lumberjack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // get calls a handler the way authMiddleware would, on a GET with a query string.
