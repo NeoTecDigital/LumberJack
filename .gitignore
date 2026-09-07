@@ -4,3 +4,4 @@ lumberjack-bin
 *.dat.tmp
 data/
 logs/
+/build/
