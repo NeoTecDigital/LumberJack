@@ -135,6 +135,11 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 	defer server.logger.Exit("NewServer")
 
 	if err := server.installAdmin(adminUser); err != nil {
+		// newServerCore has already started the runtime, and this returns (nil, err) — no caller will
+		// hold the *Server to Shutdown it. The full Shutdown, not a partial teardown: it stops the
+		// workers AND releases the log file, so a construction that fails in a loop leaks neither
+		// goroutines nor descriptors, and it is idempotent through shutdownOnce.
+		_ = server.Shutdown(context.Background())
 		return nil, err
 	}
 
@@ -154,10 +159,41 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 	server.logger.Debug("Loading database from %s", dbPath)
 	if err := server.loadFromFile(dbPath); err != nil {
 		server.logger.Failure("failed to load database: %v", err)
+		_ = server.Shutdown(context.Background())
 		return nil, err
 	}
 
 	server.logger.Info("Loaded existing database from %s", dbPath)
+	return server, nil
+}
+
+// NewCore opens a core-only server — no HTTP, no signing key — over a config, loading the state file
+// if it holds one and starting on a fresh forest if it does not.
+//
+// It is what the embedded runtime opens. An ABSENT file is a fresh install; an EMPTY one holds no
+// forest and is also fresh; a file with content is loaded. Any OTHER stat error — a path that exists
+// but cannot be read — is a real fault and is returned, NOT swallowed as "fresh": treating an
+// unreadable state as empty would start on a blank forest and clobber it on the first persist. A load
+// failure tears the runtime back down rather than leaking it.
+func NewCore(config types.ServerConfig) (*Server, error) {
+	server := newServerCore(config)
+
+	dbPath := server.statePath()
+	info, err := os.Stat(dbPath)
+	switch {
+	case os.IsNotExist(err):
+		return server, nil
+	case err != nil:
+		_ = server.Shutdown(context.Background())
+		return nil, err
+	case info.Size() == 0:
+		return server, nil
+	}
+
+	if err := server.loadFromFile(dbPath); err != nil {
+		_ = server.Shutdown(context.Background())
+		return nil, err
+	}
 	return server, nil
 }
 

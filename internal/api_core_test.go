@@ -14,7 +14,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
@@ -94,6 +96,86 @@ func TestStartRefusesCoreOnlyServer(t *testing.T) {
 			t.Fatal("Start must refuse a core-only server with no HTTP server")
 		}
 	})
+}
+
+func TestFailedLoadServerLeavesNoGoroutines(t *testing.T) {
+	// newServerCore starts the runtime, so a LoadServer that fails at loadFromFile has five workers
+	// already running and returns (nil, err) — no caller holds a *Server to Shutdown. Without the
+	// Shutdown on that error path they leak, and embedded.Open would leak five per failed attempt.
+	cfg := coreConfig()
+	cfg.Process.DatabasePath = t.TempDir()
+	cfg.Process.Name = "state-that-does-not-exist"
+
+	// Settle first: this suite starts servers in other tests, so measure against a quiet baseline.
+	settleGoroutines(t)
+	before := runtime.NumGoroutine()
+
+	server, err := LoadServer(cfg)
+	if err == nil {
+		if server != nil {
+			server.Shutdown(context.Background())
+		}
+		t.Fatal("LoadServer over an absent state file must fail")
+	}
+
+	if !goroutinesReturnTo(before) {
+		t.Fatalf("a failed LoadServer leaked goroutines: %d before, %d after",
+			before, runtime.NumGoroutine())
+	}
+}
+
+// settleGoroutines waits for the count to stop moving, so a measurement is taken against a quiet
+// runtime rather than one still winding down from an earlier test.
+func settleGoroutines(t *testing.T) {
+	t.Helper()
+	last := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		time.Sleep(10 * time.Millisecond)
+		now := runtime.NumGoroutine()
+		if now == last {
+			return
+		}
+		last = now
+	}
+}
+
+// goroutinesReturnTo reports whether the count falls back to the baseline within a short window; the
+// workers exit asynchronously after their shutdown channel closes.
+func goroutinesReturnTo(baseline int) bool {
+	for i := 0; i < 100; i++ {
+		if runtime.NumGoroutine() <= baseline {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func TestReadAfterShutdownReturnsRatherThanHangs(t *testing.T) {
+	server := newServerCore(coreConfig())
+	server.forest.Users = []core.User{{ID: "admin", Permissions: []core.Permission{core.AdminPermission}}}
+
+	// Shutdown stops the workers WITHOUT draining the queue. A queued read arriving afterwards — a
+	// call racing Close, or one on a stale handle — must answer on the shutdown signal rather than
+	// block forever on a response no worker is left to send.
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := server.StatusOf("admin", "work/site")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a read after shutdown returned no error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a read after shutdown hung instead of returning")
+	}
 }
 
 func TestShutdownClosesCoreOnlyServer(t *testing.T) {

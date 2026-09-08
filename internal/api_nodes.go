@@ -92,15 +92,13 @@ func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, u
 
 // writeCreatedNode answers with where the thing the caller just made lives.
 //
-// The node itself is NOT the answer: it carries its users, and its users carry password hashes.
+// The node itself is NOT the answer: it carries its users, and its users carry password hashes. The
+// answer's SHAPE lives in nodeAnswerView, encoded here and returned by the embedded CreateNode, so
+// the four keys exist in exactly one place. NodeAnswer's fields are ordered id, name, path, type to
+// match the sorted-key output the map here used to emit — the HTTP bytes are unchanged.
 func writeCreatedNode(w http.ResponseWriter, created nodeAnswer, canonical string) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":   created.id,
-		"name": created.name,
-		"path": canonical,
-		"type": nodeTypeName(created.nodeType),
-	})
+	json.NewEncoder(w).Encode(nodeAnswerView(created, canonical))
 }
 
 // nodeAnswer is everything the response says about the node that was made, COPIED out of it while
@@ -127,11 +125,22 @@ func decodeNodeRequest(r *http.Request) (string, core.NodeType, error) {
 		return "", core.LeafNode, apiErrorf(http.StatusBadRequest, "%v", err)
 	}
 
-	nodeType, err := nodeTypeOf(request.Type)
+	nodeType, err := nodeTypeFrom(request)
 	if err != nil {
-		return "", core.LeafNode, apiErrorf(http.StatusBadRequest, "%v", err)
+		return "", core.LeafNode, err
 	}
 	return request.Path, nodeType, nil
+}
+
+// nodeTypeFrom reads the kind of node a request asks for, as the failure a client is answerable for.
+// One place maps the name to a NodeType and wraps a bad one as a 400, so the HTTP route and the
+// embedded API cannot come to disagree about what a type name means. See nodeTypeOf for the mapping.
+func nodeTypeFrom(request nodeRequest) (core.NodeType, error) {
+	nodeType, err := nodeTypeOf(request.Type)
+	if err != nil {
+		return core.LeafNode, apiErrorf(http.StatusBadRequest, "%v", err)
+	}
+	return nodeType, nil
 }
 
 // createNodePath walks the path from the root, creating what is not there yet.

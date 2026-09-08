@@ -224,6 +224,39 @@ func (server *Server) pollMutations(after uint64) ([]mutationEvent, bool) {
 	return server.mutations.pollSince(after)
 }
 
+// PollMutationsBlocking reads the ring after a cursor, waiting up to timeout for something to appear
+// if it is empty and returning at once if cancel is closed.
+//
+// It holds a subscription ONLY while it waits, never between calls — the ring is where the data comes
+// from, deeper than a subscriber's channel and able to announce its own gap via caughtUp, and the
+// subscription is used only as a doorbell so a wait ends the instant a mutation lands rather than
+// after the whole timeout. cancel is the caller's own shutdown signal — the embedded runtime's — so a
+// Close returns a blocked poll in milliseconds instead of timeout.
+func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration, cancel <-chan struct{}) ([]mutationEvent, bool) {
+	events, caughtUp := server.pollMutations(after)
+	if len(events) > 0 || !caughtUp || server.mutations == nil {
+		return events, caughtUp
+	}
+
+	sub := server.mutations.subscribe(after, false)
+	defer server.mutations.unsubscribe(sub)
+
+	// Re-read AFTER subscribing: a mutation published between the first read and the subscription
+	// arrives on neither, and would otherwise cost a full timeout to notice.
+	if events, caughtUp := server.pollMutations(after); len(events) > 0 || !caughtUp {
+		return events, caughtUp
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-sub.events:
+	case <-timer.C:
+	case <-cancel:
+	}
+	return server.pollMutations(after)
+}
+
 // mutation builds an event to publish. EntryIndex defaults to -1, which is what "not about an
 // entry" has to look like when 0 is a real index.
 func mutation(kind, nodePath string) mutationEvent {

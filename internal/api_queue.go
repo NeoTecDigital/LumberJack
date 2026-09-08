@@ -2,10 +2,19 @@ package internal
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
+
+// errServerShuttingDown answers a queued read that raced the worker pool's teardown.
+//
+// The workers return on the shutdown signal WITHOUT draining the queue, so a request already handed
+// to the pool would otherwise block forever on a response no worker is left to send. A caller — an
+// embedded Close, a C caller on a stale handle — gets an error it can act on rather than a hung
+// thread, which is the difference the FFI's "a call after close is not a crash" contract rests on.
+var errServerShuttingDown = apiErrorf(http.StatusServiceUnavailable, "server is shutting down")
 
 // The read cache over the forest, and the worker pool that reads through it.
 
@@ -106,19 +115,30 @@ func (server *Server) queuedNodeView(path, userID string) (nodeView, error) {
 		Response: responseChan,
 	}
 
-	server.apiQueue.queue <- request
-	response := <-responseChan
-
-	if response.Error != nil {
-		return nodeView{}, response.Error
+	// Both the hand-off and the wait select on the shutdown signal. Without it a read that arrives
+	// once the workers have stopped — a call racing Close, or one on a stale handle — enqueues into
+	// the buffered channel and then blocks forever on a response that will never come. See
+	// errServerShuttingDown.
+	select {
+	case server.apiQueue.queue <- request:
+	case <-server.apiQueue.shutdown:
+		return nodeView{}, errServerShuttingDown
 	}
 
-	switch result := response.Data.(type) {
-	case error:
-		return nodeView{}, result
-	case nodeView:
-		return result, nil
-	default:
-		return nodeView{}, fmt.Errorf("unexpected response reading node %q", path)
+	select {
+	case response := <-responseChan:
+		if response.Error != nil {
+			return nodeView{}, response.Error
+		}
+		switch result := response.Data.(type) {
+		case error:
+			return nodeView{}, result
+		case nodeView:
+			return result, nil
+		default:
+			return nodeView{}, fmt.Errorf("unexpected response reading node %q", path)
+		}
+	case <-server.apiQueue.shutdown:
+		return nodeView{}, errServerShuttingDown
 	}
 }

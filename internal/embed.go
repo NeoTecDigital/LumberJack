@@ -17,10 +17,6 @@
 // it, so it stays internal until one does.
 package internal
 
-import (
-	"net/http"
-)
-
 // The request and view types, exported by ALIAS. `=` makes each the very same type, so a value built
 // here and a value the routes decode are interchangeable and the json tags stay in one place.
 type (
@@ -40,13 +36,28 @@ type (
 )
 
 // NodeAnswer is what CreateNode reports: where the node it made now lives. It is a real definition,
-// not an alias, because nodeAnswer's fields are unexported — this is the projection that exposes
-// them, and it carries exactly what writeCreatedNode already answers over HTTP.
+// not an alias, because nodeAnswer's fields are unexported — this is the projection that exposes them,
+// and it carries exactly what writeCreatedNode answers over HTTP.
+//
+// The field order is id, name, path, type DELIBERATELY: writeCreatedNode used to emit a map, whose
+// keys Go's encoder sorts, and that sorted order is this. Encoding this struct therefore produces the
+// same bytes the HTTP route always did.
 type NodeAnswer struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	Type string `json:"type"`
 	Path string `json:"path"`
+	Type string `json:"type"`
+}
+
+// nodeAnswerView is the one place the shape of a created-node answer lives, so a renamed field cannot
+// fork the HTTP bytes from the value the embedded CreateNode returns.
+func nodeAnswerView(created nodeAnswer, canonical string) NodeAnswer {
+	return NodeAnswer{
+		ID:   created.id,
+		Name: created.name,
+		Path: canonical,
+		Type: nodeTypeName(created.nodeType),
+	}
 }
 
 // Status reports the HTTP status an apiError carries, so an embedder — and the C ABI's status enum —
@@ -56,9 +67,9 @@ func (e *apiError) Status() int { return e.status }
 
 // CreateNode makes the node a path names and returns where it lives.
 func (server *Server) CreateNode(userID string, request CreateNodeRequest) (NodeAnswer, error) {
-	nodeType, err := nodeTypeOf(request.Type)
+	nodeType, err := nodeTypeFrom(request)
 	if err != nil {
-		return NodeAnswer{}, apiErrorf(http.StatusBadRequest, "%v", err)
+		return NodeAnswer{}, err
 	}
 
 	created, err := server.createNodeUnderHold(request.Path, nodeType, userID)
@@ -66,12 +77,7 @@ func (server *Server) CreateNode(userID string, request CreateNodeRequest) (Node
 		return NodeAnswer{}, err
 	}
 
-	return NodeAnswer{
-		ID:   created.id,
-		Name: created.name,
-		Type: nodeTypeName(created.nodeType),
-		Path: server.canonicalPath(request.Path),
-	}, nil
+	return nodeAnswerView(created, server.canonicalPath(request.Path)), nil
 }
 
 // PlanEvent schedules a future event and returns the mutation it announced.

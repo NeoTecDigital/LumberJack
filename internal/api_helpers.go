@@ -86,7 +86,15 @@ func walkNames(root *core.Node, segments []string) (*core.Node, bool) {
 // The anchor is only as absolute as DatabasePath — the CLI always sets it under
 // /var/lib/lumberjack; a config without one keeps the old relative behaviour.
 func (server *Server) statePath() string {
-	return filepath.Join(server.config.Process.DatabasePath, server.config.Process.Name+".dat")
+	return StatePath(server.config)
+}
+
+// StatePath is the file a config's forest is persisted to, computed BEFORE any server exists to ask —
+// the embedded runtime needs it to key its per-path refcount and to flock, both of which happen
+// before construction. One definition, so the embedded layer and the running server never disagree
+// about which file a config means.
+func StatePath(config types.ServerConfig) string {
+	return filepath.Join(config.Process.DatabasePath, config.Process.Name+".dat")
 }
 
 // logFilePath is the file this process logs to, and the file GET /logs pages.
