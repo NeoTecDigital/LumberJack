@@ -172,19 +172,24 @@ func (stream *mutationStream) publish(event mutationEvent) mutationEvent {
 	return event
 }
 
-// publish announces a mutation on the server's stream.
+// publish announces a mutation on the server's stream and RETURNS what it announced.
 //
 // Called AFTER the change has been persisted and acknowledged, never before: an announcement of
 // something that has not been written is the same lie as a 200 for it.
-func (server *Server) publish(event mutationEvent) {
-	if server.mutations == nil {
-		return
-	}
+//
+// The value is returned so an extracted handler body — the one surface HTTP and the embedded API
+// share — hands its caller the announced event rather than reconstructing it. A caller receives
+// the sequenced, canonical event the feed saw, not a second copy it has to keep in step.
+func (server *Server) publish(event mutationEvent) mutationEvent {
 	// The path is CANONICALISED here, once, rather than at each of the eleven call sites: a feed
 	// that names a node differently depending on which route changed it cannot be joined against
-	// anything the query surface returned. See node_path.go.
+	// anything the query surface returned. See node_path.go. It is canonicalised even on an
+	// embedded server with no stream, so the returned event names the node the way every read does.
 	event.NodePath = server.canonicalPath(event.NodePath)
-	server.mutations.publish(event)
+	if server.mutations == nil {
+		return event
+	}
+	return server.mutations.publish(event)
 }
 
 // mutation builds an event to publish. EntryIndex defaults to -1, which is what "not about an

@@ -2,7 +2,6 @@ package internal
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -71,45 +70,16 @@ func (server *Server) handleStartEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request struct {
-		Path     string                 `json:"path"`
-		EventID  string                 `json:"event_id"`
-		Metadata map[string]interface{} `json:"metadata"`
-	}
-
+	var request startEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if !validEventID(request.EventID) {
-		http.Error(w, eventIDRequired, http.StatusBadRequest)
-		return
-	}
-
-	// The lookup, the permission check, the start and the persist are ONE exclusive hold on the
-	// forest. Split apart, the persist serialized a graph other requests were writing into, and the
-	// event this route had just acknowledged could be dropped out of the map it was inserted in.
-	// See forest_lock.go.
-	//
-	// The permission is checked HERE as well as inside StartEvent. core.StartEvent does close the
-	// hole, but it closes it by returning an error, and every error out of it was reported as 500 —
-	// so a refusal was indistinguishable from a server fault, and disagreed with /events/plan and
-	// /events/end.
-	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		if err := node.StartEvent(request.EventID, userID, nil, nil, request.Metadata); err != nil {
-			return apiErrorf(http.StatusInternalServerError, "Start event error: %v", err)
-		}
-		return nil
-	})
-	if err != nil {
+	if _, err := server.startEvent(userID, request); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-
-	announced := mutation(mutationEventStarted, request.Path)
-	announced.EventID = request.EventID
-	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -121,32 +91,16 @@ func (server *Server) handleEndEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request struct {
-		Path    string `json:"path"`
-		EventID string `json:"event_id"`
-	}
-
+	var request endEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Persisted inside the hold for the same reason a planned event is: an end that is never
-	// written is an event that comes back ongoing on the next start.
-	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		if err := node.EndEvent(request.EventID, userID); err != nil {
-			return apiErrorf(http.StatusInternalServerError, "%v", err)
-		}
-		return nil
-	})
-	if err != nil {
+	if _, err := server.endEvent(userID, request); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-
-	announced := mutation(mutationEventEnded, request.Path)
-	announced.EventID = request.EventID
-	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -158,68 +112,30 @@ func (server *Server) handleAppendToEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var request struct {
-		Path     string                 `json:"path"`
-		EventID  string                 `json:"event_id"`
-		Content  string                 `json:"content"`
-		Metadata map[string]interface{} `json:"metadata"`
-	}
-
+	var request appendEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// The same explicit check, for the same reason: AppendToEvent refuses without write permission
-	// and its refusal was answered as 500.
-	// The CONTENT is passed, not an Entry built around it. AppendToEvent's third argument IS the
-	// content and it wraps whatever it is given in an entry of its own, so handing it a whole
-	// core.Entry stored an entry whose content was an entry: a client that appended "inspection
-	// complete" read back an object with a timestamp and a user id nested inside it, and a text
-	// search over entry content was searching the printed form of a struct.
-	entryIndex := -1
-	entryID := ""
-	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		if err := node.AppendToEvent(request.EventID, userID, request.Content, request.Metadata); err != nil {
-			return apiErrorf(http.StatusInternalServerError, "Failed to append to event: %v", err)
-		}
-
-		// Read back INSIDE the hold: the index of what was just appended is only this entry's index
-		// for as long as nothing else appends. The ID read here is why that no longer matters to
-		// anyone downstream — it names this entry after the index has moved on.
-		appended := node.Events[request.EventID].Entries
-		entryIndex = len(appended) - 1
-		entryID = appended[entryIndex].ID
-		return nil
-	})
+	announced, err := server.appendToEvent(userID, request)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
 
-	announced := mutation(mutationEntryAdded, request.Path)
-	announced.EventID = request.EventID
-	announced.EntryIndex = entryIndex
-	announced.EntryID = entryID
-	server.publish(announced)
-
-	// The id is ANSWERED, not only announced. A client that has just posted a message needs to be
-	// able to name it — to edit it, delete it or be replied to — without going back to the feed and
-	// guessing which of the entries there is the one it wrote.
+	// The acknowledgement is read off the announced event: it carries the entry's id and index and
+	// the canonical node path, which is exactly what this response says. See appendToEvent.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":          entryID,
-		"event_id":    request.EventID,
-		"entry_index": entryIndex,
-		"node_path":   server.canonicalPath(request.Path),
+		"id":          announced.EntryID,
+		"event_id":    announced.EventID,
+		"entry_index": announced.EntryIndex,
+		"node_path":   announced.NodePath,
 	})
 }
 
 // HTTP handler for getting event entries
-//
-// It asked for NOTHING: no caller, no permission. core.GetEventEntries checks neither, so any valid
-// session could read the entries of any event on any node in the forest regardless of what that
-// session had been granted. Reading is a ReadPermission act and is now checked as one.
 func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Request) {
 	userID, ok := userIDFrom(r)
 	if !ok {
@@ -227,28 +143,13 @@ func (server *Server) handleGetEventEntries(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var request struct {
-		Path    string `json:"path"`
-		EventID string `json:"event_id"`
-	}
-
+	var request eventEntriesRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// PROJECTED INSIDE THE HOLD: an entry carries attachments, and an attachment carries the file's
-	// bytes. GetEventEntries copies the SLICE, but every entry in it still points at the forest's
-	// own metadata map, so projecting after the hold was released was a read of a live map.
-	var entries []entryView
-	err := server.readNode(request.Path, userID, core.ReadPermission, func(node *core.Node) error {
-		found, err := node.GetEventEntries(request.EventID)
-		if err != nil {
-			return apiErrorf(http.StatusInternalServerError, "%v", err)
-		}
-		entries = newEntryViews(found)
-		return nil
-	})
+	entries, err := server.eventEntries(userID, request)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -313,53 +214,16 @@ func (server *Server) handlePlanEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request struct {
-		Path      string                 `json:"path"`
-		EventID   string                 `json:"event_id"`
-		StartTime string                 `json:"start_time"`
-		EndTime   string                 `json:"end_time"`
-		Metadata  map[string]interface{} `json:"metadata"`
-	}
-
+	var request planEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	startTime, endTime, err := plannedSpan(request.EventID, request.StartTime, request.EndTime)
-	if err != nil {
+	if _, err := server.planEvent(userID, request); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-
-	// Checked HERE as well as inside PlanEvent, so that "you may not" answers 403 rather than the
-	// 500 every refusal used to be reported as. PERSISTED inside the same hold: a planned event
-	// that is never written to the state file is gone on the next start, which is the whole span of
-	// time a plan is for.
-	err = server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
-		err := node.PlanEvent(request.EventID, userID, &startTime, &endTime, request.Metadata)
-		// A CONFLICT, not a success and not a server failure. This route was an upsert: planning
-		// over an id that is already a live event answered 200 and wrote a plan into PlannedEvents
-		// that /events and /query then dropped in favour of the live event — the write was
-		// accepted and immediately unobservable.
-		if errors.Is(err, core.ErrEventAlreadyStarted) {
-			return apiErrorf(http.StatusConflict,
-				"Event %q has already started on this node: a plan cannot be made for it",
-				request.EventID)
-		}
-		if err != nil {
-			return apiErrorf(http.StatusInternalServerError, "%v", err)
-		}
-		return nil
-	})
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-
-	announced := mutation(mutationEventPlanned, request.Path)
-	announced.EventID = request.EventID
-	server.publish(announced)
 	w.WriteHeader(http.StatusOK)
 }
 

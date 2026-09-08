@@ -92,4 +92,10 @@ type Server struct {
 	// logCloser releases the logger's file sink at shutdown. It is nil when the logger only writes
 	// to standard error, which is what an unconfigured log path leaves it doing.
 	logCloser io.Closer
+	// shutdownOnce makes Shutdown idempotent. close(apiQueue.shutdown) panics on a second call, and
+	// a C caller has every reason to be defensive and call Shutdown twice — so the body runs once
+	// and every later call returns the same result. The CLI relied on the same guarantee.
+	shutdownOnce sync.Once
+	// shutdownErr is what the one real shutdown returned, replayed to every later caller.
+	shutdownErr error
 }

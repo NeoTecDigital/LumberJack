@@ -33,30 +33,46 @@ func newJWTConfig() (JWTConfig, error) {
 	}, nil
 }
 
-// newServerShell builds what BOTH entrypoints start from: a fresh forest, the signing key, the
-// logger and the HTTP server. NewServer and LoadServer differ in what they put IN the forest, not
-// in how the shell around it is made, and the block was written out twice.
+// newServerCore builds everything a forest needs to be OPERATED but not SERVED: a fresh forest, the
+// logger, the config and the state writer. No signing key, no HTTP server.
+//
+// It exists so an EMBEDDED runtime can be built without a session signing key it has no sessions to
+// sign — the JWT config fails closed (newJWTConfig) precisely because an HTTP server that mints
+// tokens must, and an in-process caller mints none. The safety property survives by CONSTRUCTION,
+// not by a new guard: a core-only server leaves `server` (the *http.Server) nil, and Start already
+// refuses a nil server. See the assertion in the tests.
+func newServerCore(config types.ServerConfig) *Server {
+	logger, logCloser := newServerLogger(config)
+	server := &Server{
+		forest:    core.NewForest("forest"),
+		logger:    logger,
+		logCloser: logCloser,
+		config:    config,
+	}
+	// The writer is the only thing that touches the state file, and it does so with the forest
+	// unheld. Every entrypoint goes through here, so every one gets one.
+	server.stateWriter = newStateWriter(server.publishSnapshot)
+	return server
+}
+
+// newServerShell builds what both HTTP entrypoints start from: the core above, plus the signing key
+// and the HTTP server. NewServer and LoadServer differ in what they put IN the forest, not in how
+// the shell around it is made, and the block was written out twice.
+//
+// It fails closed without a signing key, and is the ONLY constructor that reaches for one — so the
+// key is required exactly where sessions are, the HTTP path, and nowhere else.
 func newServerShell(config types.ServerConfig) (*Server, error) {
 	jwtConfig, err := newJWTConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	logger, logCloser := newServerLogger(config)
-	server := &Server{
-		forest:    core.NewForest("forest"),
-		jwtConfig: jwtConfig,
-		logger:    logger,
-		logCloser: logCloser,
-		server: &http.Server{
-			Addr:    ":" + config.Process.ServerPort,
-			Handler: mux.NewRouter(),
-		},
-		config: config,
+	server := newServerCore(config)
+	server.jwtConfig = jwtConfig
+	server.server = &http.Server{
+		Addr:    ":" + config.Process.ServerPort,
+		Handler: mux.NewRouter(),
 	}
-	// The writer is the only thing that touches the state file, and it does so with the forest
-	// unheld. Both entrypoints go through here, so both get one.
-	server.stateWriter = newStateWriter(server.publishSnapshot)
 	return server, nil
 }
 
@@ -250,7 +266,21 @@ func (s *Server) registerAccountRoutes(router *mux.Router) {
 	router.HandleFunc("/settings/update", s.authMiddleware(s.handleUpdateServerSettings)).Methods("POST")
 }
 
+// Shutdown stops the workers and the HTTP server, and is IDEMPOTENT.
+//
+// close(apiQueue.shutdown) panics on a second call — close of a closed channel — and a C caller has
+// every reason to be defensive and call this twice, as does the CLI. So the real work runs exactly
+// once behind shutdownOnce and every later call replays its result, rather than crashing the
+// process on the second attempt.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownOnce.Do(func() {
+		s.shutdownErr = s.shutdown(ctx)
+	})
+	return s.shutdownErr
+}
+
+// shutdown is the one real teardown, run once by Shutdown.
+func (s *Server) shutdown(ctx context.Context) error {
 	// Signal workers to shut down
 	close(s.apiQueue.shutdown)
 
