@@ -99,6 +99,12 @@ func NewFileLogger(path string) (*LogInfo, error) {
 // It writes to the file ALONE when standard error IS that file: the CLI spawns the server with its
 // stdout and stderr already redirected into the very file this opens, and a MultiWriter across both
 // would put every line in it twice.
+//
+// THE ARGUMENT ORDER IS LOAD-BEARING. stderr is first, so a line written after the file has been
+// closed still reaches stderr — a MultiWriter stops at its first failing writer, and the closed file
+// errors. That is a safety net, not a licence: a caller that logs after Close still loses the line
+// from the DURABLE file, and where stderr IS the file (the branch above) it loses it entirely. Emit
+// the closing line before closing the sink; see internal/api.go's constructors.
 func logSink(file *os.File) io.Writer {
 	fileInfo, fileErr := file.Stat()
 	stderrInfo, stderrErr := os.Stderr.Stat()

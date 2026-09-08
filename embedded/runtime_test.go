@@ -6,11 +6,15 @@
 package embedded
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/internal"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 
@@ -42,9 +46,8 @@ func TestOpenSharesOneRuntimeAndLastCloseShutsDown(t *testing.T) {
 	if alice.runtime.server != bob.runtime.server {
 		t.Fatal("the shared runtime holds two different *internal.Server")
 	}
-	if alice.principal == bob.principal {
-		t.Fatal("the two handles were bound to the same principal")
-	}
+	// Per-handle principals are asserted in TestHandlesBindTheirOwnPrincipalWhenUsersExist, over a
+	// populated forest; here both resolve to the default system user, so there is nothing to compare.
 	if got := refsOf(alice.runtime); got != 2 {
 		t.Fatalf("refs = %d, want 2", got)
 	}
@@ -218,6 +221,106 @@ func TestCloseReturnsABlockedPollAtOnce(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("poll did not return within 2s of Close")
+	}
+}
+
+func TestCanonicalConfigPinsDatabasePathAbsolute(t *testing.T) {
+	cfg := Config{Process: types.ProcessInfo{Name: "state", DatabasePath: "relative/dir"}}
+
+	canon, err := canonicalConfig(cfg)
+	if err != nil {
+		t.Fatalf("canonicalConfig: %v", err)
+	}
+
+	// NewCore and every subsequent persist resolve the state path from this config. Pinned absolute
+	// at Open, it no longer re-resolves against a cwd a C host may change afterwards — the divergence
+	// that opened a second flock over one logical path.
+	if !filepath.IsAbs(canon.Process.DatabasePath) {
+		t.Fatalf("DatabasePath left relative: %q", canon.Process.DatabasePath)
+	}
+	if got := internal.StatePath(canon); !filepath.IsAbs(got) {
+		t.Fatalf("StatePath over the canonical config is not absolute: %q", got)
+	}
+}
+
+func TestOpenWorksAsSystemOnAnEmptyForest(t *testing.T) {
+	cfg := embeddedConfig(t)
+
+	// An arbitrary principal on a fresh forest: with no users, the opener works as the default system
+	// user, so a write succeeds through the ordinary permission check.
+	handle, err := Open(cfg, "whoever")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer handle.Close()
+
+	if _, err := handle.CreateNode(CreateNodeRequest{Path: "work/site", Type: "leaf"}); err != nil {
+		t.Fatalf("a write on an empty forest should work as system: %v", err)
+	}
+}
+
+func TestOpenAppliesNormalAuthWhenUsersExist(t *testing.T) {
+	// NewServer fails closed without a signing key; the HTTP constructor is only used here to stand up
+	// a forest that already holds a real user.
+	t.Setenv("LUMBERJACK_JWT_SECRET", "test-signing-key")
+	cfg := embeddedConfig(t)
+	cfg.Process.Name = "state"
+
+	installed, err := internal.NewServer(cfg, core.User{Username: "admin", Password: "pw"})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := installed.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	// Open the existing install as an outsider. Real users exist, so the default system is not
+	// consulted; the outsider holds nothing, and the write is refused by normal auth.
+	handle, err := Open(cfg, "outsider")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer handle.Close()
+
+	if _, err := handle.CreateNode(CreateNodeRequest{Path: "work/site", Type: "leaf"}); err == nil {
+		t.Fatal("normal auth did not apply: an outsider wrote to a forest with real users")
+	}
+}
+
+func TestHandlesBindTheirOwnPrincipalWhenUsersExist(t *testing.T) {
+	t.Setenv("LUMBERJACK_JWT_SECRET", "test-signing-key")
+	cfg := embeddedConfig(t)
+	cfg.Process.Name = "state"
+
+	installed, err := internal.NewServer(cfg, core.User{Username: "admin", Password: "pw"})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := installed.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	alice, err := Open(cfg, "alice")
+	if err != nil {
+		t.Fatalf("Open alice: %v", err)
+	}
+	defer alice.Close()
+	bob, err := Open(cfg, "bob")
+	if err != nil {
+		t.Fatalf("Open bob: %v", err)
+	}
+	defer bob.Close()
+
+	if alice.runtime != bob.runtime {
+		t.Fatal("two Opens on one path did not share a runtime")
+	}
+	// A populated forest: the default is not consulted, so each handle carries its OWN principal, and
+	// two differing principals stay two.
+	if alice.principal != "alice" || bob.principal != "bob" {
+		t.Fatalf("principals were not bound: alice=%q bob=%q", alice.principal, bob.principal)
+	}
+	if alice.principal == bob.principal {
+		t.Fatal("two distinct principals collapsed to one")
 	}
 }
 

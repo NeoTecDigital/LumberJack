@@ -27,8 +27,10 @@ extern "C" {
  * the archive and the header came from different builds. */
 #define LJ_ABI_VERSION 1u
 
-/* An opaque TOKEN for an open runtime. It is a `runtime/cgo.Handle`, never an address:
- * C must not dereference it, and it carries no information about the process layout. */
+/* An opaque TOKEN for an open runtime: a monotonic counter the Go side maps to a runtime, never an
+ * address and never recycled. C must not dereference it; a stale token cannot alias a live runtime,
+ * it simply fails to resolve. It is deliberately NOT a runtime/cgo.Handle, whose slots can be reused
+ * after Delete — a token that never repeats is what makes use-after-close a clean LJ_BAD_HANDLE. */
 typedef uint64_t lj_handle_t;
 
 /* What a call did. Values below LJ_TRUNCATED mirror the engine's own HTTP statuses, which
@@ -58,8 +60,83 @@ typedef const char *lj_cstr;
 #define LJ_GAP            13   /* stream: the cursor is older than the replay ring         */
 #define LJ_LOCKED         14   /* open: another runtime holds this state file              */
 
+/* Bounds that make the no-truncated-mutation guarantee PROVABLE. LJ_MAX_PATH caps the one unbounded
+ * field a mutation's acknowledgement carries — the node path, and the event id read back with it —
+ * and LJ_MUTATION_OUT_MIN is a buffer large enough to hold any such acknowledgement given that cap.
+ * A mutation is refused before it runs when out_cap is smaller, so a write can never happen and then
+ * fail to be acknowledged: a write the caller does not know it made is the one failure a store may
+ * not have. Reads have no such floor — they may answer LJ_TRUNCATED and be retried, because a read
+ * that did not fit changed nothing. */
+#define LJ_MAX_PATH          4096
+#define LJ_MUTATION_OUT_MIN  16384
+
+/* YAML ON THE WIRE, JSON ON THE ROUTES. The document names are the HTTP surface's json names exactly,
+ * because the codec re-encodes through JSON rather than tagging sixteen structs twice. Typed fields
+ * are carried faithfully in BOTH directions — including large integers: epoch, oldest and sequence
+ * are UnixNano-scale, past 2^53, and the codec preserves them exactly (it decodes the JSON hop with
+ * UseNumber rather than widening every number to a lossy float). One caution the emitter cannot
+ * remove: on the INBOUND side, a bare scalar in `metadata` — 0123, null, ~, 2026-01-01 — is resolved
+ * by the YAML parser into an int, a nil or a timestamp before it is a string. Typed fields (path,
+ * event_id, content) are safe; metadata is not. QUOTE identity-bearing metadata values that could be
+ * read as a number, a date, a bool or null. */
+
 /* The ABI version this archive implements. Takes no handle, cannot fail, cannot panic. */
 uint32_t ic_lj_abi_version(void);
+
+/* Open a runtime over a state file and bind a principal, returning a TOKEN for it in *out_handle.
+ *
+ * `req` is a YAML document carrying the config (organization, process.database_path, process.name)
+ * and the principal to act as. Idempotent per state path WITHIN a process: a second open of the same
+ * file shares one refcounted runtime, and the last close tears it down. Another PROCESS holding the
+ * same file is refused LJ_LOCKED — the lock is a sidecar `<state>.lock` that survives the snapshot
+ * rename a persist performs. The token is never recycled, so a stale one cannot alias a live runtime;
+ * it is a value, never an address, and C must not dereference it. */
+lj_status_t ic_lj_open(lj_cstr req, int32_t req_len, lj_handle_t *out_handle);
+
+/* Close a handle. IDEMPOTENT: closing a handle that was never opened, or was already closed, is LJ_OK
+ * and not an error. The runtime is torn down only when its last handle closes; a data call on a
+ * closed handle is LJ_BAD_HANDLE, never a hang. */
+lj_status_t ic_lj_close(lj_handle_t h);
+
+/* The data operations, ALL of one shape:
+ *
+ *   lj_status_t ic_lj_OP(lj_handle_t h, lj_cstr req, int32_t req_len,
+ *                        char *out, int32_t out_cap, int32_t *out_len);
+ *
+ * `req` is a YAML request; the answer is written to `out` as a YAML document, `*out_len` its size,
+ * and the return value is the status of the CALL. The principal is the handle's; requests carry only
+ * the operation's own fields. A read that does not fit answers LJ_TRUNCATED, writes NOTHING, and sets
+ * `*out_len` to the size to retry with. A MUTATION (node_create, event_plan, event_start,
+ * event_append, event_end) is refused LJ_INVALID before it runs if out_cap < LJ_MUTATION_OUT_MIN, and
+ * LJ_TOO_LARGE if its path or event id exceeds LJ_MAX_PATH — so its acknowledgement provably fits and
+ * it never runs unacknowledgeably. */
+lj_status_t ic_lj_node_create(lj_handle_t h, lj_cstr req, int32_t req_len,
+                              char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_event_plan(lj_handle_t h, lj_cstr req, int32_t req_len,
+                             char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_event_start(lj_handle_t h, lj_cstr req, int32_t req_len,
+                              char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_event_append(lj_handle_t h, lj_cstr req, int32_t req_len,
+                               char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_event_end(lj_handle_t h, lj_cstr req, int32_t req_len,
+                            char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_event_entries(lj_handle_t h, lj_cstr req, int32_t req_len,
+                                char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_query(lj_handle_t h, lj_cstr req, int32_t req_len,
+                        char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_aggregate(lj_handle_t h, lj_cstr req, int32_t req_len,
+                            char *out, int32_t out_cap, int32_t *out_len);
+lj_status_t ic_lj_forest(lj_handle_t h, lj_cstr req, int32_t req_len,
+                         char *out, int32_t out_cap, int32_t *out_len);
+
+/* stream_poll subscribes PER POLL from the mutation ring and holds no goroutine between calls. The
+ * request carries {after, epoch, timeout_ms}; the answer carries {events, epoch, caught_up, oldest}.
+ * When the cursor has fallen off the back of the ring — or its epoch is not this run's, because
+ * sequences live only in memory and restart afresh — the status is LJ_GAP and the answer's `oldest`
+ * is the sequence to re-derive from. A poll blocks up to timeout_ms for the next mutation; a close
+ * returns it at once. */
+lj_status_t ic_lj_stream_poll(lj_handle_t h, lj_cstr req, int32_t req_len,
+                              char *out, int32_t out_cap, int32_t *out_len);
 
 /* Copy `in` to `out`, so a caller can prove the buffer convention end to end before
  * trusting it with a forest.

@@ -117,7 +117,7 @@ func (stream *mutationStream) subscribe(after uint64, resuming bool) *subscripti
 		return client
 	}
 
-	client.replay, client.caughtUp = stream.replaySince(after)
+	client.replay, client.caughtUp, _ = stream.replaySince(after)
 	return client
 }
 
@@ -127,9 +127,15 @@ func (stream *mutationStream) subscribe(after uint64, resuming bool) *subscripti
 // caughtUp is false when the cursor is older than anything still held — a client that believes it
 // missed nothing will not go and refetch, so the gap is announced rather than swallowed, and no
 // replay is offered because none of it would close the gap. The caller must hold stream.mutex.
-func (stream *mutationStream) replaySince(after uint64) (replay []mutationEvent, caughtUp bool) {
+// oldest is the smallest sequence the ring still holds, so a caller told it has a GAP learns where to
+// resume — it re-derives its view and reads forward from there — rather than only that it fell behind.
+func (stream *mutationStream) replaySince(after uint64) (replay []mutationEvent, caughtUp bool, oldest uint64) {
+	if len(stream.recent) > 0 {
+		oldest = stream.recent[0].Sequence
+	}
+
 	if len(stream.recent) > 0 && stream.recent[0].Sequence > after+1 {
-		return nil, false
+		return nil, false, oldest
 	}
 
 	for _, past := range stream.recent {
@@ -137,7 +143,7 @@ func (stream *mutationStream) replaySince(after uint64) (replay []mutationEvent,
 			replay = append(replay, past)
 		}
 	}
-	return replay, true
+	return replay, true, oldest
 }
 
 // pollSince is a subscription-free read of the ring: the mutations after a cursor and whether the
@@ -147,7 +153,7 @@ func (stream *mutationStream) replaySince(after uint64) (replay []mutationEvent,
 // subscribers — a long-lived subscriber is a bounded channel the publisher drops into silently when
 // full, an undetectable gap for something that only reads occasionally. The ring is deeper and
 // announces its own gap via caughtUp, so a poller re-derives its view rather than missing writes.
-func (stream *mutationStream) pollSince(after uint64) ([]mutationEvent, bool) {
+func (stream *mutationStream) pollSince(after uint64) ([]mutationEvent, bool, uint64) {
 	stream.mutex.Lock()
 	defer stream.mutex.Unlock()
 
@@ -218,8 +224,16 @@ func (server *Server) publish(event mutationEvent) mutationEvent {
 // that holds no subscription between calls. A server with no stream yet has nothing to report and is
 // trivially caught up.
 func (server *Server) pollMutations(after uint64) ([]mutationEvent, bool) {
+	events, caughtUp, _ := server.pollOnce(after)
+	return events, caughtUp
+}
+
+// pollOnce is one subscription-free ring read: the mutations after a cursor, whether the caller is
+// caught up, and the oldest sequence still held so a GAP carries where to resume. A server with no
+// stream yet has nothing to report and is trivially caught up.
+func (server *Server) pollOnce(after uint64) ([]mutationEvent, bool, uint64) {
 	if server.mutations == nil {
-		return nil, true
+		return nil, true, 0
 	}
 	return server.mutations.pollSince(after)
 }
@@ -232,10 +246,10 @@ func (server *Server) pollMutations(after uint64) ([]mutationEvent, bool) {
 // subscription is used only as a doorbell so a wait ends the instant a mutation lands rather than
 // after the whole timeout. cancel is the caller's own shutdown signal — the embedded runtime's — so a
 // Close returns a blocked poll in milliseconds instead of timeout.
-func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration, cancel <-chan struct{}) ([]mutationEvent, bool) {
-	events, caughtUp := server.pollMutations(after)
+func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration, cancel <-chan struct{}) ([]mutationEvent, bool, uint64) {
+	events, caughtUp, oldest := server.pollOnce(after)
 	if len(events) > 0 || !caughtUp || server.mutations == nil {
-		return events, caughtUp
+		return events, caughtUp, oldest
 	}
 
 	sub := server.mutations.subscribe(after, false)
@@ -243,8 +257,8 @@ func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration,
 
 	// Re-read AFTER subscribing: a mutation published between the first read and the subscription
 	// arrives on neither, and would otherwise cost a full timeout to notice.
-	if events, caughtUp := server.pollMutations(after); len(events) > 0 || !caughtUp {
-		return events, caughtUp
+	if events, caughtUp, oldest := server.pollOnce(after); len(events) > 0 || !caughtUp {
+		return events, caughtUp, oldest
 	}
 
 	timer := time.NewTimer(timeout)
@@ -254,7 +268,7 @@ func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration,
 	case <-timer.C:
 	case <-cancel:
 	}
-	return server.pollMutations(after)
+	return server.pollOnce(after)
 }
 
 // mutation builds an event to publish. EntryIndex defaults to -1, which is what "not about an

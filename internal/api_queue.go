@@ -125,6 +125,10 @@ func (server *Server) queuedNodeView(path, userID string) (nodeView, error) {
 		return nodeView{}, errServerShuttingDown
 	}
 
+	// If the response has already landed AND shutdown is closed, Go picks a ready case uniformly, so
+	// a read that genuinely succeeded can report 503. That is acceptable: it happens only once
+	// Shutdown has begun, and this is a READ — nothing was written, so nothing is lost by answering
+	// "shutting down" to a caller whose runtime is going away regardless.
 	select {
 	case response := <-responseChan:
 		if response.Error != nil {

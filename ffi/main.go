@@ -8,10 +8,10 @@
 // archive's entry points are the //export'd functions, and the Go runtime is brought up
 // from .init_array before the host's main.
 //
-// ffi/lumberjack.h is the specification, and this file INCLUDES it rather than restating
-// it. The signatures cgo generates are therefore built from the specification's own types,
-// so the two agree by construction and ctest/header_agreement.c is checking that they still
-// do rather than hoping.
+// It imports `embedded` ONLY, never `internal`: the ABI is a serialisation of the embedded
+// Go API, so the two cannot drift. ffi/lumberjack.h is the specification, and this package
+// INCLUDES it rather than restating it, so the signatures cgo generates are built from the
+// specification's own types and ctest/header_agreement.c checks that they still agree.
 package main
 
 /*
@@ -29,14 +29,26 @@ import (
 
 // abiVersion is the number ffi/lumberjack.h declares. The header is the specification, so
 // this follows it; header_agreement.c is what proves they still agree.
-const abiVersion = 1
+const abiVersion = C.LJ_ABI_VERSION
 
-// Statuses, mirroring ffi/lumberjack.h. Only the ones this stub can produce are named.
+// The statuses, sourced from the header's own macros so there is one numbering, not two. A
+// conversion of a #define'd constant to the C typedef is a constant expression, so these are
+// real Go constants and the header stays the single source header_agreement.c holds to account.
 const (
-	statusOK        = 0
-	statusInvalid   = 1
-	statusTruncated = 8
-	statusPanic     = 11
+	statusOK        = C.lj_status_t(C.LJ_OK)
+	statusInvalid   = C.lj_status_t(C.LJ_INVALID)
+	statusForbidden = C.lj_status_t(C.LJ_FORBIDDEN)
+	statusNotFound  = C.lj_status_t(C.LJ_NOT_FOUND)
+	statusConflict  = C.lj_status_t(C.LJ_CONFLICT)
+	statusTooLarge  = C.lj_status_t(C.LJ_TOO_LARGE)
+	statusInternal  = C.lj_status_t(C.LJ_INTERNAL)
+	statusTruncated = C.lj_status_t(C.LJ_TRUNCATED)
+	statusBadHandle = C.lj_status_t(C.LJ_BAD_HANDLE)
+	statusClosed    = C.lj_status_t(C.LJ_CLOSED)
+	statusPanic     = C.lj_status_t(C.LJ_PANIC)
+	statusCodec     = C.lj_status_t(C.LJ_CODEC)
+	statusGap       = C.lj_status_t(C.LJ_GAP)
+	statusLocked    = C.lj_status_t(C.LJ_LOCKED)
 )
 
 func main() {}
@@ -54,16 +66,16 @@ func ic_lj_echo(in C.lj_cstr, inLen C.int32_t,
 
 	body, bad := take(in, inLen)
 	if bad != statusOK {
-		return C.lj_status_t(bad)
+		return bad
 	}
-	return C.lj_status_t(answer(body, out, outCap, outLen))
+	return answer(body, out, outCap, outLen)
 }
 
 // take copies an input buffer into Go memory.
 //
 // A COPY, not a view: cgo's rules let C free its buffer the moment the call returns, and a
 // Go value pointing into it would be a use-after-free the race detector cannot see.
-func take(ptr C.lj_cstr, length C.int32_t) ([]byte, int) {
+func take(ptr C.lj_cstr, length C.int32_t) ([]byte, C.lj_status_t) {
 	if length < 0 {
 		return nil, statusInvalid
 	}
@@ -81,7 +93,7 @@ func take(ptr C.lj_cstr, length C.int32_t) ([]byte, int) {
 // `*out_len` is set in BOTH cases, because the size is the one thing a caller that got
 // LJ_TRUNCATED needs in order to try again. Nothing is written when it does not fit: a
 // caller cannot tell a partial document from a whole one, so a partial one is a lie.
-func answer(document []byte, out *C.char, outCap C.int32_t, outLen *C.int32_t) int {
+func answer(document []byte, out *C.char, outCap C.int32_t, outLen *C.int32_t) C.lj_status_t {
 	if outLen == nil {
 		return statusInvalid
 	}
@@ -107,7 +119,7 @@ func answer(document []byte, out *C.char, outCap C.int32_t, outLen *C.int32_t) i
 //
 // Its honest limit, which belongs beside it rather than in a design document: recover
 // catches a PANIC. It does not catch a runtime throw — a concurrent map write, an
-// out-of-memory — and internal/forest_lock.go:17 names that case exactly. What keeps this
+// out-of-memory — and internal/forest_lock.go names that case exactly. What keeps this
 // process alive under concurrency is the forest lock. This is containment for a bug in one
 // handler, and it is not a licence to relax that lock.
 func guard(status *C.lj_status_t, outLen *C.int32_t) {
@@ -115,7 +127,7 @@ func guard(status *C.lj_status_t, outLen *C.int32_t) {
 	if recovered == nil {
 		return
 	}
-	*status = C.lj_status_t(statusPanic)
+	*status = statusPanic
 	if outLen != nil {
 		*outLen = 0
 	}

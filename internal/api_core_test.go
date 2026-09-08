@@ -14,7 +14,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,6 +153,109 @@ func goroutinesReturnTo(baseline int) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+func TestFailedLoadServerLogsABalancedSpan(t *testing.T) {
+	dir := t.TempDir()
+	cfg := coreConfig()
+	cfg.Process.DatabasePath = dir
+	cfg.Process.Name = "absent-state"
+	// A real file sink, so the durable log is a file to read back rather than only stderr.
+	cfg.Process.LogPath = dir
+	cfg.Process.ID = "loadspan"
+
+	if _, err := LoadServer(cfg); err == nil {
+		t.Fatal("LoadServer over an absent state file must fail")
+	}
+
+	logged, err := os.ReadFile(filepath.Join(dir, "loadspan.log"))
+	if err != nil {
+		t.Fatalf("read the durable log: %v", err)
+	}
+	text := string(logged)
+	if !strings.Contains(text, "BEGIN: LoadServer") {
+		t.Error("durable log is missing BEGIN: LoadServer")
+	}
+	// The span must be balanced in the DURABLE log. A deferred Exit ran after Shutdown closed the
+	// sink, landing the END on stderr but never in the file — the exact defect this asserts against.
+	if !strings.Contains(text, "END: LoadServer") {
+		t.Error("durable log is missing END: LoadServer — an unbalanced span in the log store")
+	}
+}
+
+func TestEnsureSystemUserOnlySeedsAnEmptyForest(t *testing.T) {
+	// An empty forest gets the default system user, and it is a REAL user with admin — CheckPermission
+	// runs against it and passes, the same path real users take, so the default cannot drift from it.
+	fresh := newServerCore(coreConfig())
+	defer fresh.Shutdown(context.Background())
+
+	seeded, err := fresh.EnsureSystemUser()
+	if err != nil {
+		t.Fatalf("EnsureSystemUser: %v", err)
+	}
+	if !seeded {
+		t.Fatal("an empty forest was not given the default system user")
+	}
+	if !fresh.forest.CheckPermission(SystemUserID, core.AdminPermission) {
+		t.Error("the default system user does not pass CheckPermission for admin")
+	}
+
+	// A forest that already has users is left untouched — the default is not consulted.
+	existing := newServerCore(coreConfig())
+	defer existing.Shutdown(context.Background())
+	existing.forest.Users = []core.User{{ID: "alice", Permissions: []core.Permission{core.AdminPermission}}}
+
+	seeded, err = existing.EnsureSystemUser()
+	if err != nil {
+		t.Fatalf("EnsureSystemUser on a populated forest: %v", err)
+	}
+	if seeded {
+		t.Fatal("a forest with real users was given the system default anyway")
+	}
+	if existing.forest.CheckPermission(SystemUserID, core.ReadPermission) {
+		t.Error("system was added to a forest that already had users")
+	}
+}
+
+func TestEnsureSystemUserIsAtomicUnderConcurrency(t *testing.T) {
+	server := newServerCore(coreConfig())
+	defer server.Shutdown(context.Background())
+
+	// Eight callers race to seed one empty forest. The emptiness test and the seed share one hold, so
+	// exactly one wins — without that, several read empty and each seeds, giving system two admin
+	// permissions or leaving two users where the invariant says one.
+	var wg sync.WaitGroup
+	var seeds int32
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seeded, err := server.EnsureSystemUser()
+			if err != nil {
+				t.Errorf("EnsureSystemUser: %v", err)
+				return
+			}
+			if seeded {
+				atomic.AddInt32(&seeds, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if seeds != 1 {
+		t.Fatalf("an empty forest was seeded %d times under concurrency, want exactly 1", seeds)
+	}
+	perms := -1
+	server.readForest(func() {
+		for _, u := range server.forest.Users {
+			if u.ID == SystemUserID {
+				perms = len(u.Permissions)
+			}
+		}
+	})
+	if perms != 1 {
+		t.Fatalf("the system user holds %d permissions, want exactly 1", perms)
+	}
 }
 
 func TestReadAfterShutdownReturnsRatherThanHangs(t *testing.T) {

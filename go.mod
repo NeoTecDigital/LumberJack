@@ -13,6 +13,7 @@ require (
 	github.com/spf13/viper v1.19.0
 	golang.org/x/crypto v0.31.0
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -35,5 +36,4 @@ require (
 	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

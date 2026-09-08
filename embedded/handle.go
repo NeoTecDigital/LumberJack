@@ -110,13 +110,25 @@ func (h *Handle) StatusOf(path string) (NodeView, error) {
 	return h.runtime.server.StatusOf(h.principal, path)
 }
 
+// MutationBatch is the answer of a poll: the events after the cursor, this run's epoch, whether the
+// caller is caught up, and the oldest sequence the ring still holds.
+//
+// When CaughtUp is false the caller fell off the back of the ring; Oldest is where it resumes after
+// re-deriving its view. Epoch pins the numbering — a batch from a different run is a gap of its own,
+// because sequences live only in memory and start afresh on every open.
+type MutationBatch struct {
+	Events   []MutationEvent
+	Epoch    uint64
+	CaughtUp bool
+	Oldest   uint64
+}
+
 // PollMutations reads the mutations after a cursor, blocking up to timeout for one to appear if none
-// has, and returns this run's epoch and whether the caller is caught up.
+// has.
 //
 // A Close returns a blocked poll at once, not after timeout: the runtime's shutdown signal is passed
-// down as the poll's cancel. caughtUp is false when the cursor is older than the ring still holds — a
-// gap the caller closes by re-deriving its view, and the reason the epoch is returned alongside.
-func (h *Handle) PollMutations(after uint64, timeout time.Duration) (events []MutationEvent, epoch uint64, caughtUp bool) {
-	events, caughtUp = h.runtime.server.PollMutationsBlocking(after, timeout, h.runtime.closed)
-	return events, h.runtime.epoch, caughtUp
+// down as the poll's cancel.
+func (h *Handle) PollMutations(after uint64, timeout time.Duration) MutationBatch {
+	events, caughtUp, oldest := h.runtime.server.PollMutationsBlocking(after, timeout, h.runtime.closed)
+	return MutationBatch{Events: events, Epoch: h.runtime.epoch, CaughtUp: caughtUp, Oldest: oldest}
 }

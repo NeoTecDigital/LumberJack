@@ -132,17 +132,21 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 	}
 
 	server.logger.Enter("NewServer")
-	defer server.logger.Exit("NewServer")
 
 	if err := server.installAdmin(adminUser); err != nil {
-		// newServerCore has already started the runtime, and this returns (nil, err) — no caller will
-		// hold the *Server to Shutdown it. The full Shutdown, not a partial teardown: it stops the
-		// workers AND releases the log file, so a construction that fails in a loop leaks neither
-		// goroutines nor descriptors, and it is idempotent through shutdownOnce.
+		// The span is closed HERE, before Shutdown, not with a deferred Exit. Shutdown closes the log
+		// sink, and a deferred Exit runs AFTER the return — so it would write END into a closed file
+		// and the durable log would carry BEGIN with no matching END, an unbalanced span in
+		// Lumberjack's own log store. See types/logger.go on why the sink's write order saved the
+		// line for stderr but not for the file. The full Shutdown then stops the workers AND releases
+		// the log file, idempotently through shutdownOnce, so a failed construction in a loop leaks
+		// neither goroutines nor descriptors.
+		server.logger.Exit("NewServer")
 		_ = server.Shutdown(context.Background())
 		return nil, err
 	}
 
+	server.logger.Exit("NewServer")
 	return server, nil
 }
 
@@ -153,17 +157,20 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 	}
 
 	server.logger.Enter("LoadServer")
-	defer server.logger.Exit("LoadServer")
 
 	dbPath := server.statePath()
 	server.logger.Debug("Loading database from %s", dbPath)
 	if err := server.loadFromFile(dbPath); err != nil {
 		server.logger.Failure("failed to load database: %v", err)
+		// Exit BEFORE Shutdown closes the sink — a deferred Exit would land in a closed log file and
+		// leave BEGIN with no END. See NewServer for the same ordering and why it matters here.
+		server.logger.Exit("LoadServer")
 		_ = server.Shutdown(context.Background())
 		return nil, err
 	}
 
 	server.logger.Info("Loaded existing database from %s", dbPath)
+	server.logger.Exit("LoadServer")
 	return server, nil
 }
 
@@ -195,6 +202,34 @@ func NewCore(config types.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 	return server, nil
+}
+
+// SystemUserID is the default principal an EMPTY forest is administered by. It is a dev-environment
+// default, not a bypass: it is a real user with admin, so CheckPermission runs against it exactly as
+// it runs against any user — one enforcement path, and the permissive default cannot drift from it.
+const SystemUserID = "system"
+
+// EnsureSystemUser gives an empty forest the default unlocked `system` user, and reports whether it
+// did. A forest that already has users is left untouched — real users, auth and RBAC are the real
+// path.
+//
+// The emptiness test and the seed happen inside ONE exclusive hold, so two callers cannot both find
+// the forest empty and each seed it — which gave `system` two admin permissions, or left the forest
+// holding both `system` and a real user. changeForest persists whether or not it seeded; that one
+// write when opening a loaded forest is the price of the invariant being true under concurrency.
+func (server *Server) EnsureSystemUser() (bool, error) {
+	seeded := false
+	err := server.changeForest(func() error {
+		if len(server.forest.Users) > 0 {
+			return nil
+		}
+		if err := server.forest.AssignUser(core.User{ID: SystemUserID}, core.AdminPermission); err != nil {
+			return err
+		}
+		seeded = true
+		return nil
+	})
+	return seeded, err
 }
 
 func (s *Server) Start() error {

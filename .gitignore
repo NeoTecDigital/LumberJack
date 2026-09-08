@@ -5,3 +5,7 @@ lumberjack-bin
 data/
 logs/
 /build/
+
+# Sidecar lock files guarding a state path (embedded/ffi runtimes). Matched by neither *.dat
+# nor *.dat.tmp.
+*.lock
