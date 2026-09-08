@@ -34,13 +34,20 @@ func newJWTConfig() (JWTConfig, error) {
 }
 
 // newServerCore builds everything a forest needs to be OPERATED but not SERVED: a fresh forest, the
-// logger, the config and the state writer. No signing key, no HTTP server.
+// logger, the config, the state writer, and the runtime a forest needs to answer at all — the read
+// cache, the worker pool and the mutation stream. No signing key, no HTTP server.
 //
 // It exists so an EMBEDDED runtime can be built without a session signing key it has no sessions to
 // sign — the JWT config fails closed (newJWTConfig) precisely because an HTTP server that mints
 // tokens must, and an in-process caller mints none. The safety property survives by CONSTRUCTION,
 // not by a new guard: a core-only server leaves `server` (the *http.Server) nil, and Start already
 // refuses a nil server. See the assertion in the tests.
+//
+// The runtime is brought up HERE, not in the HTTP entrypoints, because an embedded runtime needs
+// the queue, cache and mutation stream just as much as an HTTP one does — a core-only server that
+// skipped startRuntime had a nil apiQueue, and Shutdown's very first act, close(apiQueue.shutdown),
+// nil-panicked before the shutdownOnce guard could matter. startRuntime touches nothing HTTP and
+// depends on nothing the forest is later filled with, so this is where it belongs.
 func newServerCore(config types.ServerConfig) *Server {
 	logger, logCloser := newServerLogger(config)
 	server := &Server{
@@ -52,6 +59,7 @@ func newServerCore(config types.ServerConfig) *Server {
 	// The writer is the only thing that touches the state file, and it does so with the forest
 	// unheld. Every entrypoint goes through here, so every one gets one.
 	server.stateWriter = newStateWriter(server.publishSnapshot)
+	server.startRuntime()
 	return server
 }
 
@@ -130,7 +138,6 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 		return nil, err
 	}
 
-	server.startRuntime()
 	return server, nil
 }
 
@@ -150,7 +157,6 @@ func LoadServer(config types.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	server.startRuntime()
 	server.logger.Info("Loaded existing database from %s", dbPath)
 	return server, nil
 }

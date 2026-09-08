@@ -172,20 +172,24 @@ func (server *Server) handleGetForest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// PROJECTED, not encoded directly: a node carries its users and a user carries a bcrypt hash.
-	//
-	// The projection is built under the READ hold and encoded outside it. Projecting walks every
-	// map in the graph, which is exactly the read that must not run beside a mutation; the view it
-	// produces COPIES every map and slice it exposes, so the encoding afterwards is over a value
-	// nothing else can reach and a slow client cannot hold up a writer. See forest_projection.go —
-	// the copies are the whole reason encoding outside the hold is allowed.
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(server.forestView(userID))
+}
+
+// forestView projects the whole forest as the caller may see it, under the read hold.
+//
+// PROJECTED, not encoded directly: a node carries its users and a user carries a bcrypt hash. The
+// projection is built under the READ hold; projecting walks every map in the graph, which is exactly
+// the read that must not run beside a mutation, and the view it produces COPIES every map and slice
+// it exposes, so anything encoding it afterwards is over a value nothing else can reach and a slow
+// reader cannot hold up a writer. See forest_projection.go. It is a method, not the handler's body,
+// because the embedded Forest() answers the same projection with no HTTP around it.
+func (server *Server) forestView(userID string) nodeView {
 	var view nodeView
 	server.readForest(func() {
 		view = newNodeView(server.forest, userID)
 	})
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(view)
+	return view
 }
 
 // HTTP handler for getting users

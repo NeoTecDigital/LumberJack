@@ -59,13 +59,17 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canonical := server.canonicalPath(path)
-	server.publish(mutation(mutationNodeCreated, canonical))
-	writeCreatedNode(w, created, canonical)
+	writeCreatedNode(w, created, server.canonicalPath(path))
 	server.logger.Success("Created node at %s", path)
 }
 
-// createNodeUnderHold makes the path and reports what the answer needs to say about it.
+// createNodeUnderHold makes the path, ANNOUNCES it, and reports what the answer needs to say about
+// it.
+//
+// The publish lives HERE, not in the handler, for the same reason it lives inside the extracted
+// event functions: HTTP and the embedded API call this one function, so neither can forget to
+// announce and both announce identically. It happens after changeForest has persisted, never
+// before — an announcement of something not written is the same lie as a 200 for it.
 func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, userID string) (nodeAnswer, error) {
 	var created nodeAnswer
 
@@ -78,7 +82,12 @@ func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, u
 		created = nodeAnswer{id: node.ID, name: node.Name, nodeType: node.Type}
 		return nil
 	})
-	return created, err
+	if err != nil {
+		return nodeAnswer{}, err
+	}
+
+	server.publish(mutation(mutationNodeCreated, server.canonicalPath(path)))
+	return created, nil
 }
 
 // writeCreatedNode answers with where the thing the caller just made lives.
@@ -102,12 +111,17 @@ type nodeAnswer struct {
 	nodeType core.NodeType
 }
 
+// nodeRequest is the body of POST /nodes: a path, and the kind of node to make there. Named rather
+// than anonymous so the embedded API can name it at its own call site, the way the event requests
+// are. The json tags are unchanged — the route tests assert on them.
+type nodeRequest struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}
+
 // decodeNodeRequest reads the path a client wants and the type it wants there.
 func decodeNodeRequest(r *http.Request) (string, core.NodeType, error) {
-	var request struct {
-		Path string `json:"path"`
-		Type string `json:"type"`
-	}
+	var request nodeRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		return "", core.LeafNode, apiErrorf(http.StatusBadRequest, "%v", err)

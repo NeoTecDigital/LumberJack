@@ -62,13 +62,21 @@ func TestNewServerCoreSucceedsWithoutJWTSecret(t *testing.T) {
 		if server == nil {
 			t.Fatal("newServerCore returned nil")
 		}
-		// The core carries a forest and a state writer; it carries no HTTP server and no signing key,
-		// which is exactly why it did not need the env the HTTP constructor demands.
+		defer server.Shutdown(context.Background())
+		// The core carries a forest, a state writer and a live runtime (queue, cache, mutation
+		// stream); it carries no HTTP server and no signing key, which is exactly why it did not need
+		// the env the HTTP constructor demands.
 		if server.forest == nil {
 			t.Error("newServerCore built no forest")
 		}
 		if server.stateWriter == nil {
 			t.Error("newServerCore built no state writer")
+		}
+		if server.apiQueue == nil {
+			t.Error("newServerCore built no worker queue; an embedded runtime needs one to serve reads")
+		}
+		if server.mutations == nil {
+			t.Error("newServerCore built no mutation stream; an embedded runtime needs one to poll")
 		}
 		if server.server != nil {
 			t.Error("newServerCore built an HTTP server; a core-only runtime must have none")
@@ -79,12 +87,27 @@ func TestNewServerCoreSucceedsWithoutJWTSecret(t *testing.T) {
 func TestStartRefusesCoreOnlyServer(t *testing.T) {
 	withoutJWTSecret(t, func() {
 		server := newServerCore(coreConfig())
+		defer server.Shutdown(context.Background())
 		// The safety property, asserted rather than newly guarded: a core-only server has no HTTP
 		// server, and Start already refuses that.
 		if err := server.Start(); err == nil {
 			t.Fatal("Start must refuse a core-only server with no HTTP server")
 		}
 	})
+}
+
+func TestShutdownClosesCoreOnlyServer(t *testing.T) {
+	// A core-only server is what Runtime.Close shuts down in the embedded path. Shutdown's very first
+	// act is close(apiQueue.shutdown); if newServerCore had skipped startRuntime the queue would be
+	// nil and this FIRST call would nil-panic — the shutdownOnce guard cannot help a panic on the
+	// first call. It must tear down cleanly, and twice.
+	server := newServerCore(coreConfig())
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("first Shutdown of a core-only server errored: %v", err)
+	}
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown of a core-only server errored: %v", err)
+	}
 }
 
 func TestShutdownTwiceDoesNotPanic(t *testing.T) {

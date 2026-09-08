@@ -117,19 +117,41 @@ func (stream *mutationStream) subscribe(after uint64, resuming bool) *subscripti
 		return client
 	}
 
-	// A client resuming from a sequence older than anything still held cannot be caught up. It is
-	// told so, because a client that believes it missed nothing will not go and refetch.
+	client.replay, client.caughtUp = stream.replaySince(after)
+	return client
+}
+
+// replaySince reports the held mutations after a cursor, and whether the caller can be caught up
+// from them at all.
+//
+// caughtUp is false when the cursor is older than anything still held — a client that believes it
+// missed nothing will not go and refetch, so the gap is announced rather than swallowed, and no
+// replay is offered because none of it would close the gap. The caller must hold stream.mutex.
+func (stream *mutationStream) replaySince(after uint64) (replay []mutationEvent, caughtUp bool) {
 	if len(stream.recent) > 0 && stream.recent[0].Sequence > after+1 {
-		client.caughtUp = false
-		return client
+		return nil, false
 	}
 
 	for _, past := range stream.recent {
 		if past.Sequence > after {
-			client.replay = append(client.replay, past)
+			replay = append(replay, past)
 		}
 	}
-	return client
+	return replay, true
+}
+
+// pollSince is a subscription-free read of the ring: the mutations after a cursor and whether the
+// caller is caught up.
+//
+// It holds NO goroutine between calls, which is the whole difference between a poller and the SSE
+// subscribers — a long-lived subscriber is a bounded channel the publisher drops into silently when
+// full, an undetectable gap for something that only reads occasionally. The ring is deeper and
+// announces its own gap via caughtUp, so a poller re-derives its view rather than missing writes.
+func (stream *mutationStream) pollSince(after uint64) ([]mutationEvent, bool) {
+	stream.mutex.Lock()
+	defer stream.mutex.Unlock()
+
+	return stream.replaySince(after)
 }
 
 // unsubscribe releases a client.
@@ -190,6 +212,16 @@ func (server *Server) publish(event mutationEvent) mutationEvent {
 		return event
 	}
 	return server.mutations.publish(event)
+}
+
+// pollMutations reads the mutations after a cursor and whether the caller is caught up, for a poller
+// that holds no subscription between calls. A server with no stream yet has nothing to report and is
+// trivially caught up.
+func (server *Server) pollMutations(after uint64) ([]mutationEvent, bool) {
+	if server.mutations == nil {
+		return nil, true
+	}
+	return server.mutations.pollSince(after)
 }
 
 // mutation builds an event to publish. EntryIndex defaults to -1, which is what "not about an

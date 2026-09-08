@@ -112,6 +112,18 @@ func TestEventRoutesRejectAnUnnamedEvent(t *testing.T) {
 			t.Errorf("POST /events/plan with event_id %q: got %d, want %d: %s",
 				eventID, planned.Code, http.StatusBadRequest, planned.Body.String())
 		}
+
+		// /events/end belongs in this table for the same reason it was missing from it: the guard
+		// that was absent from handleEndEvent survived precisely because nothing walked it here. An
+		// unnamed end answered "event not found" as a 500 — a server fault for a request the caller
+		// malformed — where /events/start and /events/plan both answer 400.
+		ended := post(t, server.handleEndEvent, adminUserID, map[string]interface{}{
+			"path": path, "event_id": eventID,
+		})
+		if ended.Code != http.StatusBadRequest {
+			t.Errorf("POST /events/end with event_id %q: got %d, want %d: %s",
+				eventID, ended.Code, http.StatusBadRequest, ended.Body.String())
+		}
 	}
 
 	// A request that names no event is one that names no event, not one that names "".
