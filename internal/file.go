@@ -228,15 +228,23 @@ func (server *Server) publishSnapshot(snapshot stateSnapshot) error {
 // directory entry and says nothing about the bytes behind it or about the entry itself surviving a
 // power loss. This function's answer is what a handler turns into 200.
 func (server *Server) publishState(filename string, newHash, jsonData []byte) error {
-	// The directory is ensured at every write, not just the first: it holds this file, and this
-	// file holds the hashes. A relative name with no directory part is left alone — chmodding the
-	// working directory is not this function's business.
+	// The directory is created if it is not there — it holds this file, and this file holds the
+	// hashes — but its mode is NOT re-asserted on one that already exists. types.EnsureDir chmod'd it
+	// back to DataDirMode on EVERY write, so an operator who narrowed the state directory had it
+	// silently widened by the next persist; directory mode was not a usable read-only switch. os.
+	// MkdirAll leaves an existing directory's mode as the operator set it, while still giving a
+	// freshly created one the secure 0700 default that a directory holding password hashes needs. A
+	// relative name with no directory part is left alone.
 	if dir := filepath.Dir(filename); dir != "" && dir != "." {
-		if err := types.EnsureDir(dir, types.DataDirMode); err != nil {
+		if err := os.MkdirAll(dir, types.DataDirMode); err != nil {
 			server.logger.Failure("Failed to prepare the state directory: %v", err)
 			return err
 		}
 	}
+
+	// Whether THIS is the write that brings the state file into being. A fresh state file gets a
+	// companion lock sidecar below; an existing one never does — see ensureStateLockSidecar.
+	firstWrite := !stateFileExists(filename)
 
 	tmpFile := filename + ".tmp"
 	if err := server.writeStateTempFile(tmpFile, newHash, jsonData); err != nil {
@@ -254,7 +262,48 @@ func (server *Server) publishState(filename string, newHash, jsonData []byte) er
 		server.logger.Failure("Failed to flush the state directory: %v", err)
 		return err
 	}
+
+	if firstWrite {
+		server.ensureStateLockSidecar(filename)
+	}
 	return nil
+}
+
+// StateLockPath is the companion lock sidecar beside a state file. It is ONE convention, shared by
+// the writer that maintains it here and the embedded runtime that flocks it (embedded/lock.go), so a
+// change to the sidecar's name cannot leave the two layers looking at different files.
+func StateLockPath(statePath string) string {
+	return statePath + ".lock"
+}
+
+// ensureStateLockSidecar creates the empty <state>.lock companion beside a NEWLY WRITTEN state file
+// if it is not already there. It is BEST EFFORT: the state itself is already durable, so a failure to
+// make the sidecar is warned and not returned — it does not unmake a write that landed.
+//
+// Every state file THIS path writes therefore gets a sidecar at birth, not only those opened through
+// embedded. That is what lets the embedded runtime treat a MISSING sidecar beside an existing state
+// file as a lock that was DELETED — the two-runtimes hole in embedded/lock.go — rather than as the
+// ordinary case of a forest the serve path created, which never had one and must still open. It is
+// created only on the first write, never restored on a later one: a sidecar gone missing beside a
+// live state file is exactly what must NOT be re-minted, because a holder may still flock its
+// orphaned inode.
+func (server *Server) ensureStateLockSidecar(statePath string) {
+	lockPath := StateLockPath(statePath)
+	if _, err := os.Stat(lockPath); err == nil {
+		return // already there — e.g. the embedded path created and flocked it before the first write
+	} else if !os.IsNotExist(err) {
+		server.logger.Warn("Could not check the state lock sidecar: %v", err)
+		return
+	}
+
+	file, err := os.OpenFile(lockPath, os.O_RDONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if !os.IsExist(err) {
+			server.logger.Warn("Could not create the state lock sidecar: %v", err)
+		}
+		return
+	}
+	_ = file.Close()
 }
 
 // stateFileExists reports whether the state file is still there to be skipped.

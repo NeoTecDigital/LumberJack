@@ -40,10 +40,21 @@ type Runtime struct {
 	// user. Every handle over it then acts as system; on a forest with real users it is false and each
 	// handle acts as its own principal.
 	//
-	// It is LATCHED at open: if a real user later arrives through this same runtime, a new handle still
-	// resolves to system. That grants nothing a caller could not already get by passing "system" as
-	// its principal on an empty forest, so it is a wart rather than a hole — noted here rather than
-	// carried as per-operation state.
+	// It is LATCHED at open, DELIBERATELY: if a real user later arrives through this same runtime, a
+	// new handle still resolves to system, and after a restart onto a now-populated forest the same
+	// call resolves to its own principal and may be refused. That cross-restart change is INHERENT to
+	// the system default — it is a bootstrap convenience for an empty forest, and once real users and
+	// RBAC exist the ordinary auth path is the real one — so a reopen names the system user explicitly
+	// (TestReopeningASeededForestNoLongerActsAsSystem records this, and it is why). It is kept a latch
+	// rather than a per-operation emptiness check because that check is per-call auth-resolution state
+	// on a security path, which is a design change this layer does not make on its own.
+	//
+	// THE SHARP EDGE, flagged not fixed: within ONE runtime that opened empty, a handle minted for an
+	// arbitrary principal AFTER a real user was added through it still resolves to system. On an empty
+	// forest that grants nothing — anyone may pass "system" — but once a real user exists it is more
+	// than that principal should hold. An embedder that adds real users to a live empty-opened runtime
+	// and then acts for untrusted principals through it should reopen instead, or this should become a
+	// per-call check; that is the decision left open.
 	systemDefault bool
 }
 

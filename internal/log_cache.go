@@ -54,25 +54,48 @@ func (server *Server) updateLogCache(level string) error {
 
 	// If cache exists, seek to last read position
 	if server.logCache.LastOffset > 0 {
-		file.Seek(server.logCache.LastOffset, 0)
+		if _, err := file.Seek(server.logCache.LastOffset, io.SeekStart); err != nil {
+			return err
+		}
 	}
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		entry, err := server.parseLogEntry(scanner.Text(), level)
-		if err != nil {
-			continue // Skip invalid entries
+	// bufio.Reader, not bufio.Scanner: Scanner refuses a token past its 64 KiB buffer, and returning
+	// that refusal felled the WHOLE endpoint on one long line — a line a caller produces merely by
+	// logging a large %v-formatted argument. A log line is read whole however long it is; the file is
+	// this process's own and is already read into memory in full, so a long line costs no bound the
+	// read did not already have. ReadString stops only at end of file or a real read error.
+	reader := bufio.NewReader(file)
+	var consumed int64
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			// A GENUINE read error, or a final line with no newline. Either way the resume point and
+			// the mod time are LEFT UNTOUCHED below: stamping them before returning the error was the
+			// defect — it advanced past bytes never parsed and marked the file already-seen, so
+			// refreshLogCache then short-circuited and the unread tail was lost to every later read. A
+			// trailing partial line is not consumed either, so it is re-read once the writer completes
+			// it rather than parsed half-formed now.
+			if readErr != io.EOF {
+				return readErr
+			}
+			break
+		}
+		consumed += int64(len(line))
+		entry, parseErr := server.parseLogEntry(strings.TrimRight(line, "\r\n"), level)
+		if parseErr != nil {
+			continue // not a log line
 		}
 		if entry != nil { // nil means filtered out by level
 			server.logCache.Logs = append(server.logCache.Logs, *entry)
 		}
 	}
 
-	// Update cache metadata
-	server.logCache.LastOffset, _ = file.Seek(0, io.SeekCurrent)
+	// Only complete lines were consumed. Advance the resume point past them and mark the file seen —
+	// AFTER the read has finished cleanly, never before it could still fail.
+	server.logCache.LastOffset += consumed
 	server.logCache.LastModTime = fileInfo.ModTime()
 
-	return scanner.Err()
+	return nil
 }
 
 // Initialize cache only when needed

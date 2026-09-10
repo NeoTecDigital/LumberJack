@@ -75,3 +75,87 @@ func TestPollSinceStillReportsARealGap(t *testing.T) {
 		t.Fatalf("pollSince(oldest-1) caughtUp=false, want caught up: its next expected sequence is oldest itself")
 	}
 }
+
+// replayBufferSize is a ring capacity, and a ring's capacity is only meaningful at its edge: one
+// below it nothing has been evicted, at it nothing has been evicted, and one past it EXACTLY one
+// mutation has fallen off the back. Nothing asserted any of the three, so the ring could have been
+// off by one in either direction — holding 1023 or 1025 — and every existing test would still pass.
+func TestReplayRingHoldsExactlyItsCapacity(t *testing.T) {
+	for _, testCase := range []struct {
+		published  int
+		held       int
+		wantOldest uint64
+	}{
+		{replayBufferSize - 1, replayBufferSize - 1, 1},
+		{replayBufferSize, replayBufferSize, 1},
+		{replayBufferSize + 1, replayBufferSize, 2},
+	} {
+		stream := newMutationStream()
+		for i := 0; i < testCase.published; i++ {
+			stream.publish(mutationEvent{Type: "x"})
+		}
+
+		if got := len(stream.recent); got != testCase.held {
+			t.Errorf("after %d published the ring holds %d, want %d", testCase.published, got, testCase.held)
+		}
+
+		// The ring is a window on a numbering that never rewinds: whatever it dropped, the newest it
+		// holds is always the last sequence published.
+		_, caughtUp, oldest := stream.pollSince(0)
+		if oldest != testCase.wantOldest {
+			t.Errorf("after %d published the oldest held sequence is %d, want %d",
+				testCase.published, oldest, testCase.wantOldest)
+		}
+		if newest := stream.recent[len(stream.recent)-1].Sequence; newest != uint64(testCase.published) {
+			t.Errorf("after %d published the newest held sequence is %d, want %d",
+				testCase.published, newest, testCase.published)
+		}
+		// A cursor of 0 is caught up until something has actually been evicted, and not after.
+		if wantCaughtUp := testCase.published <= replayBufferSize; caughtUp != wantCaughtUp {
+			t.Errorf("after %d published pollSince(0) caughtUp=%v, want %v",
+				testCase.published, caughtUp, wantCaughtUp)
+		}
+	}
+}
+
+// A GAP's whole worth to a caller is `oldest`: it is where the caller resumes after re-deriving its
+// view. Nothing asserted what value it carries — only that it was non-zero — so a ring reporting the
+// NEWEST held sequence, or one off by a position, would have satisfied every existing test while
+// making a resuming caller skip everything between.
+func TestGapReportsTheOldestSequenceARingStillHolds(t *testing.T) {
+	const evicted = 7
+	stream := newMutationStream()
+	for i := 0; i < replayBufferSize+evicted; i++ {
+		stream.publish(mutationEvent{Type: "x"})
+	}
+
+	events, caughtUp, oldest := stream.pollSince(0)
+	if caughtUp || len(events) != 0 {
+		t.Fatalf("pollSince(0) = (%d events, caughtUp=%v), want a gap with no replay", len(events), caughtUp)
+	}
+
+	// THE VALUE, exactly: evicted+1 mutations were published past the ring's capacity, so sequence
+	// evicted+1 is the first one still held.
+	if want := uint64(evicted + 1); oldest != want {
+		t.Fatalf("gap reported oldest=%d, want %d — a caller resuming from this skips or repeats", oldest, want)
+	}
+	if oldest != stream.recent[0].Sequence {
+		t.Fatalf("gap reported oldest=%d but the ring's first held sequence is %d",
+			oldest, stream.recent[0].Sequence)
+	}
+
+	// Resuming from it loses nothing: the caller re-derives its view as of `oldest`, then reads
+	// forward from oldest-1 and receives every mutation the ring still holds, starting AT oldest.
+	replay, caughtUp, _ := stream.pollSince(oldest - 1)
+	if !caughtUp {
+		t.Fatalf("pollSince(oldest-1) reported a gap; the sequence a gap names must itself be readable")
+	}
+	if len(replay) != replayBufferSize {
+		t.Fatalf("resuming from oldest-1 replayed %d mutations, want the whole ring (%d)",
+			len(replay), replayBufferSize)
+	}
+	if replay[0].Sequence != oldest {
+		t.Fatalf("the replay begins at sequence %d, want %d — the gap named a position it does not hand back",
+			replay[0].Sequence, oldest)
+	}
+}

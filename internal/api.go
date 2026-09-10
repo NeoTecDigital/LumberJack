@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -55,6 +56,18 @@ func newServerCore(config types.ServerConfig) *Server {
 		logger:    logger,
 		logCloser: logCloser,
 		config:    config,
+	}
+	// The state directory is narrowed to DataDirMode ONCE, here at construction — every entrypoint
+	// funnels through this — instead of on every write. Entrypoints pre-create it at 0755 and
+	// os.MkdirAll narrows nothing it did not itself make, so without this a running install's
+	// directory of password hashes stayed world-enterable (TestStateDirectoryIsNotWorldEnterable).
+	// The WRITE path no longer re-asserts it (internal/file.go), so an operator's narrower mode now
+	// survives a persist. Best effort: a directory whose mode cannot be set does not stop the server
+	// coming up, and the state file inside it is 0600 regardless.
+	if dir := filepath.Dir(server.statePath()); dir != "" && dir != "." {
+		if err := types.EnsureDir(dir, types.DataDirMode); err != nil {
+			logger.Warn("Could not secure the state directory mode: %v", err)
+		}
 	}
 	// The writer is the only thing that touches the state file, and it does so with the forest
 	// unheld. Every entrypoint goes through here, so every one gets one.

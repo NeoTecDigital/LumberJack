@@ -11,7 +11,10 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,5 +129,130 @@ func TestPollTimeoutRefusesNegativeAndPassesInRange(t *testing.T) {
 	}
 	if d, status := pollTimeout(250); status != statusOK || d != 250*time.Millisecond {
 		t.Fatalf("pollTimeout(250) = (%v, %d), want (250ms, LJ_OK)", d, status)
+	}
+}
+
+// ljMaxPath restates LJ_MAX_PATH, which lumberjack.h declares and boundedFields enforces.
+//
+// It is written out rather than read from the header because cgo is not supported in test files. That
+// is not a loss here: an INDEPENDENT restatement is what a limits test wants, so a change to either
+// the header or the enforcement — without the other — fails right here rather than passing silently.
+const ljMaxPath = 4096
+
+// LJ_MAX_PATH is the bound that makes the acknowledgement's size provable, and no test produced
+// LJ_TOO_LARGE at all. At the declared length a mutation must be admitted; one byte past it must be
+// refused, on the path AND on the event id, since either can carry the length into the answer.
+func TestBoundedFieldsAtAndPastLJMaxPath(t *testing.T) {
+	atLimit := strings.Repeat("a", ljMaxPath)
+	overLimit := strings.Repeat("a", ljMaxPath+1)
+	underLimit := strings.Repeat("a", ljMaxPath-1)
+
+	for _, admitted := range []struct {
+		name          string
+		path, eventID string
+	}{
+		{"one under, on both", underLimit, underLimit},
+		{"exactly at the limit, on both", atLimit, atLimit},
+		{"at the limit on the path only", atLimit, ""},
+		{"at the limit on the event id only", "", atLimit},
+	} {
+		if got := boundedFields(admitted.path, admitted.eventID); got != statusOK {
+			t.Errorf("%s: boundedFields = %d, want LJ_OK — %d bytes is the DECLARED maximum and must "+
+				"be admitted", admitted.name, got, ljMaxPath)
+		}
+	}
+
+	for _, refused := range []struct {
+		name          string
+		path, eventID string
+	}{
+		{"one past, on the path", overLimit, ""},
+		{"one past, on the event id", "", overLimit},
+		{"one past, on both", overLimit, overLimit},
+		{"a legal path with an over-long event id", "work/site", overLimit},
+	} {
+		if got := boundedFields(refused.path, refused.eventID); got != statusTooLarge {
+			t.Errorf("%s: boundedFields = %d, want LJ_TOO_LARGE (%d) — past the cap the "+
+				"acknowledgement is no longer provably within LJ_MUTATION_OUT_MIN",
+				refused.name, got, statusTooLarge)
+		}
+	}
+
+	// An EMPTY field is not this bound's business: the engine decides whether an empty path is valid,
+	// and refusing it here would turn a 400 into a 413.
+	if got := boundedFields("", ""); got != statusOK {
+		t.Errorf("boundedFields(\"\", \"\") = %d, want LJ_OK — emptiness is the engine's question", got)
+	}
+}
+
+// LJ_MAX_IN_LEN is an INCLUSIVE ceiling: the declared number is admitted and one past it is refused.
+//
+// The admitted side is proven WITHOUT allocating 256 MiB. take checks the bound before it touches the
+// pointer, so a nil pointer at exactly the cap reaches the pointer check and answers LJ_INVALID,
+// while the same nil pointer one byte past the cap is stopped by the bound and answers
+// LJ_TOO_LARGE. The flip between the two statuses IS the boundary, and it is exact.
+func TestTakeAdmitsExactlyLJMaxInLen(t *testing.T) {
+	if _, status := take(nil, maxTakeLen); status != statusInvalid {
+		t.Fatalf("take(nil, maxTakeLen) status = %d, want LJ_INVALID — the DECLARED ceiling must be "+
+			"admitted by the bound and stopped only by the nil pointer behind it", status)
+	}
+	if _, status := take(nil, maxTakeLen+1); status != statusTooLarge {
+		t.Fatalf("take(nil, maxTakeLen+1) status = %d, want LJ_TOO_LARGE", status)
+	}
+	if _, status := take(nil, maxTakeLen-1); status != statusInvalid {
+		t.Fatalf("take(nil, maxTakeLen-1) status = %d, want LJ_INVALID", status)
+	}
+
+	// take's COPY over a real buffer cannot be driven from here — an lj_cstr is a *C.char and cgo is
+	// not supported in test files — so it is driven from C instead: ffi/ctest/smoke.c echoes a
+	// megabyte-scale buffer and checks it byte for byte.
+}
+
+// statusForError is the whole error surface of the boundary, and six of its seven branches were
+// dead. Each HTTP code the engine carries as data must map to its own status: collapsing any two
+// tells a C caller the wrong thing about what to do next — retry, re-authorise, or give up.
+func TestStatusForErrorMapsEveryCarriedCode(t *testing.T) {
+	// The expected values are int32 rather than lj_status_t: the cgo type cannot be NAMED in a test
+	// file, though a value of it converts freely. The numbering is the header's either way.
+	for _, mapping := range []struct {
+		code int
+		want int32
+		why  string
+	}{
+		{400, int32(statusInvalid), "a well-formed request that is wrong"},
+		{403, int32(statusForbidden), "the principal may not"},
+		{404, int32(statusNotFound), "no such node, event or entry"},
+		{409, int32(statusConflict), "already started, id taken, already exists"},
+		{413, int32(statusTooLarge), "over a declared limit"},
+		{429, int32(statusBusy), "the worker pool is saturated; retry"},
+		{503, int32(statusClosed), "closing underneath this call"},
+	} {
+		if got := int32(statusForError(statusOnlyErr(mapping.code))); got != mapping.want {
+			t.Errorf("statusForError(%d) = %d, want %d (%s)", mapping.code, got, mapping.want, mapping.why)
+		}
+	}
+
+	// nil is LJ_OK, not a status about nothing.
+	if got := statusForError(nil); got != statusOK {
+		t.Errorf("statusForError(nil) = %d, want LJ_OK", got)
+	}
+
+	// An error carrying NO status is the server's fault and is INTERNAL — the default arm, and the
+	// one that must not swallow a code the switch simply does not name.
+	if got := statusForError(errors.New("no status of its own")); got != statusInternal {
+		t.Errorf("statusForError(a bare error) = %d, want LJ_INTERNAL", got)
+	}
+	for _, unmapped := range []int{401, 418, 500, 502} {
+		if got := statusForError(statusOnlyErr(unmapped)); got != statusInternal {
+			t.Errorf("statusForError(%d) = %d, want LJ_INTERNAL: an unmapped code is not silently "+
+				"reported as one of the mapped ones", unmapped, got)
+		}
+	}
+
+	// WRAPPED errors are matched through, because errors.As is what the boundary uses — an engine
+	// error annotated on its way up must not lose its status and become a 500.
+	wrapped := fmt.Errorf("while creating the node: %w", statusOnlyErr(404))
+	if got := statusForError(wrapped); got != statusNotFound {
+		t.Errorf("statusForError(wrapped 404) = %d, want LJ_NOT_FOUND", got)
 	}
 }

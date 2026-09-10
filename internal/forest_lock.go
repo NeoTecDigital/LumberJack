@@ -92,6 +92,16 @@ func (server *Server) readForest(read func()) {
 // The acknowledgment is unchanged in strength: this still does not return until the snapshot
 // containing the change is on the disk. See state_writer.go for how concurrent snapshots are kept
 // in order and coalesced.
+//
+// A FAILED PERSIST IS NOT ROLLED BACK, DELIBERATELY. When commitState fails the caller gets a 500 and
+// correctly does not believe the change is durable — but the change is still in the in-memory forest,
+// because `change` already mutated the object graph and undoing an arbitrary mutation would mean
+// snapshotting and restoring the whole forest on every write. That cost buys nothing a caller can
+// observe: the next successful persist writes the WHOLE snapshot, change included, so memory and disk
+// reconverge; and if the process instead dies during the failure window, the un-acknowledged change
+// is lost, which is exactly what a 500 promised. Nothing acknowledged is ever lost — that is the
+// contract, and TestChangeForestReportsAPersistThatCouldNotLand pins it. (The state writer clears its
+// durable-hash on a failed flush, so the next persist WRITES rather than taking the unchanged skip.)
 func (server *Server) changeForest(change func() error) error {
 	snapshot, err := server.applyChangeLocked(change)
 	if err != nil {

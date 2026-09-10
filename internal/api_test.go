@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt"
+
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -1096,55 +1098,118 @@ func TestUserCreationAndAuthentication(t *testing.T) {
 	logger.Exit("Login Tests")
 }
 
-func TestErrorHandling(t *testing.T) {
-	t.Run("Invalid Node Operations", func(t *testing.T) {
-		// Test node operations with invalid paths
-		// Test deleting non-existent nodes
-		// Test circular references
+// TestErrorHandling, TestDataValidation, TestAPIEndpoints and TestMetrics stood here. All four were
+// EMPTY: twelve t.Run subtests whose whole bodies were comments naming work nobody had done. They
+// asserted nothing and reported twelve passes, which is worse than a gap because the count said the
+// ground was covered.
+//
+// Deleted rather than filled, because every case they named is now tested somewhere it belongs:
+//
+//   invalid node ops, missing nodes          -> api_paths_test.go, api_node_delete_test.go
+//   circular references                      -> api_canvas_test.go's TestLinkRefusesACycle,
+//                                               api_query_test.go, api_projection_test.go
+//   concurrent event creation, race conditions -> api_nodes_race_test.go, api_durability_test.go,
+//                                               embedded/concurrency_test.go, ffi/ctest/smoke.c
+//   permission inheritance and refusal       -> api_access_test.go, api_security_test.go
+//   invalid event ids, malformed timestamps  -> api_core_test.go, api_time_test.go
+//   corrupted / incomplete state files       -> state_failure_test.go
+//   state-shape migration (nested -> table)  -> api_state_file_test.go, state_codec_test.go
+//   rate limiting / throttling               -> limits_test.go's saturated-pool 429 and Retry-After
+//
+// One case they named had NO home anywhere, and it is filled below rather than deleted: a session
+// token that is invalid, expired, forged or of the wrong kind. TestMetrics named a metrics surface
+// this engine does not have, so there was nothing to move.
+
+// The session guard, against every token it must refuse. Nothing tested authMiddleware at all:
+// every route test puts the user id straight into the request context the way the middleware would,
+// so the middleware itself — the thing standing between the port and the forest — was never run.
+func TestAuthMiddlewareRefusesEveryBadToken(t *testing.T) {
+	server, _ := newStockServer(t)
+	defer server.Shutdown(context.Background())
+
+	reached := false
+	guarded := server.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		userID, ok := userIDFrom(r)
+		if !ok || userID == "" {
+			t.Error("the middleware admitted a request with no user in its context")
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 
-	t.Run("Concurrent Operations", func(t *testing.T) {
-		// Test concurrent event creation
-		// Test concurrent user assignments
-		// Test race conditions
-	})
+	call := func(authorization string) *httptest.ResponseRecorder {
+		reached = false
+		request := httptest.NewRequest("GET", "/forest", nil)
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		recorder := httptest.NewRecorder()
+		guarded.ServeHTTP(recorder, request)
+		return recorder
+	}
 
-	t.Run("Permission Boundaries", func(t *testing.T) {
-		// Test permission inheritance
-		// Test permission conflicts
-		// Test permission revocation
-	})
-}
+	// A real session token, so the refusals below are refusals and not a middleware that says no to
+	// everything.
+	admin := &server.forest.Users[0]
+	pair, err := server.generateTokenPair(admin)
+	if err != nil {
+		t.Fatalf("generateTokenPair: %v", err)
+	}
+	if got := call("Bearer " + pair.SessionToken); got.Code != http.StatusOK || !reached {
+		t.Fatalf("a valid session token was refused: %d (handler reached: %v)", got.Code, reached)
+	}
 
-func TestDataValidation(t *testing.T) {
-	t.Run("Input Validation", func(t *testing.T) {
-		// Test invalid event IDs
-		// Test malformed timestamps
-		// Test invalid metadata
+	// An EXPIRED session token. Signed by this server with this key, and still refused.
+	expired := jwt.NewWithClaims(jwt.SigningMethodHS256, TokenClaims{
+		UserID: admin.ID, Username: admin.Username, TokenType: "session",
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(-time.Hour).Unix(),
+			IssuedAt:  time.Now().Add(-2 * time.Hour).Unix(),
+		},
 	})
+	expiredString, err := expired.SignedString(server.jwtConfig.SecretKey)
+	if err != nil {
+		t.Fatalf("sign the expired token: %v", err)
+	}
 
-	t.Run("State Validation", func(t *testing.T) {
-		// Test corrupted state files
-		// Test incomplete state recovery
-		// Test version migrations
+	// A token signed with ANOTHER key: the forgery the signing key exists to stop.
+	forged := jwt.NewWithClaims(jwt.SigningMethodHS256, TokenClaims{
+		UserID: admin.ID, Username: admin.Username, TokenType: "session",
+		StandardClaims: jwt.StandardClaims{ExpiresAt: time.Now().Add(time.Hour).Unix()},
 	})
-}
+	forgedString, err := forged.SignedString([]byte("not this server's signing key"))
+	if err != nil {
+		t.Fatalf("sign the forged token: %v", err)
+	}
 
-func TestAPIEndpoints(t *testing.T) {
-	t.Run("Authentication", func(t *testing.T) {
-		// Test invalid tokens
-		// Test expired tokens
-		// Test token refresh
-	})
+	// An UNSIGNED token claiming alg:none — the classic JWT bypass. The middleware pins HMAC, so the
+	// signing method itself is what refuses this one.
+	unsignedString, err := jwt.NewWithClaims(jwt.SigningMethodNone, TokenClaims{
+		UserID: admin.ID, Username: admin.Username, TokenType: "session",
+		StandardClaims: jwt.StandardClaims{ExpiresAt: time.Now().Add(time.Hour).Unix()},
+	}).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatalf("sign the alg:none token: %v", err)
+	}
 
-	t.Run("Rate Limiting", func(t *testing.T) {
-		// Test request throttling
-		// Test concurrent requests
-	})
-}
-
-func TestMetrics(t *testing.T) {
-	// Test performance metrics
-	// Test resource usage
-	// Test operation timing
+	for _, refusal := range []struct {
+		name          string
+		authorization string
+	}{
+		{"no Authorization header at all", ""},
+		{"an empty bearer", "Bearer "},
+		{"a token that is not a JWT", "Bearer not-a-token"},
+		{"an expired session token", "Bearer " + expiredString},
+		{"a token signed with another key", "Bearer " + forgedString},
+		{"an unsigned alg:none token", "Bearer " + unsignedString},
+		{"a REFRESH token used as a session", "Bearer " + pair.RefreshToken},
+	} {
+		got := call(refusal.authorization)
+		if got.Code != http.StatusUnauthorized {
+			t.Errorf("%s: got %d, want 401", refusal.name, got.Code)
+		}
+		if reached {
+			t.Errorf("%s: the handler behind the middleware was reached", refusal.name)
+		}
+	}
 }
