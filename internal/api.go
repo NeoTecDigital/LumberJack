@@ -77,11 +77,41 @@ func newServerShell(config types.ServerConfig) (*Server, error) {
 
 	server := newServerCore(config)
 	server.jwtConfig = jwtConfig
-	server.server = &http.Server{
-		Addr:    ":" + config.Process.ServerPort,
-		Handler: mux.NewRouter(),
-	}
+	server.server = newHTTPServer(config)
 	return server, nil
+}
+
+// The bounds a served endpoint runs under. ReadHeaderTimeout is the slowloris cutoff: a client that
+// dribbles its request line and headers is cut here, before any handler is reached. ReadTimeout
+// bounds the whole request read — generous enough for a MaxAttachmentSize upload over a slow link.
+// IdleTimeout bounds an idle keep-alive. MaxHeaderBytes bounds the header block a client can send.
+//
+// WriteTimeout is deliberately ABSENT. /stream is Server-Sent Events — one response held open for
+// the whole life of a subscription — and a server-wide write deadline cancels the request context at
+// that interval, which the stream handler selects on (see api_stream.go), severing every live feed.
+// ReadHeaderTimeout closes the REQUEST-side slowloris: a client that dribbles its headers. It does
+// NOT close the response side — a client that completes its request and then never reads the reply
+// still pins a handler goroutine blocked in Write. Closing that needs a per-handler
+// http.ResponseController.SetWriteDeadline, a later change, precisely because the one server-wide
+// knob that would also close it cannot coexist with SSE.
+const (
+	httpReadHeaderTimeout = 10 * time.Second
+	httpReadTimeout       = 60 * time.Second
+	httpIdleTimeout       = 120 * time.Second
+	httpMaxHeaderBytes    = 1 << 20
+)
+
+// newHTTPServer builds the HTTP server the served entrypoints listen on, with the timeouts above. It
+// is separate from newServerShell so those bounds can be asserted without standing up a forest.
+func newHTTPServer(config types.ServerConfig) *http.Server {
+	return &http.Server{
+		Addr:              ":" + config.Process.ServerPort,
+		Handler:           mux.NewRouter(),
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
 }
 
 // startRuntime brings up what a forest needs in order to be SERVED: the read cache, the worker pool

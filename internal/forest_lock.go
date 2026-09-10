@@ -58,6 +58,11 @@ func apiErrorf(status int, format string, args ...interface{}) *apiError {
 func writeAPIError(w http.ResponseWriter, err error) {
 	var carried *apiError
 	if errors.As(err, &carried) {
+		// RFC 6585 §4: a 429 SHOULD say how long to wait. The header must be set BEFORE http.Error,
+		// which calls WriteHeader and freezes the header block. errServerBusy is the only 429 today.
+		if carried.status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", retryAfterBusySeconds)
+		}
 		http.Error(w, carried.message, carried.status)
 		return
 	}

@@ -134,7 +134,14 @@ func (stream *mutationStream) replaySince(after uint64) (replay []mutationEvent,
 		oldest = stream.recent[0].Sequence
 	}
 
-	if len(stream.recent) > 0 && stream.recent[0].Sequence > after+1 {
+	// oldest-1 > after, NOT oldest > after+1: `after` is a uint64 straight off the wire, and at 2^64-1
+	// the old after+1 WRAPPED to 0, so `oldest > 0` reported a permanent false LJ_GAP for a caller that
+	// is simply ahead of the ring. (Only that one value was wrong; every other cursor, including
+	// 2^64-2, already answered correctly.) Subtracting from oldest asks the identical question — is the
+	// caller's next expected sequence below the oldest we still hold? — without adding to `after`.
+	// oldest is at least 1 whenever the ring is non-empty (publish numbers from 1) and the && short-
+	// circuits when it is empty, so oldest-1 never underflows.
+	if len(stream.recent) > 0 && oldest-1 > after {
 		return nil, false, oldest
 	}
 

@@ -16,6 +16,47 @@ import (
 // thread, which is the difference the FFI's "a call after close is not a crash" contract rests on.
 var errServerShuttingDown = apiErrorf(http.StatusServiceUnavailable, "server is shutting down")
 
+// errServerBusy answers a read the worker pool could not admit before apiQueueSendTimeout. It is a
+// 429 by DELIBERATE choice, not necessity: a wire-neutral sentinel matched by errors.Is — the pattern
+// ic_lj_open already uses for embedded.ErrLocked (embedded/lock.go), which carries no HTTP status at
+// all — would tell it apart from errServerShuttingDown without any code. 429 is chosen instead so the
+// FFI gets an unambiguous status through the code mapping it already has (LJ_BUSY), where a second 503
+// would fold into errServerShuttingDown's LJ_CLOSED.
+//
+// The semantic cost, stated plainly: the queue is GLOBAL — one 100-deep channel and five workers for
+// every client — so a 429 tells client B it sent too many requests when client A saturated the pool.
+// RFC 7231 §6.6.4's 503 is the closer match for server-side overload; 429 is the accepted trade for a
+// boundary status that reads as one thing. See statusForError and the Retry-After below.
+var errServerBusy = apiErrorf(http.StatusTooManyRequests, "server is busy")
+
+// retryAfterBusySeconds is the Retry-After a 429 carries, which RFC 6585 §4 says it SHOULD. The pool
+// drains a queued read in the time one projection takes, so a one-second hint is honest and keeps a
+// retrying client from spinning.
+const retryAfterBusySeconds = "1"
+
+// apiQueueSendTimeout bounds how long a read waits to be admitted to the worker pool when the queue
+// is full. The pool drains a queued read in the time one projection takes, so a wait this long means
+// it is genuinely saturated — and a bound of any length is what keeps a full queue from pinning the
+// caller (an FFI thread with no other exit than a Close) forever.
+const apiQueueSendTimeout = 5 * time.Second
+
+// enqueue hands a request to the worker pool, bounded three ways: it proceeds the moment a worker
+// slot is free, returns errServerShuttingDown if the pool is tearing down, and returns errServerBusy
+// if neither happens within timeout. The timeout is a parameter so the bound itself is testable
+// without a five-second wait.
+func (server *Server) enqueue(request APIRequest, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case server.apiQueue.queue <- request:
+		return nil
+	case <-server.apiQueue.shutdown:
+		return errServerShuttingDown
+	case <-timer.C:
+		return errServerBusy
+	}
+}
+
 // The read cache over the forest, and the worker pool that reads through it.
 
 func (server *Server) initCache() {
@@ -115,14 +156,13 @@ func (server *Server) queuedNodeView(path, userID string) (nodeView, error) {
 		Response: responseChan,
 	}
 
-	// Both the hand-off and the wait select on the shutdown signal. Without it a read that arrives
-	// once the workers have stopped — a call racing Close, or one on a stale handle — enqueues into
-	// the buffered channel and then blocks forever on a response that will never come. See
-	// errServerShuttingDown.
-	select {
-	case server.apiQueue.queue <- request:
-	case <-server.apiQueue.shutdown:
-		return nodeView{}, errServerShuttingDown
+	// The hand-off is bounded three ways — a free slot, a teardown, or a timeout — so a FULL queue
+	// can no longer block the caller forever. Without the timeout a read that arrives once the
+	// workers have stopped, or one that arrives when 100 others are already queued, blocks
+	// indefinitely; from the FFI that is a pinned OS thread whose only exit is a Close from another
+	// thread. See enqueue and errServerBusy.
+	if err := server.enqueue(request, apiQueueSendTimeout); err != nil {
+		return nodeView{}, err
 	}
 
 	// If the response has already landed AND shutdown is closed, Go picks a ready case uniformly, so

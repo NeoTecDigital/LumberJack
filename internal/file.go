@@ -340,19 +340,46 @@ func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) err
 	return nil
 }
 
-// LoadCompressedData loads and validates gzipped JSON data from a reader
+// maxDecompressedState bounds what a gzip'd state file may expand to in memory. A gzip stream can
+// decompress to arbitrarily more than it costs to store or send, so an unbounded read is a
+// decompression bomb — a few kilobytes on disk becoming gigabytes of resident memory. This ceiling
+// is generous for any realistic forest and finite for a hostile one; a state file that legitimately
+// exceeds it is the signal to make this configurable, not to drop the bound.
+const maxDecompressedState = 1 << 30 // 1 GiB
+
+// LoadCompressedData loads and validates gzipped JSON data from a reader, bounded so a decompression
+// bomb cannot exhaust memory.
 func (server *Server) loadCompressedData(reader io.Reader) ([]byte, error) {
 	server.logger.Enter("loadCompressedData")
 	defer server.logger.Exit("loadCompressedData")
 
+	data, err := readCappedGzip(reader, maxDecompressedState)
+	if err != nil {
+		server.logger.Failure("Failed to read compressed state: %v", err)
+		return nil, err
+	}
+	return data, nil
+}
+
+// readCappedGzip decompresses a gzip stream to completion but refuses to exceed limit bytes. It reads
+// ONE byte past the ceiling so an over-limit stream is detected and rejected, rather than silently
+// truncated into a shorter document — which would then fail its hash check for the wrong reason,
+// reporting corruption where the real fault was size.
+func readCappedGzip(reader io.Reader, limit int64) ([]byte, error) {
 	gzipReader, err := gzip.NewReader(reader)
 	if err != nil {
-		server.logger.Failure("Failed to create gzip reader: %v", err)
 		return nil, err
 	}
 	defer gzipReader.Close()
 
-	return io.ReadAll(gzipReader)
+	data, err := io.ReadAll(io.LimitReader(gzipReader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("decompressed state exceeds the %d-byte limit", limit)
+	}
+	return data, nil
 }
 
 // validatePayload refuses a document the hash in front of it does not vouch for.
