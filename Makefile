@@ -11,15 +11,18 @@ HEADER  := $(BUILD)/liblumberjack.h
 # The forced-panic export lives behind a build tag and must NOT be in the shipped archive; it is
 # built into a separate archive only to prove the guard turns a panic into a status.
 PANIC_ARCHIVE := $(BUILD)/liblumberjack_panic.a
+# The SPEC.md §11.4 conformance corpus is the parent repository's: every case in it is hashed by
+# the Rust, C and Go readers, and this is the path from here to it.
+CANON_CORPUS ?= ../../crates/intercessor/tests/corpus/canon_corpus.json
 
 # The libraries a cgo archive needs on Linux. pthread and dl fold into libc on glibc >= 2.34
 # and are no-ops there; they are named because an older glibc still wants them and the
 # failure without them is an undefined symbol three steps away from its cause.
 CLIBS   := -lpthread -ldl -lresolv
 
-.PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic clean
+.PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check clean
 
-all: test ffi header-check nm-check smoke smoke-lock smoke-panic
+all: test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check
 
 test:
 	@$(GO) test ./... -count=1
@@ -65,6 +68,14 @@ smoke-panic: | $(BUILD)
 	@CGO_ENABLED=1 $(GO) build -buildmode=c-archive -trimpath -tags lj_panic_test -o $(PANIC_ARCHIVE) ./ffi
 	@$(CC) $(CFLAGS) -I ffi -I $(BUILD) -o $(BUILD)/smoke_panic ffi/ctest/smoke_panic.c $(PANIC_ARCHIVE) $(CLIBS)
 	@$(BUILD)/smoke_panic
+
+# The Go canon reader over the corpus: every frozen hex reproduced, every refusal raised by name
+# at its locus, every pair held, or the failing case is named. LJ_CANON_CORPUS makes the file
+# mandatory — `go test` alone skips when the parent checkout is absent; this gate does not.
+canon-check:
+	@test -f $(CANON_CORPUS) || { echo "ERROR: no canon corpus at $(CANON_CORPUS)"; exit 1; }
+	@LJ_CANON_CORPUS=$(abspath $(CANON_CORPUS)) $(GO) test ./ffi -run '^TestCanonCorpus$$' -count=1 -v
+	@echo "  canon: the Go reader agrees with the corpus"
 
 clean:
 	@rm -rf $(BUILD)
