@@ -1,8 +1,8 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 // Non-commercial use only; see LICENSE.
 
-// The twelve exports. Each is `defer guard` then a thin translation to an embedded call: look up the
-// handle, copy the request, run, encode the answer. The engine's behaviour, its holds and its
+// The thirteen exports. Each is `defer guard` then a thin translation to an embedded call: look up
+// the handle, copy the request, run, encode the answer. The engine's behaviour, its holds and its
 // persist all live below embedded; nothing here decides anything the HTTP surface does not.
 package main
 
@@ -13,6 +13,7 @@ import "C"
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/embedded"
@@ -38,14 +39,58 @@ func ic_lj_open(req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t) (stat
 
 	handle, err := embedded.OpenPath(r.Organization, r.DatabasePath, r.Name, r.Principal)
 	if err != nil {
-		if errors.Is(err, embedded.ErrLocked) {
-			return statusLocked
-		}
-		return statusInternal
+		return openStatus(err)
 	}
 
 	*outHandle = C.lj_handle_t(registerHandle(handle))
 	return statusOK
+}
+
+// openStatus maps a refused Open to its boundary status. ErrLocked and ErrUnguarded are kept APART
+// on purpose: LJ_LOCKED clears when the other holder lets go and a caller retries it; LJ_UNGUARDED
+// never clears on its own, and a caller that retries it retries forever. Everything else is the
+// binding's fault to the caller's eye and is LJ_INTERNAL.
+func openStatus(err error) C.lj_status_t {
+	switch {
+	case err == nil:
+		return statusOK
+	case errors.Is(err, embedded.ErrLocked):
+		return statusLocked
+	case errors.Is(err, embedded.ErrUnguarded):
+		return statusUnguarded
+	}
+	return statusInternal
+}
+
+//export ic_lj_adopt
+func ic_lj_adopt(req C.lj_cstr, reqLen C.int64_t) (status C.lj_status_t) {
+	defer guard(&status, nil)
+
+	body, bad := take(req, reqLen)
+	if bad != statusOK {
+		return bad
+	}
+
+	var r adoptRequest
+	if err := decodeYAML(body, &r); err != nil {
+		return statusCodec
+	}
+	return adoptStatus(embedded.AdoptPath(r.DatabasePath, r.Name))
+}
+
+// adoptStatus maps Adopt's answer. The two refusals it makes on purpose get the statuses that say
+// what they mean: a sidecar already present is a CONFLICT with what is there, and no state file is
+// NOT_FOUND. Both are how a caller learns it left an adopt where it does not belong.
+func adoptStatus(err error) C.lj_status_t {
+	switch {
+	case err == nil:
+		return statusOK
+	case errors.Is(err, embedded.ErrGuarded):
+		return statusConflict
+	case errors.Is(err, os.ErrNotExist):
+		return statusNotFound
+	}
+	return statusInternal
 }
 
 //export ic_lj_close

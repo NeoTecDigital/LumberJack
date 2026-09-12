@@ -62,7 +62,8 @@ func newServerCore(config types.ServerConfig) *Server {
 	// os.MkdirAll narrows nothing it did not itself make, so without this a running install's
 	// directory of password hashes stayed world-enterable (TestStateDirectoryIsNotWorldEnterable).
 	// The WRITE path no longer re-asserts it (internal/file.go), so an operator's narrower mode now
-	// survives a persist. Best effort: a directory whose mode cannot be set does not stop the server
+	// survives a persist — and so does a WIDER one: a chmod either way holds until the next restart
+	// narrows the directory again here. Best effort: a directory whose mode cannot be set does not stop the server
 	// coming up, and the state file inside it is 0600 regardless.
 	if dir := filepath.Dir(server.statePath()); dir != "" && dir != "." {
 		if err := types.EnsureDir(dir, types.DataDirMode); err != nil {

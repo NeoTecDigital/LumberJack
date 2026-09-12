@@ -12,6 +12,7 @@ package embedded
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -231,14 +232,18 @@ func TestDeletingTheSidecarBesideAStateFileRefusesANewLock(t *testing.T) {
 	}
 
 	// THE FIX: with the sidecar gone but the state file present, a new acquire is REFUSED rather than
-	// minting a rival on a fresh inode. It answers ErrLocked — the fail-closed status a caller backs
-	// off on — so the holder above stays the only lock on the path.
+	// minting a rival on a fresh inode. It answers ErrUnguarded — and NOT ErrLocked, which a caller
+	// backs off and retries on: this never clears by waiting, and a caller told LJ_LOCKED would retry
+	// it forever. The holder above stays the only lock on the path.
 	if rival, err := acquireLock(key); err == nil {
 		releaseLock(rival)
 		t.Fatal("acquireLock minted a fresh sidecar beside an existing state file whose sidecar was " +
 			"deleted; that is a second live runtime over one state file")
-	} else if !errors.Is(err, ErrLocked) {
-		t.Fatalf("acquiring beside a deleted sidecar reported %v, want ErrLocked", err)
+	} else if !errors.Is(err, ErrUnguarded) {
+		t.Fatalf("acquiring beside a deleted sidecar reported %v, want ErrUnguarded", err)
+	} else if errors.Is(err, ErrLocked) {
+		t.Fatalf("acquiring beside a deleted sidecar reported ErrLocked (%v): a caller retries that, "+
+			"and a missing sidecar never clears by retrying", err)
 	}
 
 	// And a genuinely separate PROCESS is refused too: its own Open reaches the same refusal, so it
@@ -275,6 +280,91 @@ func TestDeletingTheSidecarBesideAStateFileRefusesANewLock(t *testing.T) {
 
 	if err := child.Wait(); err == nil {
 		t.Fatal("the second process exited cleanly; it should have been refused the locked path")
+	}
+}
+
+// A forest from before the sidecar existed — a state file with no `<state>.lock` beside it, which is
+// also what a restored backup and a sidecar the writer failed to mint look like — is REFUSED by
+// default, and the refusal is ErrUnguarded rather than ErrLocked: it is permanent and only a human
+// clears it, so a caller must not back off and retry it. Adopt is the one route past it: explicit,
+// one-shot, logged, and the forest it admits is the forest that was there.
+func TestAForestWithoutASidecarIsRefusedUntilAdopted(t *testing.T) {
+	cfg := embeddedConfig(t)
+	key, err := canonicalPath(cfg)
+	if err != nil {
+		t.Fatalf("canonicalPath: %v", err)
+	}
+
+	// A real forest, then its sidecar removed: exactly what every build before the writer minted one
+	// left behind, and the only way to make one now that the writer does.
+	first, err := Open(cfg, "first")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := first.CreateNode(CreateNodeRequest{Path: "work/legacy", Type: "leaf"}); err != nil {
+		t.Fatalf("seed the forest: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := os.Remove(lockPathFor(key)); err != nil {
+		t.Fatalf("remove the sidecar: %v", err)
+	}
+
+	// REFUSED by default, with the permanent error and not the transient one — and a retry is the
+	// same answer, which is the whole reason the two are kept apart.
+	for attempt := 0; attempt < 2; attempt++ {
+		handle, err := Open(cfg, internal.SystemUserID)
+		if err == nil {
+			handle.Close()
+			t.Fatal("Open succeeded over a state file with no sidecar: a silent re-mint is the " +
+				"deleted-sidecar hole reopened")
+		}
+		if !errors.Is(err, ErrUnguarded) {
+			t.Fatalf("attempt %d: Open reported %v, want ErrUnguarded", attempt, err)
+		}
+		if errors.Is(err, ErrLocked) {
+			t.Fatalf("attempt %d: Open reported ErrLocked for a missing sidecar; a caller backs off "+
+				"and retries ErrLocked, and this never clears", attempt)
+		}
+	}
+
+	// Nothing to adopt where there is no state file: a fresh path mints its own sidecar on Open.
+	if err := Adopt(configOver(t.TempDir())); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Adopt over a path with no state file reported %v, want os.ErrNotExist", err)
+	}
+
+	// THE ROUTE. Adopt mints the sidecar and records the act.
+	var record bytes.Buffer
+	adoptLog = &record
+	defer func() { adoptLog = os.Stderr }()
+	if err := Adopt(cfg); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if _, err := os.Stat(lockPathFor(key)); err != nil {
+		t.Fatalf("Adopt did not mint the sidecar: %v", err)
+	}
+	if !strings.Contains(record.String(), key) || !strings.Contains(record.String(), lockPathFor(key)) {
+		t.Fatalf("Adopt recorded %q; it must name the state file and the sidecar it minted", record.String())
+	}
+
+	// ONE-SHOT: a second Adopt is refused, so an adopt left in front of every open is told so on the
+	// next start rather than silently re-minting a rival.
+	if err := Adopt(cfg); !errors.Is(err, ErrGuarded) {
+		t.Fatalf("a second Adopt reported %v, want ErrGuarded", err)
+	}
+
+	// And the forest opens, intact: the node written before the sidecar went is the node read back.
+	second, err := Open(cfg, internal.SystemUserID)
+	if err != nil {
+		t.Fatalf("Open after Adopt: %v", err)
+	}
+	defer second.Close()
+	if _, err := second.StatusOf("work/legacy"); err != nil {
+		t.Fatalf("the adopted forest lost work/legacy: %v", err)
+	}
+	if err := Adopt(cfg); !errors.Is(err, ErrGuarded) {
+		t.Fatalf("Adopt beside a live runtime reported %v, want ErrGuarded — its sidecar is held", err)
 	}
 }
 
@@ -390,8 +480,8 @@ func TestOpenRacingTheLastCloseNeverFails(t *testing.T) {
 
 // A CLOSED handle still READS from the forest in memory, but REFUSES every write.
 //
-// The reads answer from the forest still resident in memory — harmless, they touch no file and no
-// lock. The writes do not: a Close tears the runtime down on the last reference and RELEASES the
+// The reads answer from the forest still resident in memory — a frozen snapshot with no staleness
+// signal, touching no file and no lock; see ensureOpen for the three-way split. The writes do not: a Close tears the runtime down on the last reference and RELEASES the
 // sidecar flock, so a write that ran on afterwards would reach the state file the released lock no
 // longer guards, under a path another process may by then legitimately hold. Each of the five
 // mutating methods now answers ErrClosed.

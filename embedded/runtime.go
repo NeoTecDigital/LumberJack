@@ -49,12 +49,15 @@ type Runtime struct {
 	// rather than a per-operation emptiness check because that check is per-call auth-resolution state
 	// on a security path, which is a design change this layer does not make on its own.
 	//
-	// THE SHARP EDGE, flagged not fixed: within ONE runtime that opened empty, a handle minted for an
-	// arbitrary principal AFTER a real user was added through it still resolves to system. On an empty
-	// forest that grants nothing — anyone may pass "system" — but once a real user exists it is more
-	// than that principal should hold. An embedder that adds real users to a live empty-opened runtime
-	// and then acts for untrusted principals through it should reopen instead, or this should become a
-	// per-call check; that is the decision left open.
+	// THE SHARP EDGE, flagged not fixed, and UNREACHABLE through today's surface: within ONE runtime
+	// that opened empty, a handle minted for an arbitrary principal AFTER a real user was added
+	// through it would still resolve to system — more than that principal should hold. But no Handle
+	// method and no FFI export can add a user; the embedded surface has no user management, so nothing
+	// can put a real user into a live empty-opened runtime, and every handle over one resolves to
+	// system on a forest where "system" grants nothing anyone could not already pass. The edge goes
+	// LIVE the moment a user-management method is added to this package: at that point this must
+	// become a per-call check, or such a runtime must be reopened before it acts for untrusted
+	// principals. That is the decision left open, and this field is where it lands.
 	systemDefault bool
 }
 
@@ -70,9 +73,10 @@ var (
 //
 // A second Open of the SAME path shares the first's runtime — the principal is what differs between
 // handles, not the forest. The FIRST Open of a path takes the flock before it builds anything, so a
-// second process is refused (ErrLocked) before any work is done. The principal is bound here and for
-// the life of the handle: an embedder acts as one identity per handle, and holds as many handles as
-// it acts as identities.
+// second process is refused (ErrLocked, which clears when it lets go) before any work is done; a
+// state file with no sidecar beside it is refused ErrUnguarded, which does not clear until the forest
+// is Adopted. The principal is bound here and for the life of the handle: an embedder acts as one
+// identity per handle, and holds as many handles as it acts as identities.
 func Open(config Config, principal string) (*Handle, error) {
 	// Pin DatabasePath ABSOLUTE into the config before anything reads it. The registry key and the
 	// flock are absolute, but internal.NewCore and every subsequent persist re-resolve the config's

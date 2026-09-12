@@ -50,6 +50,7 @@ const (
 	statusGap       = C.lj_status_t(C.LJ_GAP)
 	statusLocked    = C.lj_status_t(C.LJ_LOCKED)
 	statusBusy      = C.lj_status_t(C.LJ_BUSY)
+	statusUnguarded = C.lj_status_t(C.LJ_UNGUARDED)
 )
 
 func main() {}

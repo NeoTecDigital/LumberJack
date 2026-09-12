@@ -69,10 +69,21 @@ func (h *Handle) Close() error {
 	return h.closeErr
 }
 
-// ensureOpen refuses a call on a handle that has been Closed. It guards the mutators — the operations
-// that reach the state file the sidecar flock guards; a read touches only the forest still in memory
-// and is left to answer, and StatusOf and PollMutations already notice a teardown through the worker
-// pool and the shutdown signal they route through.
+// ensureOpen refuses a call on a handle that has been Closed. It guards the MUTATORS — the operations
+// that reach the state file the sidecar flock guards. What a closed handle's reads do is not one rule
+// but three:
+//
+//   - Forest, Query, Aggregate and EventEntries answer from the forest still in memory: a FROZEN
+//     snapshot, with NO staleness signal. Once the last Close released the flock another process may
+//     own the path and be rewriting the file, and these reads say nothing about it.
+//   - StatusOf routes through the worker pool, which the teardown stopped, and returns an error.
+//   - PollMutations returns at once on the closed shutdown signal, with only what the frozen ring
+//     holds after the cursor.
+//
+// The reads are left to answer rather than refused because Forest has no error return: refusing it
+// means changing its signature, and refusing the other three while it still answers would be a
+// fourth rule. An embedder that must not read a frozen forest does not read through a handle it has
+// closed; ErrClosed from any mutator is the signal that the handle is one.
 func (h *Handle) ensureOpen() error {
 	if h.done.Load() {
 		return ErrClosed

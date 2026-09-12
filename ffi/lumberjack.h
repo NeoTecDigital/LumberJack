@@ -30,7 +30,12 @@ extern "C" {
  * int64_t. At 32 bits a document of 2^31 bytes or more reported a NEGATIVE *out_len, which then
  * compared below out_cap and answered LJ_OK for a partial document copied over a whole-document
  * buffer: the one lie the boundary exists to prevent. A stale v1 archive linked against a v2
- * binding is caught at open, not silently, because the binding checks this number first. */
+ * binding is caught at open, not silently, because the binding checks this number first.
+ *
+ * STILL VERSION 2 after LJ_UNGUARDED and ic_lj_adopt: a new status value and a new export are
+ * ADDITIVE — a caller built against the earlier v2 header links and runs unchanged, and one built
+ * against this header fails to LINK, not to run, against an archive without ic_lj_adopt. Changing or
+ * renumbering an existing status or signature is what would make this 3. */
 #define LJ_ABI_VERSION 2u
 
 /* An opaque TOKEN for an open runtime: a monotonic counter the Go side maps to a runtime, never an
@@ -54,8 +59,8 @@ typedef const char *lj_cstr;
 #define LJ_INVALID         1   /* 400 — a well-formed request that is wrong                */
 #define LJ_UNAUTHENTICATED 2   /* 401 — reserved; the FFI has no session to be missing     */
 #define LJ_FORBIDDEN       3   /* 403 — the principal may not                              */
-#define LJ_NOT_FOUND       4   /* 404 — no such node, event or entry                       */
-#define LJ_CONFLICT        5   /* 409 — already started, id taken, already exists          */
+#define LJ_NOT_FOUND       4   /* 404 — no such node, event or entry; adopt: no state file */
+#define LJ_CONFLICT        5   /* 409 — already started, id taken; adopt: sidecar present  */
 #define LJ_TOO_LARGE       6   /* 413 — over a declared limit                              */
 #define LJ_INTERNAL        7   /* 500, and every error carrying no status of its own       */
 #define LJ_TRUNCATED       8   /* success; the document did not fit, *out_len is its size  */
@@ -64,8 +69,17 @@ typedef const char *lj_cstr;
 #define LJ_PANIC          11   /* a Go panic was recovered; the process survived           */
 #define LJ_CODEC          12   /* the envelope would not parse or emit                     */
 #define LJ_GAP            13   /* stream: the cursor is older than the replay ring         */
-#define LJ_LOCKED         14   /* open: another runtime holds this state file              */
+#define LJ_LOCKED         14   /* open: another runtime holds this state file; RETRY      */
 #define LJ_BUSY           15   /* 429 — the worker pool is saturated; retry                */
+#define LJ_UNGUARDED      16   /* open: a state file with no lock sidecar; DO NOT RETRY    */
+
+/* LJ_LOCKED and LJ_UNGUARDED are two statuses because they call for opposite actions. LJ_LOCKED is
+ * transient: another process has the sidecar flocked now, and the refusal lifts when it lets go, so
+ * a caller retries with a back-off. LJ_UNGUARDED is PERMANENT: the state file is there and its
+ * `<state>.lock` is not — a forest written before the sidecar existed, a backup restored without it,
+ * or a sidecar that was deleted, possibly while another process still held it — and nothing a caller
+ * does short of ic_lj_adopt clears it. Under one status a caller that backed off correctly on the
+ * first would back off forever on the second. */
 
 /* Bounds that make the no-truncated-mutation guarantee PROVABLE. LJ_MAX_PATH caps the one unbounded
  * field a mutation's acknowledgement carries — the node path, and the event id read back with it —
@@ -103,9 +117,31 @@ uint32_t ic_lj_abi_version(void);
  * and the principal to act as. Idempotent per state path WITHIN a process: a second open of the same
  * file shares one refcounted runtime, and the last close tears it down. Another PROCESS holding the
  * same file is refused LJ_LOCKED — the lock is a sidecar `<state>.lock` that survives the snapshot
- * rename a persist performs. The token is never recycled, so a stale one cannot alias a live runtime;
- * it is a value, never an address, and C must not dereference it. */
+ * rename a persist performs — and a state file with NO sidecar beside it is refused LJ_UNGUARDED,
+ * which only ic_lj_adopt clears. The token is never recycled, so a stale one cannot alias a live
+ * runtime; it is a value, never an address, and C must not dereference it. */
 lj_status_t ic_lj_open(lj_cstr req, int64_t req_len, lj_handle_t *out_handle);
+
+/* Adopt a state file that has no lock sidecar, so an open refused LJ_UNGUARDED can succeed. `req`
+ * is a YAML document carrying `database_path` and `name`, the two fields of an open request that
+ * name the state file. It mints the empty `<state>.lock` beside the state file and answers LJ_OK;
+ * the same act as a `touch` by hand, with the checks. It is the caller's ASSERTION that no other
+ * process holds the file — a sidecar deleted while held leaves its holder on an unlinked inode
+ * nothing can find, so this cannot be checked here, which is why it is a separate explicit call and
+ * not an option on open.
+ *
+ * ONE-SHOT, deliberately: LJ_CONFLICT when the sidecar is already there (nothing to adopt), and
+ * LJ_NOT_FOUND when there is no state file (a fresh path mints its own sidecar on open). The act is
+ * logged to stderr.
+ *
+ * THE HONEST LIMIT: one-shot is per MISSING-SIDECAR EPISODE, not per forest. If the sidecar is
+ * deleted again while a holder is live, adopt succeeds again — it cannot see the holder — and the
+ * next open brings up a rival runtime beside the live one, last-writer-wins. So the guard is NOT
+ * this call's refusal; the guard is that open NEVER adopts, and that a caller runs adopt only by
+ * a human's decision, on that human's word that nothing holds the file. An adopt automated in front
+ * of every open is protected by LJ_CONFLICT only while the sidecar survives, and only if the caller
+ * treats LJ_CONFLICT as fatal rather than as "already done". Do not automate it. */
+lj_status_t ic_lj_adopt(lj_cstr req, int64_t req_len);
 
 /* Close a handle. IDEMPOTENT: closing a handle that was never opened, or was already closed, is LJ_OK
  * and not an error. The runtime is torn down only when its last handle closes; a data call on a

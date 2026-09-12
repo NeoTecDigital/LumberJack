@@ -30,6 +30,7 @@ static lj_status_t (*const check_echo)(const char *, int64_t,
 /* Lifecycle. */
 static lj_status_t (*const check_open)(lj_cstr, int64_t, lj_handle_t *) = ic_lj_open;
 static lj_status_t (*const check_close)(lj_handle_t) = ic_lj_close;
+static lj_status_t (*const check_adopt)(lj_cstr, int64_t) = ic_lj_adopt;
 
 /* The data operations. Every one is held to the same shape; a changed parameter fails to compile. */
 typedef lj_status_t (*lj_data_op)(lj_handle_t, lj_cstr, int64_t, char *, int64_t, int64_t *);
@@ -62,6 +63,7 @@ _Static_assert(LJ_CODEC == 12, "LJ_CODEC");
 _Static_assert(LJ_GAP == 13, "LJ_GAP");
 _Static_assert(LJ_LOCKED == 14, "LJ_LOCKED");
 _Static_assert(LJ_BUSY == 15, "LJ_BUSY");
+_Static_assert(LJ_UNGUARDED == 16, "LJ_UNGUARDED");
 _Static_assert(LJ_ABI_VERSION == 2u, "LJ_ABI_VERSION");
 _Static_assert(LJ_MUTATION_OUT_MIN > LJ_MAX_PATH, "a mutation's buffer floor must exceed its path cap");
 _Static_assert(LJ_MAX_IN_LEN > LJ_MUTATION_OUT_MIN, "the inbound cap must exceed the mutation buffer floor");
@@ -73,6 +75,7 @@ const void *const lj_header_agreement[] = {
     (const void *)&check_echo,
     (const void *)&check_open,
     (const void *)&check_close,
+    (const void *)&check_adopt,
     (const void *)&check_node_create,
     (const void *)&check_event_plan,
     (const void *)&check_event_start,

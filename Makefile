@@ -17,9 +17,9 @@ PANIC_ARCHIVE := $(BUILD)/liblumberjack_panic.a
 # failure without them is an undefined symbol three steps away from its cause.
 CLIBS   := -lpthread -ldl -lresolv
 
-.PHONY: all test ffi header-check nm-check smoke smoke-panic clean
+.PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic clean
 
-all: test ffi header-check nm-check smoke smoke-panic
+all: test ffi header-check nm-check smoke smoke-lock smoke-panic
 
 test:
 	@$(GO) test ./... -count=1
@@ -51,6 +51,13 @@ nm-check: ffi
 smoke: ffi
 	@$(CC) $(CFLAGS) -I ffi -I $(BUILD) -o $(BUILD)/smoke ffi/ctest/smoke.c $(ARCHIVE) $(CLIBS)
 	@$(BUILD)/smoke
+
+# The lock is real at the boundary if a SECOND PROCESS holding the sidecar is refused LJ_LOCKED, and a
+# state file with no sidecar is refused LJ_UNGUARDED until adopted. The programme re-runs itself as
+# the holder, so it is a binary of its own.
+smoke-lock: ffi
+	@$(CC) $(CFLAGS) -I ffi -I $(BUILD) -o $(BUILD)/smoke_lock ffi/ctest/smoke_lock.c $(ARCHIVE) $(CLIBS)
+	@$(BUILD)/smoke_lock
 
 # The guard is real if a panic in an export becomes LJ_PANIC and the process is still usable. This
 # builds the tagged archive — the ONLY build carrying the forced-panic export — and drives it.

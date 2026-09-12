@@ -101,6 +101,13 @@ type openRequest struct {
 	Principal    string `json:"principal"`
 }
 
+// adoptRequest is the YAML body of ic_lj_adopt: only what names a state file. No organization and no
+// principal, because adoption opens nothing and acts as nobody.
+type adoptRequest struct {
+	DatabasePath string `json:"database_path"`
+	Name         string `json:"name"`
+}
+
 // pollRequest is the YAML body of ic_lj_stream_poll.
 type pollRequest struct {
 	After     uint64 `json:"after"`

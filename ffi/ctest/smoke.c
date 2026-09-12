@@ -10,7 +10,9 @@
  * test files: an lj_cstr is a *C.char and there is no way to build one from a Go test. So everything
  * that needs a real C buffer — LJ_MUTATION_OUT_MIN at its edge, the "the acknowledgement provably
  * fits" claim, LJ_TOO_LARGE, LJ_CODEC, LJ_NOT_FOUND, LJ_CONFLICT, LJ_GAP, ic_lj_aggregate, and the
- * archive under several threads at once — lives here rather than beside the Go unit tests. */
+ * archive under several threads at once — lives here rather than beside the Go unit tests. The two
+ * statuses an OPEN refuses with — LJ_LOCKED, which needs another process, and LJ_UNGUARDED with its
+ * adopt — live in smoke_lock.c, a programme of their own, run by `make smoke-lock`. */
 
 #define _GNU_SOURCE
 #include <assert.h>
@@ -206,8 +208,9 @@ static void statuses(lj_handle_t h, const char *dir) {
 
 /* worker is one thread's share of the archive. Every thread writes its leaves under ONE SHARED
  * BRANCH, on purpose: that makes all eight of them insert into the same Children map, which is the
- * map a projection of the forest is walking at the same moment. Disjoint subtrees would exercise the
- * threading and not the lock — this contends on exactly what forest_lock.go exists to serialise. */
+ * map a projection of the forest is walking at the same moment — the thing forest_lock.go exists to
+ * serialise. Measured with the lock removed, the shared branch RAISED the catch rate (14/15 runs
+ * died, against 8/15 with a branch per thread) and did not make it certain; see threads. */
 struct worker_arg { lj_handle_t h; int id; volatile int *stop; };
 
 static void *worker(void *raw) {
@@ -273,7 +276,18 @@ static void *reader(void *raw) {
  * one forest. Each thread opens its own handle: within one process those share a refcounted runtime,
  * which is exactly the shape a multi-threaded host has and the shape the in-process refcount exists
  * for. What must hold: every acknowledged write is there afterwards, and the process is alive to say
- * so — a torn map would be a runtime throw that no recover in this binding can catch. */
+ * so — a torn map would be a runtime throw that no recover in this binding can catch.
+ *
+ * THIS SECTION IS PROBABILISTIC, and one green run is NOT proof the lock is present. With the forest
+ * lock removed it dies in most runs (14/15 measured; 0 false positives with the lock in place): a
+ * torn map is a race, and a race that happens not to fire is a green run. It is not made
+ * deterministic here because it cannot be cheaply — a race-instrumented archive is a second build of
+ * the whole thing. The deterministic proof lives in `go test -race ./embedded`, where the race
+ * detector reports an unsynchronised access whether or not it tore anything: with the lock neutered
+ * the package fails every run; the report counts and which tests fail vary (measured 4–161 reports —
+ * a run can die on the runtime's own map-write throw before the detector has accumulated much). What
+ * only THIS can claim is that the lock holds under OS threads that entered the Go runtime from
+ * outside, and that the archive stays alive doing it. */
 static void threads(const char *parent) {
     char dir[256];
     snprintf(dir, sizeof dir, "%s/threads", parent);
