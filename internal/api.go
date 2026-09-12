@@ -231,6 +231,13 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 	// Retracting one entry, and removing one tracked span. Both address the thing by ID and take
 	// the node as ?path=, which is what DELETE /attachments/{id} already does.
 	router.HandleFunc("/entries/{id}", s.authMiddleware(s.handleDeleteEntry)).Methods("DELETE")
+	// Writing a node-level entry, and reordering or reparenting one. POST /entries wraps
+	// core.AddEntry; PATCH /entries/{id}/metadata addresses the entry by id the way DELETE does. Both
+	// match only their own method, so neither collides with GET /entries (the feed listing, in
+	// registerQueryRoutes) or DELETE /entries/{id}; and {id} matches a single segment, so
+	// /entries/{id}/metadata is a distinct pattern, not the delete route with a trailing path.
+	router.HandleFunc("/entries", s.authMiddleware(s.handleCreateEntry)).Methods("POST")
+	router.HandleFunc("/entries/{id}/metadata", s.authMiddleware(s.handlePatchEntryMetadata)).Methods("PATCH")
 	router.HandleFunc("/time/{id}", s.authMiddleware(s.handleDeleteTimeSpan)).Methods("DELETE")
 	router.HandleFunc("/nodes", s.authMiddleware(s.handleCreateNode)).Methods("POST")
 	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")

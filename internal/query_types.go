@@ -193,6 +193,11 @@ type entryResultView struct {
 	NodePath   string                 `json:"node_path"`
 	EventID    string                 `json:"event_id,omitempty"`
 	EntryIndex int                    `json:"entry_index"`
+	// ParentID and Rank travel with a flat entry result too, so the feed a client polls carries the
+	// nesting and the order and not only the position. omitempty, so an unranked, unnested entry
+	// stays as small on the wire as it was before the fields existed.
+	ParentID   string                 `json:"parent_id,omitempty"`
+	Rank       string                 `json:"rank,omitempty"`
 	Content    interface{}            `json:"content"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 	UserID     string                 `json:"user_id"`

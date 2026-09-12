@@ -58,6 +58,8 @@ func registerTestRoutes(router *mux.Router, server *Server) {
 	router.HandleFunc("/events/{id}", server.handleDeleteEvent).Methods("DELETE")
 	router.HandleFunc("/events/{id}", server.handleUpdateEvent).Methods("PATCH")
 	router.HandleFunc("/entries/{id}", server.handleDeleteEntry).Methods("DELETE")
+	router.HandleFunc("/entries", server.handleCreateEntry).Methods("POST")
+	router.HandleFunc("/entries/{id}/metadata", server.handlePatchEntryMetadata).Methods("PATCH")
 	router.HandleFunc("/time/{id}", server.handleDeleteTimeSpan).Methods("DELETE")
 }
 

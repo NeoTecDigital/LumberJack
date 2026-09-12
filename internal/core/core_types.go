@@ -54,8 +54,23 @@ type NodeType int
 // It is minted at creation and never rewritten. An entry read out of a state file written before
 // this field existed carries the empty string, and is given a DERIVED id at load — see
 // entry_identity.go, which explains why the derivation has to be deterministic rather than fresh.
+// ParentID and Rank make an entry NESTABLE and REORDERABLE as data, which the address (node_path,
+// event_id, entry_index) never could: nesting under an index moves when anything above it moves, and
+// there was no field to write an order into at all.
+//
+// ParentID is another entry's ID — a reply/thread parent. It is stored and returned; the engine does
+// NOT verify the parent exists (a reply may outlive the message it answered, and validating it here
+// would couple two entries' lifecycles for a check the reader can make). Empty means "top level".
+//
+// Rank is an OPAQUE fractional-index string. The engine stores it, returns it, and orders entries by
+// LEXICOGRAPHIC string sort where it orders them — it does not parse it and does not GENERATE one.
+// A string so a caller can insert between two ranks ("a", "b" -> "an") without renumbering; the
+// between-two arithmetic is the client's (phase 20). An entry created without a rank carries the
+// empty string and is simply appended.
 type Entry struct {
 	ID          string                 `json:"id"`
+	ParentID    string                 `json:"parent_id,omitempty"`
+	Rank        string                 `json:"rank,omitempty"`
 	Content     interface{}            `json:"content"`
 	Metadata    map[string]interface{} `json:"metadata"`
 	UserID      string                 `json:"user_id"`

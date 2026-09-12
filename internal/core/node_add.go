@@ -5,18 +5,35 @@ import (
 	"time"
 )
 
-// AddActivity adds an activity entry to the node
+// AddActivity adds an activity entry to the node: no parent, no rank, appended in order.
+//
+// It is the node-level log write (assign_user, time sentinels), and it is AddEntry with the two
+// structural fields left empty — one place mints an entry, so a field added to that mint reaches
+// every writer without being copied into each.
 func (n *Node) AddActivity(content interface{}, metadata map[string]interface{}, userID string) {
+	n.AddEntry(content, metadata, userID, "", "")
+}
+
+// AddEntry appends an entry to the node's own entries and RETURNS a copy of what it stored, id and
+// all — because the caller (POST /entries) must answer the minted id, and reading it back by index
+// after the hold is exactly the position-is-not-a-name defect the id exists to end.
+//
+// parentID and rank are stored opaquely (see the Entry doc): the engine neither validates the parent
+// nor generates a rank. An empty rank is stored empty and the entry is appended after the last.
+func (n *Node) AddEntry(content interface{}, metadata map[string]interface{}, userID, parentID, rank string) Entry {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 	entry := Entry{
 		ID:        GenerateEntryID(),
+		ParentID:  parentID,
+		Rank:      rank,
 		Content:   content,
 		Metadata:  metadata,
 		UserID:    userID,
 		Timestamp: time.Now(),
 	}
 	n.Entries = append(n.Entries, entry)
+	return entry
 }
 
 // AddChild adds a child node with proper parent linking

@@ -99,6 +99,56 @@ func TestNodeRecordWritesEveryFieldANodeCarries(t *testing.T) {
 	}
 }
 
+// An entry's PARENT and RANK survive the state file, which is the claim phase 18.2 rests on: a
+// nested, reordered entry that came back flat and unordered on the next restart would be a reorder
+// that lasts until the process does. It is FREE because nodeRecord embeds *core.Node and the codec
+// marshals it with encoding/json — but "free" is exactly the kind of thing that stops being true
+// silently (a `json:"-"` a field over would drop it and nothing would say so), so it is asserted.
+//
+// OBSERVED RED with Entry.Rank tagged `json:"-"` instead of `json:"rank,omitempty"`
+// (go test ./internal/ -run ParentAndRankSurvive):
+//
+//	state_codec_test.go:NN: the entry came back rank "", want "a1": the field did not survive the codec
+func TestAnEntrysParentAndRankSurviveTheCodec(t *testing.T) {
+	node := core.NewNode(core.LeafNode, "holder")
+	node.ID = "holder-id"
+	node.Entries = []core.Entry{{
+		ID:       "entry-child",
+		ParentID: "entry-parent",
+		Rank:     "a1",
+		Content:  "a reply that is nested and ranked",
+		UserID:   "user-id",
+	}}
+
+	root := core.NewNode(core.BranchNode, "root")
+	root.ID = "root-id"
+	root.Children = map[string]*core.Node{node.ID: node}
+
+	encoded, err := encodeState(root)
+	if err != nil {
+		t.Fatalf("Failed to encode the forest: %v", err)
+	}
+	decoded, err := decodeState(encoded)
+	if err != nil {
+		t.Fatalf("Failed to decode the forest: %v", err)
+	}
+
+	after, present := decoded.Children[node.ID]
+	if !present || len(after.Entries) != 1 {
+		t.Fatalf("the node came back without its one entry: %+v", after)
+	}
+
+	got := after.Entries[0]
+	if got.ParentID != "entry-parent" {
+		t.Errorf("the entry came back parent_id %q, want %q: the field did not survive the codec",
+			got.ParentID, "entry-parent")
+	}
+	if got.Rank != "a1" {
+		t.Errorf("the entry came back rank %q, want %q: the field did not survive the codec",
+			got.Rank, "a1")
+	}
+}
+
 // The one shadow is the INTENDED one, and it turns the nesting into ids.
 //
 // nodeRecord's outer Children beats core.Node's by JSON's shallower-field rule. That is the whole
