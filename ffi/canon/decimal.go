@@ -6,11 +6,23 @@ package canon
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"math/big"
 	"strconv"
 	"strings"
 )
+
+// CoefficientBits and MaxScale are §11.2's bound on a decimal: its value is m × 10^-s with m
+// below 2^CoefficientBits and 0 ≤ s ≤ MaxScale. Past either, ParseDecimal refuses with
+// DecimalOutOfRange — nothing is rounded.
+const (
+	CoefficientBits = 96
+	MaxScale        = 28
+)
+
+// coefficientDigits is the most decimal digits a coefficient below 2^96 can have: 2^96 is
+// 79228162514264337593543950336, 29 digits. A coefficient of more digits is past the bound
+// before any arithmetic, which is what keeps the big.Int work below bounded by the literal.
+const coefficientDigits = 29
 
 // Decimal is a base-10 number in the normal form §11.2 hashes: a sign, an i32 exponent and a
 // coefficient magnitude with every base-10 trailing zero moved into the exponent. The fields
@@ -23,8 +35,10 @@ type Decimal struct {
 }
 
 // ParseDecimal reads `[+-]digits[.digits][(e|E)[+-]digits]`. Nothing on the path is a float:
-// the digits become a big.Int and the exponent an integer, and a value whose exponent cannot
-// fit the i32 the encoding carries is an error rather than a wrap.
+// the digits become a big.Int and the exponent an integer. The bound is judged on the value
+// with every leading and trailing zero stripped — 1.000 with thirty zeros is 1 — and a value
+// past it is refused with DecimalOutOfRange rather than rounded. Inside the bound the exponent
+// lies in [-28, 28], so the i32 the encoding carries is exact.
 func ParseDecimal(text string) (Decimal, error) {
 	negative, mantissa, exponent, err := splitDecimal(text)
 	if err != nil {
@@ -36,14 +50,41 @@ func ParseDecimal(text string) (Decimal, error) {
 		return Decimal{}, nil // zero: sign 0, exponent 0, empty coefficient
 	}
 	exponent += int64(len(digits) - len(stripped))
-	if exponent < math.MinInt32 || exponent > math.MaxInt32 {
-		return Decimal{}, fmt.Errorf("canon: decimal %q: exponent %d does not fit an i32", text, exponent)
+	magnitude, err := boundedCoefficient(text, stripped, exponent)
+	if err != nil {
+		return Decimal{}, err
+	}
+	return Decimal{negative: negative, exponent: int32(exponent), magnitude: magnitude}, nil
+}
+
+// boundedCoefficient is the stripped coefficient as a big.Int, or the refusal. The value
+// stripped × 10^exponent must be m × 10^-s with m < 2^CoefficientBits and s ≤ MaxScale: the
+// scale is -exponent when negative, and the coefficient is the digits followed by exponent
+// zeros when positive. The digit count is tested before any big arithmetic runs, so the check
+// is linear in the literal and a hostile exponent never sizes a power of ten.
+func boundedCoefficient(text, stripped string, exponent int64) (*big.Int, error) {
+	if exponent < -MaxScale {
+		return nil, refuse(DecimalOutOfRange, "decimal %q needs scale %d, past %d", text, -exponent, MaxScale)
+	}
+	integral := int64(len(stripped))
+	if exponent > 0 {
+		integral += exponent
+	}
+	if integral > coefficientDigits {
+		return nil, refuse(DecimalOutOfRange, "decimal %q has a %d-digit coefficient, past %d bits", text, integral, CoefficientBits)
 	}
 	magnitude, ok := new(big.Int).SetString(stripped, 10)
 	if !ok {
-		return Decimal{}, fmt.Errorf("canon: decimal %q: coefficient is not decimal digits", text)
+		return nil, fmt.Errorf("canon: decimal %q: coefficient is not decimal digits", text)
 	}
-	return Decimal{negative: negative, exponent: int32(exponent), magnitude: magnitude}, nil
+	value := magnitude
+	if exponent > 0 {
+		value = new(big.Int).Mul(magnitude, new(big.Int).Exp(big.NewInt(10), big.NewInt(exponent), nil))
+	}
+	if value.BitLen() > CoefficientBits {
+		return nil, refuse(DecimalOutOfRange, "decimal %q: coefficient %s is %d bits, past %d", text, value, value.BitLen(), CoefficientBits)
+	}
+	return magnitude, nil
 }
 
 // splitDecimal separates the sign, the mantissa digits with the point removed, and the

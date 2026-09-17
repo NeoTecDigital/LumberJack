@@ -22,6 +22,11 @@ const (
 	UnknownIdentityField
 	// NestingTooDeep is a node deeper than MaxDepth.
 	NestingTooDeep
+	// DecimalOutOfRange is a decimal whose value lies past §11.2's bound — a coefficient of more
+	// than CoefficientBits bits or a scale past MaxScale. Raised as the literal is read, before
+	// any encoding: the alternative is rounding, and a rounded value derives an id no exact
+	// reader reproduces.
+	DecimalOutOfRange
 )
 
 var codeNames = map[Code]string{
@@ -29,6 +34,7 @@ var codeNames = map[Code]string{
 	DuplicateMapKey:      "duplicate_map_key",
 	UnknownIdentityField: "unknown_identity_field",
 	NestingTooDeep:       "nesting_too_deep",
+	DecimalOutOfRange:    "decimal_out_of_range",
 }
 
 // String is the corpus name of the code.

@@ -13,6 +13,9 @@ import (
 // refusal raised at the named locus, and a self-reference must equal the derived id. A
 // disagreement is returned, not resolved — the corpus is the oracle.
 func CheckCase(c Case) error {
+	if c.ReadRefusal != nil {
+		return checkReadRefused(c)
+	}
 	switch c.Expect {
 	case "accepted":
 		return checkAccepted(c)
@@ -22,6 +25,15 @@ func CheckCase(c Case) error {
 		return checkIDOnly(c)
 	}
 	return fmt.Errorf("unknown expect %q", c.Expect)
+}
+
+// checkReadRefused: the value refused as it was read, before any encoding. A refused case is
+// held to the error it names; no other expectation can be met by a value that does not exist.
+func checkReadRefused(c Case) error {
+	if c.Expect != "refused" {
+		return fmt.Errorf("reading the value refused (%v), want %s", c.ReadRefusal, c.Expect)
+	}
+	return expectRefusal("reading the value", c.ReadRefusal, c.Error)
 }
 
 func checkAccepted(c Case) error {
