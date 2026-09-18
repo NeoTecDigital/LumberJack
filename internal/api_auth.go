@@ -14,6 +14,17 @@ import (
 
 // The routes that make a user and turn a credential into a session, and the claims they carry.
 
+const (
+	// loginFailureLimit is the CONSECUTIVE-miss budget one account has before it is shut. Consecutive,
+	// not lifetime: a counter that only rises eventually locks out every long-lived account, which is
+	// a denial of service the mechanism inflicts on its own users.
+	loginFailureLimit = 10
+	// loginLockout is how long a spent budget keeps the account shut. Long enough that guessing at
+	// scale is pointless, short enough that a real person who mistyped ten times gets back in without
+	// an administrator — the alternative is a lockout that is itself the attack.
+	loginLockout = 15 * time.Minute
+)
+
 // handleCreateUser creates a user, and is an ADMINISTRATIVE route.
 //
 // It used to be registered as a PUBLIC route. Self-registration granted ReadPermission on the root
@@ -108,33 +119,28 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server.logger.Info("Attempting login for user: %s", credentials.Username)
+	// NO USERNAME IN THE LOG, here or anywhere else on this path. The log is the one artifact of a
+	// login that outlives the request, and it was writing the attempted name on every branch — so a
+	// log file read by anyone, or shipped anywhere, was a list of the valid accounts plus the
+	// near-misses people type, which include each other's passwords often enough to matter.
+	server.logger.Info("Attempting login")
 
-	foundUser := server.findUserByName(credentials.Username)
-	if foundUser == nil {
-		server.logger.Failure("User not found: %s", credentials.Username)
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+	// One credential check, shared with /session — including the lockout counter, the dummy compare
+	// that keeps an unknown account from answering faster than a real one, and the ownership gate.
+	// A mismatch on ANY of them is the same 401 with the same body: no oracle for existence, for
+	// lock state, or for whether the account carries a second factor.
+	foundUser, err := server.authenticateCredential(credentials.Username, credentials.Password, credentials.PhoneLast4)
+	if err != nil {
+		server.logger.Failure("Credential refused")
+		writeAPIError(w, err)
 		return
 	}
 
-	if !foundUser.VerifyPassword(credentials.Password) {
-		server.logger.Failure("Invalid password for user: %s", credentials.Username)
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	// SECOND FACTOR, when the account carries one. The password is proven; before a code is sent, the
-	// caller must name the last four digits of the number it would go to. A mismatch is refused with
-	// the SAME credential error a bad password gets — the same 401, no code generated, nothing sent —
-	// so an attacker holding the password learns nothing about the number and triggers no delivery.
-	// A match mints a code, stores only its hash, queues the code for delivery, and answers a
-	// challenge the caller must complete at /mfa/verify. NOTHING here returns the code.
+	// SECOND FACTOR, when the account carries one. The password and the ownership gate are both
+	// proven by the check above. A match mints a code, stores only its hash, queues the code for
+	// delivery, and answers a challenge the caller must complete at /mfa/verify. NOTHING here returns
+	// the code.
 	if foundUser.MFAEnabled {
-		if !phoneLast4Matches(foundUser.Phone, credentials.PhoneLast4) {
-			server.logger.Failure("MFA ownership gate failed for user: %s", credentials.Username)
-			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-			return
-		}
 		challenge, err := server.beginMFAChallenge(foundUser)
 		if err != nil {
 			server.logger.Failure("Failed to begin MFA challenge: %v", err)
@@ -146,7 +152,7 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"mfa_required": true,
 			"challenge":    challenge,
 		})
-		server.logger.Success("MFA challenge issued for user %s", foundUser.Username)
+		server.logger.Success("MFA challenge issued")
 		return
 	}
 
@@ -163,7 +169,7 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"session_token": tokenPair.SessionToken,
 		"refresh_token": tokenPair.RefreshToken,
 	})
-	server.logger.Success("Login successful for user %s", foundUser.Username)
+	server.logger.Success("Login successful")
 }
 
 // findUserByName looks a credential up, WITH THE FOREST HELD FOR READING.
@@ -236,6 +242,16 @@ func (server *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request)
 	claims, ok := token.Claims.(*TokenClaims)
 	if !ok || claims.TokenType != "refresh" {
 		http.Error(w, "Invalid token type", http.StatusUnauthorized)
+		return
+	}
+
+	// THE PRINCIPAL IS RE-CHECKED, and was not. A refresh token lives a week and was honoured on its
+	// SIGNATURE alone — the handler read the claims and minted a fresh session without ever asking
+	// whether the account still existed. So deleting an account did not end its sessions, and locking
+	// one did not stop it: the holder refreshed straight past both for seven days. A signature proves
+	// who signed it and when; it cannot prove the account is still one this server will act for.
+	if !server.principalIsUsable(claims.UserID) {
+		http.Error(w, "Invalid refresh token", http.StatusUnauthorized)
 		return
 	}
 

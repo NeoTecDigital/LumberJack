@@ -167,6 +167,15 @@ type Attachment struct {
 // TTL-swept challenge store on the forest (see MFAChallenge) — so the profile projection can carry
 // this flag without ever carrying a secret. Absent from a state file written before it existed,
 // which unmarshals as false: an account is not silently opted into a second factor by an upgrade.
+// FailedLogins and LockedUntil are the per-ACCOUNT half of the rate limit, and they live here rather
+// than in memory for one reason: a counter a restart clears is a counter an attacker clears. They
+// are written by the same changeForest every other account fact is, so a lockout is as durable as
+// the password it protects.
+//
+// FailedLogins counts CONSECUTIVE misses and is reset by any success; LockedUntil is a unix second
+// past which the account answers again, and is zero when the account is open. Both are omitempty and
+// both unmarshal as zero out of a state file written before they existed, which is the correct
+// reading: an account nobody has ever mistyped is open.
 type User struct {
 	ID           string       `json:"id"`
 	Name         string       `json:"name"`
@@ -177,4 +186,6 @@ type User struct {
 	Phone        string       `json:"phone"`
 	Permissions  []Permission `json:"permissions"`
 	MFAEnabled   bool         `json:"mfa_enabled,omitempty"`
+	FailedLogins int          `json:"failed_logins,omitempty"`
+	LockedUntil  int64        `json:"locked_until,omitempty"`
 }

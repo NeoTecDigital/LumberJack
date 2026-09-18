@@ -16,7 +16,12 @@ import (
 // applicationSessionTTL is how long a minted ms_ bearer lives. It is a named constant because BOTH
 // mints — the password-only one and the second-factor one — read it, and because the relay's cookie
 // max-age has to be told the same number.
-const applicationSessionTTL = 30 * 24 * 3600
+//
+// A DAY, not the thirty it was. Thirty days was inherited rather than chosen, and a browser session
+// that outlives a stolen laptop by a month is a credential nobody remembers issuing; a day is long
+// enough that a working day never asks twice and short enough that a lost device stops mattering by
+// tomorrow. The refresh path is where a longer life is earned, and it re-checks the account.
+const applicationSessionTTL = 24 * 3600
 
 func (s *Server) sessionHash(token string) string {
 	h := hmac.New(sha256.New, s.jwtConfig.SecretKey)
@@ -113,9 +118,12 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Invalid credentials", 400)
 			return
 		}
-		user := s.findUserByName(input.Username)
-		if user == nil || !user.VerifyPassword(input.Password) {
-			http.Error(w, "Invalid credentials", 401)
+		// The SAME credential check /login runs — lockout counter, constant-cost unknown-user compare
+		// and ownership gate included. Two implementations of one security decision is two places the
+		// weaker one is the real one, and this door used to be the weaker one.
+		user, err := s.authenticateCredential(input.Username, input.Password, input.PhoneLast4)
+		if err != nil {
+			writeAPIError(w, err)
 			return
 		}
 		// THE BYPASS THIS CLOSES. This route minted a session for any account whose password verified,
@@ -129,10 +137,6 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 		// the account has a second factor, or anything about the number, and triggers no delivery. That
 		// uniformity is why the CLIENT always shows the last-four field.
 		if user.MFAEnabled {
-			if !phoneLast4Matches(user.Phone, input.PhoneLast4) {
-				http.Error(w, "Invalid credentials", 401)
-				return
-			}
 			challenge, err := s.beginMFAChallenge(user)
 			if err != nil {
 				writeAPIError(w, err)
