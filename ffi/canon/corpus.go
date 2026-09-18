@@ -23,11 +23,14 @@ type Corpus struct {
 
 // Case is one corpus case with its value built. Expect is accepted, refused or id_only; Kind
 // is present when the case derives an id; SelfRef names a field whose ref is the case's own id.
+// ReadRefusal is the §11.2 refusal raised while building Value, when there was one — a decimal
+// literal past the bound, which no value can hold — and Value is nil then.
 type Case struct {
 	Name         string
 	Note         string
 	Expect       string
 	Value        Value
+	ReadRefusal  error
 	Kind         *Kind
 	CanonicalHex string
 	IDHex        string
@@ -131,13 +134,19 @@ func strictUnmarshal(data []byte, target any) error {
 	return nil
 }
 
+// build reads the value. A refusal raised on the way — a decimal literal past the §11.2
+// bound — is the case's outcome and is kept for CheckCase; any other failure is a corpus that
+// cannot be read.
 func (c caseJSON) build() (Case, error) {
 	value, err := c.Value.build()
 	if err != nil {
-		return Case{}, err
+		if _, refused := CodeOf(err); !refused {
+			return Case{}, err
+		}
+		value = nil
 	}
 	built := Case{
-		Name: c.Name, Note: c.Note, Expect: c.Expect, Value: value,
+		Name: c.Name, Note: c.Note, Expect: c.Expect, Value: value, ReadRefusal: err,
 		CanonicalHex: c.CanonicalHex, IDHex: c.IDHex, Error: c.Error, SelfRef: c.SelfRef,
 	}
 	if c.Kind != nil {

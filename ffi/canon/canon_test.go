@@ -100,6 +100,26 @@ func TestDecimalNormalForm(t *testing.T) {
 	}
 }
 
+// §11.2 bounds a decimal at a 96-bit coefficient and a scale of 28, judged on the value: at the
+// bound it is held, one past it is refused by name, and trailing zeros past the 28th place are
+// not part of the value. Nothing is rounded — 1e-29 is not zero here.
+func TestDecimalBoundRefusesRatherThanRounds(t *testing.T) {
+	for _, ok := range []string{"79228162514264337593543950335", "0.0000000000000000000000000001", "1.000000000000000000000000000000", "79228162514264337593543950335.0", "-79228162514264337593543950335", "1e28"} {
+		if _, err := ParseDecimal(ok); err != nil {
+			t.Errorf("%q is inside the bound: %v", ok, err)
+		}
+	}
+	for _, past := range []string{"79228162514264337593543950336", "0.00000000000000000000000000001", "1.00000000000000000000000000001", "1e-29", "1000000000000000000000000000000", "1e30", "-79228162514264337593543950336", "1e2147483647", "1e-2147483648"} {
+		_, err := ParseDecimal(past)
+		refusedWith(t, err, DecimalOutOfRange)
+	}
+	one, _ := ParseDecimal("1")
+	zeros, _ := ParseDecimal("1.000000000000000000000000000000")
+	if !bytes.Equal(encoded(t, one), encoded(t, zeros)) {
+		t.Error("thirty fractional zeros changed the value")
+	}
+}
+
 // NFC is the whole algorithm, not the Latin-1 corner the corpus exercises: decomposed Hangul
 // and a Devanagari sequence with a composition exclusion both come out as Unicode says.
 func TestStringsAreNFCBeyondLatin1(t *testing.T) {
