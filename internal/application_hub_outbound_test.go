@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
@@ -32,10 +33,16 @@ func hubOut(t *testing.T, server *Server, request map[string]interface{}) []byte
 
 // outboundItem is one queued external message with a chosen id and creation time, so a test controls
 // queue order and size directly. Its fields carry the routing markers the dispatcher selects on.
+//
+// CreatedAt is whatever the caller asks for — it is the sort key, and these tests use small numbers
+// to make an order readable. ExpiresAt is NOT derived from it: the window is anchored to the real
+// clock, because operation="outbound" now filters and sweeps expired items, and `createdAt + 300`
+// with createdAt=100 is a window that closed in 1970. A fixture that was never meant to be expired
+// should not become one the moment expiry starts being enforced.
 func outboundItem(id string, createdAt int64) core.OutboundMessage {
 	return core.OutboundMessage{
 		ID: id, Channel: "sms", Purpose: "mfa", To: "+15550000000",
-		Payload: "000000", ChallengeID: id, CreatedAt: createdAt, ExpiresAt: createdAt + 300,
+		Payload: "000000", ChallengeID: id, CreatedAt: createdAt, ExpiresAt: time.Now().Unix() + 300,
 	}
 }
 

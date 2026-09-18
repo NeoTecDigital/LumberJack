@@ -96,14 +96,29 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 		})
 	case "outbound":
 		// The external outbox, the read twin of "pending": the OutboundMessage items the MFA path
-		// enqueues for a channel off this portal. Read-only, oldest-first by CreatedAt so the
-		// forward-dispatcher forwards them in the order they were queued, and capped at 128 like the
-		// pending list so one drain is bounded. A stale-cursor retry re-reads; it never mutates here.
+		// enqueues for a channel off this portal. Oldest-first by CreatedAt so the forward-dispatcher
+		// forwards them in the order they were queued, and capped at 128 like the pending list so one
+		// drain is bounded.
+		//
+		// EXPIRED ITEMS ARE NEITHER LISTED NOR KEPT. Each item is a plaintext second-factor code beside
+		// a phone number — the one place in the system where a code exists in the clear — and its
+		// challenge dies in five minutes. Past that the item can do nothing but sit in the state file
+		// being readable, and an unacked one sat there forever: a dispatcher that died mid-drain, a
+		// carrier that refused, a restart at the wrong moment. Both halves are needed. The FILTER stops
+		// a dispatcher delivering a code for a login nobody can complete — a text arriving for a dead
+		// challenge is worse than no text. The SWEEP is what stops the file accumulating a permanent
+		// archive of codes and numbers that the filter would merely hide.
+		now := time.Now().Unix()
+		expired := []string{}
 		s.readForest(func() {
 			state := s.forest.Correspondence
 			outbound := []core.OutboundMessage{}
 			if state != nil {
-				for _, item := range state.Outbound {
+				for id, item := range state.Outbound {
+					if item.ExpiresAt <= now {
+						expired = append(expired, id)
+						continue
+					}
 					outbound = append(outbound, item)
 				}
 			}
@@ -118,6 +133,24 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 			}
 			result = outbound
 		})
+		// The exclusive hold is taken ONLY when there is something to remove. The dispatcher polls this
+		// op on a timer, and changeForest serializes and flushes the whole forest — so sweeping
+		// unconditionally would make an idle outbox cost a full state persist per tick, forever.
+		if len(expired) > 0 {
+			if err := s.changeForest(func() error {
+				state := s.correspondenceState()
+				for _, id := range expired {
+					// Re-checked under the hold: an id may have been re-enqueued with a fresh window
+					// between the read and this write, and that item is live.
+					if item, found := state.Outbound[id]; found && item.ExpiresAt <= now {
+						delete(state.Outbound, id)
+					}
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+		}
 	case "deliver":
 		var path string
 		err := s.changeForest(func() error {
