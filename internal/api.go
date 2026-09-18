@@ -305,6 +305,12 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/health", s.handleHealth).Methods("GET")
 	router.HandleFunc("/login", s.handleLogin).Methods("POST")
 	router.HandleFunc("/refresh", s.handleRefreshToken).Methods("POST")
+	// The second-factor pair. Public for the same reason /login is: the caller holds an "mfa_pending"
+	// challenge, not a session, so demanding a session here is circular. Each handler validates its
+	// own challenge bearer from the body — authMiddleware would reject that bearer as not a session,
+	// which is why these sit OUTSIDE it, beside the credential exchange they belong to.
+	router.HandleFunc("/mfa/verify", s.handleMfaVerify).Methods("POST")
+	router.HandleFunc("/mfa/start", s.handleMfaStart).Methods("POST")
 
 	s.registerRecordRoutes(router)
 	s.registerQueryRoutes(router)
@@ -339,6 +345,13 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 	// Retracting one entry, and removing one tracked span. Both address the thing by ID and take
 	// the node as ?path=, which is what DELETE /attachments/{id} already does.
 	router.HandleFunc("/entries/{id}", s.authMiddleware(s.handleDeleteEntry)).Methods("DELETE")
+	// Writing a node-level entry, and reordering or reparenting one. POST /entries wraps
+	// core.AddEntry; PATCH /entries/{id}/metadata addresses the entry by id the way DELETE does. Both
+	// match only their own method, so neither collides with GET /entries (the feed listing, in
+	// registerQueryRoutes) or DELETE /entries/{id}; and {id} matches a single segment, so
+	// /entries/{id}/metadata is a distinct pattern, not the delete route with a trailing path.
+	router.HandleFunc("/entries", s.authMiddleware(s.handleCreateEntry)).Methods("POST")
+	router.HandleFunc("/entries/{id}/metadata", s.authMiddleware(s.handlePatchEntryMetadata)).Methods("PATCH")
 	router.HandleFunc("/time/{id}", s.authMiddleware(s.handleDeleteTimeSpan)).Methods("DELETE")
 	router.HandleFunc("/nodes", s.authMiddleware(s.handleCreateNode)).Methods("POST")
 	router.HandleFunc("/forest", s.authMiddleware(s.handleGetForest)).Methods("GET")
@@ -353,6 +366,8 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 // registerQueryRoutes registers the query layer, the listings built on it, the canvas routes and
 // the live feed.
 func (s *Server) registerQueryRoutes(router *mux.Router) {
+	router.HandleFunc("/workspace", s.authMiddleware(s.handleWorkspace)).Methods("GET")
+	router.HandleFunc("/workspace/commands", s.authMiddleware(s.handleWorkCommand)).Methods("POST")
 	// The query layer. One predicate grammar, two entry points, and the discovery routes that are
 	// thin wrappers over the first of them rather than a second implementation.
 	router.HandleFunc("/query", s.authMiddleware(s.handleQuery)).Methods("POST")

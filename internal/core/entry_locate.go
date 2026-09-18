@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // WHERE AN ENTRY LIVES, and the one enumeration that knows all of it.
@@ -146,6 +147,83 @@ func (n *Node) DeleteEntry(entryID string, userID string) (EntryLocation, error)
 		}
 	}
 	return EntryLocation{}, fmt.Errorf("%w: %s", ErrEntryNotFound, entryID)
+}
+
+// PatchEntry updates the entry an id names, wherever on this node it is kept.
+//
+// It MERGES metadata — a key set to null is DELETED, the same rule PATCH /nodes/{path}/metadata
+// follows, so there is one rule for a metadata merge on this surface — and, WHEN THEY ARE SUPPLIED,
+// rewrites the rank and the parent so a reorder or a reparent can be written: the thing the address
+// (node_path, event_id, entry_index) could never express. A nil rank or parentID is left unchanged;
+// a non-nil one is set, including to the empty string, which is how an entry is un-ranked or
+// un-nested.
+//
+// A TIME-TRACKING SENTINEL IS NOT REFUSED here the way DeleteEntry refuses one. Removing half a span
+// re-pairs the other half; this touches metadata, rank and parent, none of which is the positional
+// pairing that makes that dangerous.
+//
+// It returns a COPY of the stored entry, the way FindEntry does.
+func (n *Node) PatchEntry(entryID, userID string, metadata map[string]interface{}, rank, parentID *string) (*Entry, error) {
+	if !n.CheckPermission(userID, WritePermission) {
+		return nil, fmt.Errorf("insufficient permissions")
+	}
+
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	for _, run := range n.entryRuns() {
+		for index := range run.entries {
+			if run.entries[index].ID != entryID {
+				continue
+			}
+
+			// A FRESH slice, not a write into run.entries in place: the run may share its backing
+			// array with a copy of the event that holds it, and rewriting that array underneath the
+			// copy is a change nobody asked for. Same rule withoutEntries follows, for the same reason.
+			patched := make([]Entry, len(run.entries))
+			copy(patched, run.entries)
+
+			entry := patched[index]
+			entry.Metadata = mergedEntryMetadata(entry.Metadata, metadata)
+			if rank != nil {
+				entry.Rank = *rank
+			}
+			if parentID != nil {
+				entry.ParentID = *parentID
+			}
+			entry.ModifiedBy = userID
+			entry.ModifiedAt = time.Now()
+			patched[index] = entry
+
+			run.store(patched)
+			updated := entry
+			return &updated, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", ErrEntryNotFound, entryID)
+}
+
+// mergedEntryMetadata folds a patch into an entry's metadata, a key set to null DELETING it.
+//
+// A FRESH map, so the stored metadata a run was read out of is not mutated in place. A nil patch is
+// "no metadata change" and the current map is returned unchanged.
+func mergedEntryMetadata(current, patch map[string]interface{}) map[string]interface{} {
+	if patch == nil {
+		return current
+	}
+
+	merged := make(map[string]interface{}, len(current)+len(patch))
+	for key, value := range current {
+		merged[key] = value
+	}
+	for key, value := range patch {
+		if value == nil {
+			delete(merged, key)
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
 }
 
 // DeleteTimeSpan removes a tracked span: the start an id names, and the stop that closes it.

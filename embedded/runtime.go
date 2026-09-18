@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal"
@@ -59,6 +60,7 @@ type Runtime struct {
 	// become a per-call check, or such a runtime must be reopened before it acts for untrusted
 	// principals. That is the decision left open, and this field is where it lands.
 	systemDefault bool
+	application   atomic.Bool
 }
 
 // registry is the one place a path maps to its runtime, so a second Open of the same path finds the
@@ -153,10 +155,11 @@ func OpenPath(organization, databasePath, name, principal string) (*Handle, erro
 // runtime was opened on an empty forest. The resolution happens ONCE, here, so every method reads a
 // principal that is already correct and the default cannot leak into a forest that has real users.
 func (rt *Runtime) newHandle(principal string) *Handle {
+	requested := principal
 	if rt.systemDefault {
 		principal = internal.SystemUserID
 	}
-	return &Handle{runtime: rt, principal: principal}
+	return &Handle{runtime: rt, principal: principal, requestedPrincipal: requested}
 }
 
 // close drops one reference and, on the LAST one, tears the runtime down: it leaves the registry so a

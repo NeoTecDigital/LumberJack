@@ -305,9 +305,18 @@ func TestCreateNodePromotesAnEmptyLeaf(t *testing.T) {
 	}
 }
 
-// A leaf that HOLDS something is not promoted. Converting it would strand its record on a node
-// every event route refuses, so the request is refused instead — with a reason.
-func TestCreateNodeRefusesToPromoteALeafThatRecordsEvents(t *testing.T) {
+// A leaf that HOLDS an event can be nested under (phase 18.3), because a node holds children AND
+// events at once now. The record it carries is NOT stranded — the node keeps its event and gains
+// the child — which is exactly what the leaf-only invariant refused, and exactly the shape the
+// singleton needs (category{goal{routine{event}}}).
+//
+// OBSERVED RED with promoteToBranch's record-refusal still in place
+// (go test ./internal/ -run CreateNodeNestsUnderARecordingLeaf):
+//
+//	--- FAIL: TestCreateNodeNestsUnderARecordingLeaf (0.04s)
+//	    api_nodes_test.go:334: Nest under a recording leaf: got 409, want 200:
+//	    cannot add a child to leaf node tracked: it already records events or entries
+func TestCreateNodeNestsUnderARecordingLeaf(t *testing.T) {
 	server, _ := newStockServer(t)
 	userID := adminID(t, server)
 
@@ -320,23 +329,34 @@ func TestCreateNodeRefusesToPromoteALeafThatRecordsEvents(t *testing.T) {
 		t.Fatalf("Start the event: got %d, want %d", code, http.StatusOK)
 	}
 
-	refused := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "tracked/below"})
-	if refused.Code != http.StatusConflict {
-		t.Fatalf("Nest under a recording leaf: got %d, want %d", refused.Code, http.StatusConflict)
-	}
-	if !strings.Contains(refused.Body.String(), "records events or entries") {
-		t.Errorf("The refusal does not say why: %s", refused.Body.String())
+	nested := post(t, server.handleCreateNode, userID, map[string]interface{}{"path": "tracked/below"})
+	if nested.Code != http.StatusOK {
+		t.Fatalf("Nest under a recording leaf: got %d, want %d: %s", nested.Code, http.StatusOK, nested.Body.String())
 	}
 
 	node, err := server.getNodeFromPath("tracked")
 	if err != nil {
 		t.Fatalf("Failed to find the node: %v", err)
 	}
-	if node.Type != core.LeafNode {
-		t.Errorf("The refused node was converted anyway: type %d", node.Type)
-	}
 	if len(node.Events) != 1 {
-		t.Errorf("The event on the refused node is gone: %d events", len(node.Events))
+		t.Errorf("The event was stranded when the child was added: %d events", len(node.Events))
+	}
+	if len(node.Children) != 1 {
+		t.Errorf("The child was not added: %d children", len(node.Children))
+	}
+
+	// The nested child is reachable for the thing a node holds — its own event.
+	if code := post(t, server.handleStartEvent, userID, map[string]interface{}{
+		"path": "tracked/below", "event_id": "e2", "metadata": map[string]interface{}{},
+	}).Code; code != http.StatusOK {
+		t.Errorf("Start an event on the nested child: got %d, want %d", code, http.StatusOK)
+	}
+
+	// And the parent that now holds a child can still take a new event of its own.
+	if code := post(t, server.handleStartEvent, userID, map[string]interface{}{
+		"path": "tracked", "event_id": "e3", "metadata": map[string]interface{}{},
+	}).Code; code != http.StatusOK {
+		t.Errorf("Start a second event on the parent that now has a child: got %d, want %d", code, http.StatusOK)
 	}
 }
 

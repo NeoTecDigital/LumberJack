@@ -181,9 +181,9 @@ func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, announc
 			!child.CheckPermission(userID, core.WritePermission) {
 			return apiErrorf(http.StatusForbidden, "Insufficient permissions")
 		}
-		if parent.Type != core.BranchNode {
-			return apiErrorf(http.StatusConflict, "%s is a leaf and cannot hold a child", parent.Name)
-		}
+		// No Type check on the parent: a node holds children and events at once (phase 18.3), so any
+		// node can hold a linked child. This once refused a leaf parent — the leaf-only invariant this
+		// phase removed. A cycle is still refused, in the link change itself.
 
 		return change(parent, child, userID)
 	})

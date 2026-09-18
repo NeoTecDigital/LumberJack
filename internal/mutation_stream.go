@@ -78,6 +78,7 @@ const subscriberBuffer = 64
 type mutationStream struct {
 	mutex       sync.Mutex
 	sequence    uint64
+	epoch       string
 	subscribers map[int]chan mutationEvent
 	nextID      int
 	recent      []mutationEvent
@@ -86,6 +87,7 @@ type mutationStream struct {
 // newMutationStream builds the stream a server publishes to.
 func newMutationStream() *mutationStream {
 	return &mutationStream{
+		epoch:       time.Now().UTC().Format(time.RFC3339Nano),
 		subscribers: map[int]chan mutationEvent{},
 		recent:      make([]mutationEvent, 0, replayBufferSize),
 	}
@@ -198,10 +200,12 @@ func (stream *mutationStream) publish(event mutationEvent) mutationEvent {
 		stream.recent = stream.recent[len(stream.recent)-replayBufferSize:]
 	}
 
-	for _, events := range stream.subscribers {
+	for id, events := range stream.subscribers {
 		select {
 		case events <- event:
 		default:
+			close(events)
+			delete(stream.subscribers, id)
 		}
 	}
 	return event

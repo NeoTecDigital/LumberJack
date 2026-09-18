@@ -45,10 +45,11 @@ type (
 
 // Handle is one principal's view of an open runtime. It is what Open returns and Close releases.
 type Handle struct {
-	runtime   *Runtime
-	principal string
-	closeOnce sync.Once
-	closeErr  error
+	runtime            *Runtime
+	principal          string
+	requestedPrincipal string
+	closeOnce          sync.Once
+	closeErr           error
 	// done is set the instant Close is entered, BEFORE the runtime is torn down. Every mutating
 	// method reads it first, so once a handle is closed its writes refuse rather than race the
 	// teardown that releases the flock they would otherwise write behind.
@@ -103,7 +104,7 @@ func (h *Handle) CreateNode(request CreateNodeRequest) (NodeAnswer, error) {
 	if err := h.ensureOpen(); err != nil {
 		return NodeAnswer{}, err
 	}
-	return h.runtime.server.CreateNode(h.principal, request)
+	return h.runtime.server.CreateNode(h.actor(), request)
 }
 
 // PlanEvent schedules a future event and returns the mutation it announced.
@@ -111,7 +112,7 @@ func (h *Handle) PlanEvent(request PlanEventRequest) (MutationEvent, error) {
 	if err := h.ensureOpen(); err != nil {
 		return MutationEvent{}, err
 	}
-	return h.runtime.server.PlanEvent(h.principal, request)
+	return h.runtime.server.PlanEvent(h.actor(), request)
 }
 
 // StartEvent opens an event on a leaf and returns the mutation it announced.
@@ -119,7 +120,7 @@ func (h *Handle) StartEvent(request StartEventRequest) (MutationEvent, error) {
 	if err := h.ensureOpen(); err != nil {
 		return MutationEvent{}, err
 	}
-	return h.runtime.server.StartEvent(h.principal, request)
+	return h.runtime.server.StartEvent(h.actor(), request)
 }
 
 // AppendToEvent adds one entry to a live event and returns the mutation it announced.
@@ -127,7 +128,7 @@ func (h *Handle) AppendToEvent(request AppendEventRequest) (MutationEvent, error
 	if err := h.ensureOpen(); err != nil {
 		return MutationEvent{}, err
 	}
-	return h.runtime.server.AppendToEvent(h.principal, request)
+	return h.runtime.server.AppendToEvent(h.actor(), request)
 }
 
 // EndEvent finishes an event and returns the mutation it announced.
@@ -135,32 +136,32 @@ func (h *Handle) EndEvent(request EndEventRequest) (MutationEvent, error) {
 	if err := h.ensureOpen(); err != nil {
 		return MutationEvent{}, err
 	}
-	return h.runtime.server.EndEvent(h.principal, request)
+	return h.runtime.server.EndEvent(h.actor(), request)
 }
 
 // EventEntries projects the entries of one event, under a read permission check on the node.
 func (h *Handle) EventEntries(request EventEntriesRequest) ([]EntryView, error) {
-	return h.runtime.server.EventEntries(h.principal, request)
+	return h.runtime.server.EventEntries(h.actor(), request)
 }
 
 // Query answers the one predicate surface over nodes, events, entries and time.
 func (h *Handle) Query(request QueryRequest) (*QueryResponse, error) {
-	return h.runtime.server.Query(h.principal, request)
+	return h.runtime.server.Query(h.actor(), request)
 }
 
 // Aggregate answers grouped counts and durations over the same predicate grammar as Query.
 func (h *Handle) Aggregate(request AggregateRequest) (*AggregateResponse, error) {
-	return h.runtime.server.Aggregate(h.principal, request)
+	return h.runtime.server.Aggregate(h.actor(), request)
 }
 
 // Forest projects the whole forest as this principal may see it.
 func (h *Handle) Forest() NodeView {
-	return h.runtime.server.Forest(h.principal)
+	return h.runtime.server.Forest(h.actor())
 }
 
 // StatusOf projects one subtree by path, as this principal may see it.
 func (h *Handle) StatusOf(path string) (NodeView, error) {
-	return h.runtime.server.StatusOf(h.principal, path)
+	return h.runtime.server.StatusOf(h.actor(), path)
 }
 
 // MutationBatch is the answer of a poll: the events after the cursor, this run's epoch, whether the

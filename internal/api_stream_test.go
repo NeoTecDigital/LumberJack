@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // GET /stream.
@@ -499,4 +500,42 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 	if removed.NodePath != server.canonicalPath(path) {
 		t.Errorf("node_path: got %q, want %q", removed.NodePath, server.canonicalPath(path))
 	}
+}
+
+func TestStreamDoesNotRevealPrivateResourceIdentities(t *testing.T) {
+	server, owner, base := streamingServer(t)
+	server.forest.Users = append(server.forest.Users, core.User{ID: "viewer", Username: "viewer", Permissions: []core.Permission{core.ReadPermission}})
+	answer := workTestCommand(t, server, owner, workCommand{Command: "create", Path: server.forest.Name, ClientID: "private", Title: "Private", Kind: "goal"}, 200)
+	path := answer["path"].(string)
+	reader := openStream(t, base, "viewer", "")
+	defer reader.close()
+	waitForSubscriber(t, server)
+	workTestCommand(t, server, owner, workCommand{Command: "log", Path: path, ClientID: "private-log", Content: "Secret"}, 200)
+	reader.silentFor(t, 50*time.Millisecond)
+	read := 0
+	workTestCommand(t, server, owner, workCommand{Command: "share", Path: path, ClientID: "share", Username: "viewer", Permission: &read}, 200)
+	event := reader.nextEvent(t, time.Second)
+	if event.NodePath != path {
+		t.Fatal("newly shared work was not announced")
+	}
+	remove := -1
+	workTestCommand(t, server, owner, workCommand{Command: "share", Path: path, ClientID: "revoke", Username: "viewer", Permission: &remove}, 200)
+	deadline := time.After(time.Second)
+	resync := false
+refresh:
+	for {
+		select {
+		case line := <-reader.lines:
+			if line == "event: resync" {
+				resync = true
+			}
+			if line == "data: {}" && resync {
+				break refresh
+			}
+		case <-deadline:
+			t.Fatal("revocation did not request a permission refresh")
+		}
+	}
+	workTestCommand(t, server, owner, workCommand{Command: "log", Path: path, ClientID: "after-revoke", Content: "Still private"}, 200)
+	reader.silentFor(t, 50*time.Millisecond)
 }

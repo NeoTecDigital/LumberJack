@@ -14,7 +14,7 @@ import (
 // A node handed out of the forest hold is a node another request is free to be writing.
 //
 // handleCreateNode read node.ID, node.Name and node.Type to build its answer AFTER changeForest had
-// released the exclusive hold. core.(*Node).promoteToBranch writes n.Type, and it runs under
+// released the exclusive hold. core.(*Node).markBranch writes n.Type, and it runs under
 // ANOTHER request's hold — so two ordinary POST /nodes, one making `work/nN` a leaf and one making
 // `work/nN/c` beneath it, are a write to Type against a read of Type with nothing between them.
 //

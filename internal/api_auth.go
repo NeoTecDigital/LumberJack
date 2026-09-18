@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/golang-jwt/jwt"
 )
 
 // The routes that make a user and turn a credential into a session, and the claims they carry.
@@ -95,6 +95,11 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var credentials struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// PhoneLast4 is the pre-send ownership gate for an MFA account: the last four digits of the
+		// caller's own number, proving they hold the phone a code would be sent to before one is sent.
+		// It is read only when the account has MFA on, and ignored otherwise — so a password-only login
+		// is decoded and answered exactly as it was before this field existed.
+		PhoneLast4 string `json:"phone_last4"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
@@ -115,6 +120,33 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !foundUser.VerifyPassword(credentials.Password) {
 		server.logger.Failure("Invalid password for user: %s", credentials.Username)
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// SECOND FACTOR, when the account carries one. The password is proven; before a code is sent, the
+	// caller must name the last four digits of the number it would go to. A mismatch is refused with
+	// the SAME credential error a bad password gets — the same 401, no code generated, nothing sent —
+	// so an attacker holding the password learns nothing about the number and triggers no delivery.
+	// A match mints a code, stores only its hash, queues the code for delivery, and answers a
+	// challenge the caller must complete at /mfa/verify. NOTHING here returns the code.
+	if foundUser.MFAEnabled {
+		if !phoneLast4Matches(foundUser.Phone, credentials.PhoneLast4) {
+			server.logger.Failure("MFA ownership gate failed for user: %s", credentials.Username)
+			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+			return
+		}
+		challenge, err := server.beginMFAChallenge(foundUser)
+		if err != nil {
+			server.logger.Failure("Failed to begin MFA challenge: %v", err)
+			writeAPIError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mfa_required": true,
+			"challenge":    challenge,
+		})
+		server.logger.Success("MFA challenge issued for user %s", foundUser.Username)
 		return
 	}
 
@@ -158,6 +190,32 @@ func (server *Server) findUserByName(username string) *core.User {
 		}
 	})
 	return found
+}
+
+// phoneLast4Matches reports whether last4 is exactly the final four DIGITS of phone.
+//
+// It compares digits only, so a stored number's formatting — spaces, dashes, a leading "+1" — does
+// not decide the gate. It refuses anything but four digits, and refuses a phone carrying fewer than
+// four, so an account with no usable number cannot be walked past by an empty or short guess.
+func phoneLast4Matches(phone, last4 string) bool {
+	if len(last4) != 4 {
+		return false
+	}
+	for _, r := range last4 {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	digits := make([]rune, 0, len(phone))
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			digits = append(digits, r)
+		}
+	}
+	if len(digits) < 4 {
+		return false
+	}
+	return string(digits[len(digits)-4:]) == last4
 }
 
 // Add new handler for token refresh
@@ -244,7 +302,12 @@ type TokenPair struct {
 type TokenClaims struct {
 	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
-	TokenType string `json:"token_type"` // "session" or "refresh"
+	TokenType string `json:"token_type"` // "session", "refresh" or "mfa_pending"
+	// ChallengeID names the second-factor challenge an "mfa_pending" token stands for, and is empty
+	// on every other kind. It is tagged omitempty on PURPOSE: a session or refresh token carries no
+	// challenge, so its signed claims are byte-for-byte what they were before MFA existed, and a
+	// login that does not require a second factor is unchanged on the wire.
+	ChallengeID string `json:"challenge_id,omitempty"`
 	jwt.StandardClaims
 }
 
@@ -255,6 +318,10 @@ type TokenClaims struct {
 func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tokenString := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if strings.HasPrefix(tokenString, "ms_") {
+			server.serveApplicationSession(next, w, r, tokenString)
+			return
+		}
 		if tokenString == "" {
 			http.Error(w, "No token provided", http.StatusUnauthorized)
 			return
@@ -280,6 +347,11 @@ func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Add user info to context
 		ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
+		if claims.ExpiresAt > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, time.Unix(claims.ExpiresAt, 0))
+			defer cancel()
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }

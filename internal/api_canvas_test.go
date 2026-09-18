@@ -58,6 +58,8 @@ func registerTestRoutes(router *mux.Router, server *Server) {
 	router.HandleFunc("/events/{id}", server.handleDeleteEvent).Methods("DELETE")
 	router.HandleFunc("/events/{id}", server.handleUpdateEvent).Methods("PATCH")
 	router.HandleFunc("/entries/{id}", server.handleDeleteEntry).Methods("DELETE")
+	router.HandleFunc("/entries", server.handleCreateEntry).Methods("POST")
+	router.HandleFunc("/entries/{id}/metadata", server.handlePatchEntryMetadata).Methods("PATCH")
 	router.HandleFunc("/time/{id}", server.handleDeleteTimeSpan).Methods("DELETE")
 }
 
@@ -332,18 +334,10 @@ func TestLinkNodeMakesAMultiParentEdge(t *testing.T) {
 func TestLinkRefusesACycle(t *testing.T) {
 	server, _ := newStockServer(t)
 	userID := adminID(t, server)
+	// bottom is a leaf, and that no longer matters: a node holds children now whatever its type
+	// (phase 18.3), so the link reaches the cycle check rather than being turned away for being a
+	// leaf parent — which is the refusal this test is actually about.
 	leafFor(t, server, userID, "top/middle/bottom")
-	if code := post(t, server.handleCreateNode, userID, map[string]interface{}{
-		"path": "top/middle/bottom", "type": "branch",
-	}).Code; code != http.StatusConflict && code != http.StatusOK {
-		t.Fatalf("Prepare the branch: got %d", code)
-	}
-
-	bottom, err := server.getNodeFromPath("top/middle/bottom")
-	if err != nil {
-		t.Fatalf("Failed to find the node: %v", err)
-	}
-	bottom.Type = 1 // branch, so it can hold a child at all
 
 	answer := serveRoute(t, server, "POST", "/nodes/link", userID, map[string]string{
 		"parent_path": "top/middle/bottom", "child_path": "top",

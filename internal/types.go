@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
@@ -68,12 +69,13 @@ type Server struct {
 	// forestMutex is the ONE lock over the whole forest. Held exclusively across a mutation and
 	// the persist that acknowledges it, shared by everything that reads the graph. See
 	// forest_lock.go for why a per-node mutex cannot stand in for it.
-	forestMutex sync.RWMutex
-	jwtConfig   JWTConfig
-	logger      types.Logger
-	server      *http.Server
-	config      types.ServerConfig
-	logCache    *LogCache
+	forestMutex           sync.RWMutex
+	applicationHubEnabled atomic.Bool
+	jwtConfig             JWTConfig
+	logger                types.Logger
+	server                *http.Server
+	config                types.ServerConfig
+	logCache              *LogCache
 	// lastHash is the read cache's invalidation token: the hash of the newest state the forest
 	// has been serialized into. It is written under forestMutex, beside the encode that produces
 	// it, and read under forestMutex by getFromCache.

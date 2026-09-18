@@ -94,6 +94,14 @@ func (p *forestProjector) body(node *core.Node) nodeView {
 	view.Events = newEventViews(node.Events)
 	view.PlannedEvents = newEventViews(node.PlannedEvents)
 	view.Users = newUserViews(node.Users)
+	if len(node.Parents) == 0 && !node.CheckPermission(p.userID, core.AdminPermission) {
+		view.Users = []userView{}
+		for _, user := range node.Users {
+			if user.ID == p.userID {
+				view.Users = append(view.Users, newUserView(user))
+			}
+		}
+	}
 	view.Entries = newEntryViews(node.Entries)
 	view.Attachments = newAttachmentViews(node.Attachments)
 	view.CreatedBy, view.CreatedAt = node.CreatedBy, node.CreatedAt
@@ -109,6 +117,7 @@ func (p *forestProjector) reference(node *core.Node) nodeView {
 	return nodeView{
 		ID:            node.ID,
 		Type:          node.Type,
+		Kind:          node.Kind,
 		Name:          node.Name,
 		Reference:     true,
 		Parents:       copyStringMap(node.Parents),

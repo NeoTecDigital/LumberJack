@@ -59,6 +59,7 @@ func (server *Server) handleAssignUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	server.publish(mutation(mutationMetadataSet, request.Path))
 	w.WriteHeader(http.StatusOK)
 }
 

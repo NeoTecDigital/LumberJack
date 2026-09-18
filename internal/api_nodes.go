@@ -16,18 +16,19 @@ const (
 	branchNodeType = "branch"
 )
 
-// handleCreateNode creates the node a path names, so that a client can reach a LEAF.
+// handleCreateNode creates the node a path names, so that a client can reach one to track on.
 //
-// THIS IS THE ROUTE THE EVENT FLOW WAS MISSING. The forest is rooted on a branch, StartEvent
-// refuses anything that is not a leaf, and no route created one — so on a fresh instance
-// /events/start could only ever answer "cannot add event to non-leaf node" and /events/append
-// could only ever answer "event not found". A client now creates the leaf it is going to track on.
+// THIS IS THE ROUTE THE EVENT FLOW WAS MISSING. On a fresh instance no route created a node to
+// start an event on, so /events/start had nothing to address and /events/append could only ever
+// answer "event not found". A client now creates the node it is going to track on. As of phase 18.3
+// a node holds children AND events at once, so the node need not be a leaf to carry one.
 //
-// EVERY MISSING ANCESTOR IS CREATED AS A BRANCH, because that is the only thing an intermediate
-// segment of a path can be: it has a child. Only the last segment takes the requested type.
+// EVERY MISSING ANCESTOR IS CREATED AS A BRANCH, because that is the default VIEW for a segment that
+// has a child; only the last segment takes the requested type. Neither is enforced — Type is a hint
+// now (see core.NodeType) — it is only what the node reads as by default.
 //
-// It is IDEMPOTENT, so a client that starts twice against the same path does not have to
-// distinguish "I made it" from "it was already there".
+// It is IDEMPOTENT, so a client that creates the same path twice does not have to distinguish
+// "I made it" from "it was already there".
 func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	server.logger.Enter("CreateNode")
 	defer server.logger.Exit("CreateNode")
@@ -49,8 +50,8 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	// persist serializes.
 	//
 	// WHAT THE ANSWER SAYS IS READ INSIDE THE HOLD. A *core.Node carried out of changeForest is a
-	// node another request may already be writing: AddBranchChild promotes a childless leaf to a
-	// branch, and promoteToBranch writes Type under a DIFFERENT request's hold. Two ordinary
+	// node another request may already be writing: AddBranchChild gives an intermediate node the
+	// branch hint, and markBranch writes Type under a DIFFERENT request's hold. Two ordinary
 	// POST /nodes — one making `work/n` and one making `work/n/c` — were therefore a write to Type
 	// against this handler's read of it.
 	created, err := server.createNodeUnderHold(path, nodeType, userID)
@@ -167,9 +168,10 @@ func (server *Server) createNodePath(path string, nodeType core.NodeType, userID
 			return nil, fmt.Errorf("insufficient permissions on %s", parent.Name)
 		}
 
-		// Only the last segment is what the client asked for; an ancestor holds a child, which
-		// makes it a branch whatever the request said — and an empty leaf already sitting on an
-		// ancestor segment is promoted to one rather than blocking the path.
+		// Only the last segment is what the client asked for; an ancestor holds a child, so it reads
+		// as a branch whatever the request said — and a node already sitting on an ancestor segment
+		// is given the branch hint and descended into, whatever it records, rather than blocking the
+		// path (phase 18.3).
 		var child *core.Node
 		var err error
 		if i == len(parts)-1 {
@@ -214,10 +216,6 @@ func statusForNodeError(err error) int {
 	case strings.Contains(err.Error(), "insufficient permissions"):
 		return http.StatusForbidden
 	case strings.Contains(err.Error(), "already exists"):
-		return http.StatusConflict
-	// A leaf that records something cannot become a branch. That is a conflict with what is already
-	// there, not a malformed request.
-	case strings.Contains(err.Error(), "cannot add a child to leaf node"):
 		return http.StatusConflict
 	default:
 		return http.StatusBadRequest

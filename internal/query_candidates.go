@@ -61,6 +61,7 @@ func newNodeSummaryView(at visit) nodeSummaryView {
 		Path:          at.path,
 		Name:          node.Name,
 		Type:          nodeTypeName(node.Type),
+		Kind:          node.Kind,
 		ParentIDs:     parentIDs,
 		ChildCount:    len(node.Children),
 		EventCount:    len(node.Events),
@@ -89,7 +90,11 @@ func eventCandidates(at visit) []candidate {
 			// twice would double every count an aggregate produced over it.
 			continue
 		}
-		gathered = append(gathered, eventCandidate(at, eventID, at.node.PlannedEvents[eventID]))
+		item := eventCandidate(at, eventID, at.node.PlannedEvents[eventID])
+		view := item.View.(eventResultView)
+		view.Planned = true
+		item.View = view
+		gathered = append(gathered, item)
 	}
 	return gathered
 }
@@ -98,17 +103,18 @@ func eventCandidates(at visit) []candidate {
 func eventCandidate(at visit, eventID string, event core.Event) candidate {
 	view := newEventResultView(at.path, eventID, event)
 	item := candidate{
-		Kind:      selectEvents,
-		NodePath:  at.path,
-		NodeID:    at.node.ID,
-		ID:        eventID,
-		Index:     -1,
-		Status:    string(event.Status),
-		Category:  event.Category,
-		UserID:    event.CreatedBy,
-		Text:      []string{eventID, event.Category, at.node.Name},
-		Metadata:  copyMetadata(event.Metadata),
-		Timestamp: event.CreatedAt,
+		Kind:       selectEvents,
+		NodePath:   at.path,
+		NodeID:     at.node.ID,
+		ID:         eventID,
+		Index:      -1,
+		Status:     string(event.Status),
+		Category:   event.Category,
+		UserID:     event.CreatedBy,
+		AssignedTo: event.AssignedTo,
+		Text:       []string{eventID, event.Category, at.node.Name},
+		Metadata:   copyMetadata(event.Metadata),
+		Timestamp:  event.CreatedAt,
 		Times: map[string]time.Time{
 			timeFieldCreatedAt:  event.CreatedAt,
 			timeFieldModifiedAt: event.ModifiedAt,
@@ -145,6 +151,8 @@ func newEventResultView(path, eventID string, event core.Event) eventResultView 
 		EventID:    eventID,
 		Status:     event.Status,
 		Category:   event.Category,
+		Realizes:   event.Realizes,
+		AssignedTo: event.AssignedTo,
 		Frequency:  event.Frequency,
 		Pattern:    event.Pattern,
 		StartTime:  event.StartTime,
@@ -184,6 +192,8 @@ func entryCandidate(at visit, eventID string, index int, entry core.Entry, categ
 		NodePath:   at.path,
 		EventID:    eventID,
 		EntryIndex: index,
+		ParentID:   entry.ParentID,
+		Rank:       entry.Rank,
 		// COPIED, like every other thing a result carries out of the forest. Content is arbitrary
 		// JSON: nothing puts a container in it today, but api_views.go already copies the same
 		// field, and two layers projecting one field under different rules is how the aliasing this
@@ -281,6 +291,7 @@ func timeSpanCandidate(at visit, index int, started, stopped core.Entry) candida
 			"start_time":  started.Timestamp,
 			"end_time":    stopped.Timestamp,
 			"duration_ms": milliseconds,
+			"event_id":    started.Metadata["event_id"],
 		},
 	}
 }

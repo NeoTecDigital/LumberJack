@@ -91,7 +91,7 @@ func (server *Server) startEvent(userID string, request startEventRequest) (muta
 	// /events/end.
 	err := server.changeNode(request.Path, userID, core.WritePermission, func(node *core.Node) error {
 		if err := node.StartEvent(request.EventID, userID, nil, nil, request.Metadata); err != nil {
-			return apiErrorf(http.StatusInternalServerError, "Start event error: %v", err)
+			return apiErrorf(http.StatusConflict, "Start event error: %v", err)
 		}
 		return nil
 	})

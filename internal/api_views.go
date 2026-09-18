@@ -48,8 +48,14 @@ type attachmentView struct {
 //
 // ID is carried because an entry that cannot be named cannot be replied to, edited or deleted: it
 // is the whole reason core.Entry has one. Every route that returns an entry returns it.
+//
+// ParentID and Rank are carried for the same reason as ID: an entry the client cannot see the
+// parent or the order of is one it cannot render nested or reordered. Both are omitempty — an entry
+// with neither (an activity-log line, a time sentinel) carries neither on the wire.
 type entryView struct {
 	ID          string                 `json:"id"`
+	ParentID    string                 `json:"parent_id,omitempty"`
+	Rank        string                 `json:"rank,omitempty"`
 	Content     interface{}            `json:"content"`
 	Metadata    map[string]interface{} `json:"metadata"`
 	UserID      string                 `json:"user_id"`
@@ -69,6 +75,8 @@ type eventView struct {
 	Metadata   map[string]interface{} `json:"metadata"`
 	Status     core.EventStatus       `json:"status"`
 	Category   string                 `json:"category,omitempty"`
+	Realizes   string                 `json:"realizes,omitempty"`
+	AssignedTo string                 `json:"assigned_to,omitempty"`
 	Frequency  string                 `json:"frequency,omitempty"`
 	Pattern    string                 `json:"pattern,omitempty"`
 	CreatedBy  string                 `json:"created_by,omitempty"`
@@ -84,6 +92,7 @@ type eventView struct {
 type nodeView struct {
 	ID            string                    `json:"id"`
 	Type          core.NodeType             `json:"type"`
+	Kind          string                    `json:"kind,omitempty"`
 	Name          string                    `json:"name"`
 	Reference     bool                      `json:"ref,omitempty"`
 	Parents       map[string]string         `json:"parents"`
@@ -152,6 +161,8 @@ func newAttachmentViews(attachments map[string]core.Attachment) map[string]attac
 func newEntryView(entry core.Entry) entryView {
 	view := entryView{
 		ID:         entry.ID,
+		ParentID:   entry.ParentID,
+		Rank:       entry.Rank,
 		Content:    copyValue(entry.Content),
 		Metadata:   copyMetadataMap(entry.Metadata),
 		UserID:     entry.UserID,
@@ -186,6 +197,8 @@ func newEventView(event core.Event) eventView {
 		Metadata:   copyMetadataMap(event.Metadata),
 		Status:     event.Status,
 		Category:   event.Category,
+		Realizes:   event.Realizes,
+		AssignedTo: event.AssignedTo,
 		Frequency:  event.Frequency,
 		Pattern:    event.Pattern,
 		CreatedBy:  event.CreatedBy,

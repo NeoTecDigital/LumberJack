@@ -201,6 +201,13 @@ lj_status_t ic_lj_stream_poll(lj_handle_t h, lj_cstr req, int64_t req_len,
 lj_status_t ic_lj_echo(lj_cstr in, int64_t in_len,
                        char *out, int64_t out_cap, int64_t *out_len);
 
+/* Application service extension: JSON requests, authenticated per call, no
+ * network listener. The call allocates its whole result once; free it using
+ * ic_lj_application_free, including on non-2xx application responses. */
+lj_status_t ic_lj_application_configure(lj_handle_t h, lj_cstr req, int64_t req_len);
+lj_status_t ic_lj_application_call(lj_handle_t h, lj_cstr req, int64_t req_len,
+                                  char **out, int64_t *out_len);
+void ic_lj_application_free(char *out);
 #ifdef __cplusplus
 }
 #endif

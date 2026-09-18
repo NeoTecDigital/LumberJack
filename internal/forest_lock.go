@@ -122,9 +122,16 @@ func (server *Server) changeForest(change func() error) error {
 func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
+	var before *correspondenceSnapshot
+	if server.applicationHubEnabled.Load() {
+		before = server.captureCorrespondence()
+	}
 
 	if err := change(); err != nil {
 		return stateSnapshot{}, err
+	}
+	if before != nil {
+		server.recordCompatibilityChanges(before)
 	}
 
 	snapshot, err := server.encodeStateLocked(server.statePath())

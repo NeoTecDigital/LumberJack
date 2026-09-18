@@ -46,12 +46,12 @@ func GenerateEntryID() string {
 	return generateID("entry")
 }
 
-// StartEvent starts a new event or schedules it for the future
+// StartEvent starts a new event or schedules it for the future.
+//
+// It does NOT check Type: a node holds children and events at once (phase 18.3), so an event on a
+// node that also has children is legal. It once refused a non-leaf, which is what made
+// category{goal{routine{event}}} impossible; see NodeType.
 func (n *Node) StartEvent(eventID string, userID string, plannedStart, plannedEnd *time.Time, metadata map[string]interface{}) error {
-	if n.Type != LeafNode {
-		return fmt.Errorf("cannot add event to non-leaf node")
-	}
-
 	// Check user permission
 	if !n.CheckPermission(userID, WritePermission) {
 		return fmt.Errorf("insufficient permissions")
@@ -59,6 +59,16 @@ func (n *Node) StartEvent(eventID string, userID string, plannedStart, plannedEn
 
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
+	if previous, exists := n.Events[eventID]; exists {
+		if previous.Status != EventPending {
+			return ErrEventAlreadyStarted
+		}
+		now := time.Now()
+		previous.StartTime, previous.Status = &now, EventOngoing
+		previous.ModifiedBy, previous.ModifiedAt = userID, now
+		n.Events[eventID] = previous
+		return nil
+	}
 
 	event := Event{
 		Metadata:   metadata,
@@ -67,6 +77,12 @@ func (n *Node) StartEvent(eventID string, userID string, plannedStart, plannedEn
 		CreatedAt:  time.Now(),
 		ModifiedBy: userID,
 		ModifiedAt: time.Now(),
+	}
+	if planned, exists := n.PlannedEvents[eventID]; exists {
+		event = planned
+		event.Metadata = mergedEntryMetadata(planned.Metadata, metadata)
+		event.EndTime = nil
+		event.ModifiedBy, event.ModifiedAt = userID, time.Now()
 	}
 
 	// Handle category if provided in metadata
@@ -170,12 +186,11 @@ func (n *Node) AppendToEvent(eventID string, userID string, content interface{},
 // something the server failed to do.
 var ErrEventAlreadyStarted = errors.New("event has already started")
 
-// PlanEvent plans a future event
+// PlanEvent plans a future event.
+//
+// Like StartEvent it does NOT check Type — a node with children may carry a planned event too
+// (phase 18.3, see NodeType).
 func (n *Node) PlanEvent(eventID string, userID string, plannedStart, plannedEnd *time.Time, metadata map[string]interface{}) error {
-	if n.Type != LeafNode {
-		return fmt.Errorf("cannot plan event for non-leaf node")
-	}
-
 	// Check user permission
 	if !n.CheckPermission(userID, WritePermission) {
 		return fmt.Errorf("insufficient permissions")

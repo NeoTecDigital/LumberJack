@@ -107,7 +107,10 @@ func (p *predicate) match(item candidate) bool {
 	if len(p.categories) > 0 && !p.categories[strings.ToLower(item.Category)] {
 		return false
 	}
-	if len(p.userIDs) > 0 && !p.userIDs[item.UserID] {
+	// A user matches on EITHER identity a candidate carries: its UserID (an event's creator, an
+	// entry's author) or its AssignedTo (an event's assignee, empty for everything else). So a
+	// where.user_id clause finds the work assigned to a user as well as the work they logged.
+	if len(p.userIDs) > 0 && !p.userIDs[item.UserID] && !(item.AssignedTo != "" && p.userIDs[item.AssignedTo]) {
 		return false
 	}
 	if !p.matchTime(item) {

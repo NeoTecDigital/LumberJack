@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // GET /stream — server-sent events, one per mutation.
@@ -27,8 +29,15 @@ import (
 const heartbeatInterval = 20 * time.Second
 
 func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	if _, ok := userIDFrom(r); !ok {
+	userID, ok := userIDFrom(r)
+	if !ok {
 		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return
+	}
+	valid := false
+	server.readForest(func() { _, err := server.forest.GetUserProfile(userID); valid = err == nil })
+	if !valid {
+		http.Error(w, "Account unavailable", http.StatusUnauthorized)
 		return
 	}
 
@@ -45,15 +54,44 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	// The client is told whether it was caught up BEFORE anything else, so it knows whether what
 	// follows is the whole story or only the part still in the buffer.
-	writeComment(w, fmt.Sprintf("connected caught_up=%t", client.caughtUp))
+	writeComment(w, fmt.Sprintf("connected caught_up=%t epoch=%s", client.caughtUp, server.mutations.epoch))
 	flusher.Flush()
+	visible := map[string]bool{}
+	server.readForest(func() {
+		_ = server.walkScope("", nil, func(at visit) {
+			if at.node.CheckPermission(userID, core.ReadPermission) {
+				visible[at.path] = true
+			}
+		})
+	})
+	send := func(event mutationEvent) {
+		allowed := false
+		server.readForest(func() {
+			if _, err := server.forest.GetUserProfile(userID); err != nil {
+				return
+			}
+			if server.forest.CheckPermission(userID, core.AdminPermission) {
+				allowed = true
+				return
+			}
+			node, err := server.getNodeFromPath(event.NodePath)
+			allowed = err == nil && node.CheckPermission(userID, core.ReadPermission)
+		})
+		if allowed {
+			visible[event.NodePath] = true
+			writeEvent(w, event)
+		} else if visible[event.NodePath] {
+			delete(visible, event.NodePath)
+			fmt.Fprint(w, "event: resync\ndata: {}\n\n")
+		}
+	}
 
 	for _, past := range client.replay {
-		writeEvent(w, past)
+		send(past)
 	}
 	flusher.Flush()
 
-	pump(r, w, flusher, client)
+	pump(r, w, flusher, client, send)
 }
 
 // writeStreamHeaders opens a response that is never supposed to end.
@@ -67,7 +105,7 @@ func writeStreamHeaders(w http.ResponseWriter) {
 }
 
 // pump writes mutations to a client until it goes away.
-func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription) {
+func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription, send func(mutationEvent)) {
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
 
@@ -77,7 +115,7 @@ func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *
 			if !open {
 				return
 			}
-			writeEvent(w, event)
+			send(event)
 			flusher.Flush()
 		case <-heartbeat.C:
 			writeComment(w, "keep-alive")

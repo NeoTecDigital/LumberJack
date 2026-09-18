@@ -75,18 +75,19 @@ type queryResponse struct {
 // times is how three subtly different meanings of "status" get shipped. They are flattened to this
 // once, at the point they are gathered, and everything downstream reads only this.
 type candidate struct {
-	Kind      string
-	NodePath  string
-	NodeID    string
-	ID        string
-	Index     int
-	Status    string
-	Category  string
-	UserID    string
-	Text      []string
-	Times     map[string]time.Time
-	Metadata  map[string]interface{}
-	Timestamp time.Time
+	Kind       string
+	NodePath   string
+	NodeID     string
+	ID         string
+	Index      int
+	Status     string
+	Category   string
+	UserID     string
+	AssignedTo string
+	Text       []string
+	Times      map[string]time.Time
+	Metadata   map[string]interface{}
+	Timestamp  time.Time
 
 	// Duration is only meaningful for a finished event or a closed time span. An ongoing event
 	// counts, but it has no duration to sum: adding "now minus start" to a total would make the
@@ -145,6 +146,7 @@ type nodeSummaryView struct {
 	Path          string                 `json:"path"`
 	Name          string                 `json:"name"`
 	Type          string                 `json:"type"`
+	Kind          string                 `json:"kind,omitempty"`
 	ParentIDs     []string               `json:"parent_ids"`
 	ChildCount    int                    `json:"child_count"`
 	EventCount    int                    `json:"event_count"`
@@ -163,6 +165,9 @@ type nodeSummaryView struct {
 // Entries are selectable in their own right. Embedding them here makes the size of a page of events
 // unbounded in a dimension the caller did not ask about.
 type eventResultView struct {
+	Planned    bool                   `json:"planned"`
+	Realizes   string                 `json:"realizes,omitempty"`
+	AssignedTo string                 `json:"assigned_to,omitempty"`
 	NodePath   string                 `json:"node_path"`
 	EventID    string                 `json:"event_id"`
 	Status     core.EventStatus       `json:"status"`
@@ -193,6 +198,11 @@ type entryResultView struct {
 	NodePath   string                 `json:"node_path"`
 	EventID    string                 `json:"event_id,omitempty"`
 	EntryIndex int                    `json:"entry_index"`
+	// ParentID and Rank travel with a flat entry result too, so the feed a client polls carries the
+	// nesting and the order and not only the position. omitempty, so an unranked, unnested entry
+	// stays as small on the wire as it was before the fields existed.
+	ParentID   string                 `json:"parent_id,omitempty"`
+	Rank       string                 `json:"rank,omitempty"`
 	Content    interface{}            `json:"content"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 	UserID     string                 `json:"user_id"`

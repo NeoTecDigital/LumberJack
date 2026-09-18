@@ -33,6 +33,7 @@ func populatedNode(t *testing.T) *core.Node {
 
 	node := core.NewNode(core.BranchNode, "populated")
 	node.ID = "populated-id"
+	node.Kind = "category"
 	node.Parents = map[string]string{"parent-id": "parent"}
 	node.Children = map[string]*core.Node{child.ID: child}
 	node.Events = map[string]core.Event{"shift": {Metadata: map[string]interface{}{"kind": "inspection"}}}
@@ -41,6 +42,10 @@ func populatedNode(t *testing.T) *core.Node {
 	node.Entries = []core.Entry{{Content: "an entry", UserID: "user-id", Timestamp: stamp}}
 	node.Attachments = map[string]core.Attachment{"hash": {ID: "hash", Name: "file.bin", Size: 3, Data: []byte{1, 2, 3}}}
 	node.Metadata = map[string]interface{}{CanvasMetadataKey: map[string]interface{}{"x": 1.0}}
+	node.CommandReceipts = map[string]interface{}{"user-id:command-id": map[string]interface{}{"digest": "verified"}}
+	node.Correspondence = &core.CorrespondenceState{Delivered: 1}
+	node.ApplicationSessions = map[string]core.ApplicationSession{"hash": {UserID: "user-id", ExpiresAt: 1}}
+	node.MFAChallenges = map[string]core.MFAChallenge{"challenge-id": {UserID: "user-id", CodeHash: "hash", ExpiresAt: 1}}
 	node.CreatedBy = "user-id"
 	node.CreatedAt = stamp
 	node.ModifiedBy = "user-id"
@@ -96,6 +101,56 @@ func TestNodeRecordWritesEveryFieldANodeCarries(t *testing.T) {
 		if _, present := written[name]; !present {
 			t.Errorf("core.Node's %q is not in the state file: the record wrote %v", name, keysOf(written))
 		}
+	}
+}
+
+// An entry's PARENT and RANK survive the state file, which is the claim phase 18.2 rests on: a
+// nested, reordered entry that came back flat and unordered on the next restart would be a reorder
+// that lasts until the process does. It is FREE because nodeRecord embeds *core.Node and the codec
+// marshals it with encoding/json — but "free" is exactly the kind of thing that stops being true
+// silently (a `json:"-"` a field over would drop it and nothing would say so), so it is asserted.
+//
+// OBSERVED RED with Entry.Rank tagged `json:"-"` instead of `json:"rank,omitempty"`
+// (go test ./internal/ -run ParentAndRankSurvive):
+//
+//	state_codec_test.go:NN: the entry came back rank "", want "a1": the field did not survive the codec
+func TestAnEntrysParentAndRankSurviveTheCodec(t *testing.T) {
+	node := core.NewNode(core.LeafNode, "holder")
+	node.ID = "holder-id"
+	node.Entries = []core.Entry{{
+		ID:       "entry-child",
+		ParentID: "entry-parent",
+		Rank:     "a1",
+		Content:  "a reply that is nested and ranked",
+		UserID:   "user-id",
+	}}
+
+	root := core.NewNode(core.BranchNode, "root")
+	root.ID = "root-id"
+	root.Children = map[string]*core.Node{node.ID: node}
+
+	encoded, err := encodeState(root)
+	if err != nil {
+		t.Fatalf("Failed to encode the forest: %v", err)
+	}
+	decoded, err := decodeState(encoded)
+	if err != nil {
+		t.Fatalf("Failed to decode the forest: %v", err)
+	}
+
+	after, present := decoded.Children[node.ID]
+	if !present || len(after.Entries) != 1 {
+		t.Fatalf("the node came back without its one entry: %+v", after)
+	}
+
+	got := after.Entries[0]
+	if got.ParentID != "entry-parent" {
+		t.Errorf("the entry came back parent_id %q, want %q: the field did not survive the codec",
+			got.ParentID, "entry-parent")
+	}
+	if got.Rank != "a1" {
+		t.Errorf("the entry came back rank %q, want %q: the field did not survive the codec",
+			got.Rank, "a1")
 	}
 }
 
@@ -224,6 +279,65 @@ func TestANodeSurvivesTheCodecWithEverythingOnIt(t *testing.T) {
 	}
 	if len(after.Children) != len(node.Children) {
 		t.Errorf("The node came back with %d children, want %d", len(after.Children), len(node.Children))
+	}
+}
+
+// Node.Kind, Event.Realizes and Event.AssignedTo survive the state file (phase 18.3).
+//
+// These are the three new 18.3 fields, and they round-trip FOR FREE — nodeRecord embeds *core.Node
+// and the codec marshals it with encoding/json, so a json-tagged field on core.Node or core.Event
+// is written and read with no codec change. "Free" is exactly what stops being true silently (a
+// `json:"-"` a field over would drop it and nothing would say so), so it is asserted, the way 18.2
+// asserted parent_id and rank.
+//
+// OBSERVED RED before the fields existed on the structs
+// (go test ./internal/ -run KindRealizesAndAssignedToSurvive):
+//
+//	internal/state_codec_test.go:297:7: node.Kind undefined (type *core.Node has no field or method Kind)
+//	internal/state_codec_test.go:299:3: unknown field Realizes in struct literal of type core.Event
+//	internal/state_codec_test.go:300:3: unknown field AssignedTo in struct literal of type core.Event
+//	FAIL	github.com/NeoTecDigital/LumberJack/internal [build failed]
+func TestNodeKindRealizesAndAssignedToSurviveTheCodec(t *testing.T) {
+	node := core.NewNode(core.BranchNode, "singleton")
+	node.ID = "kind-holder"
+	node.Kind = "goal"
+	node.Events = map[string]core.Event{"shift": {
+		Realizes:   "intent-abc",
+		AssignedTo: "user-x",
+		Metadata:   map[string]interface{}{},
+	}}
+
+	root := core.NewNode(core.BranchNode, "root")
+	root.ID = "root-id"
+	root.Children = map[string]*core.Node{node.ID: node}
+
+	encoded, err := encodeState(root)
+	if err != nil {
+		t.Fatalf("Failed to encode the forest: %v", err)
+	}
+	decoded, err := decodeState(encoded)
+	if err != nil {
+		t.Fatalf("Failed to decode the forest: %v", err)
+	}
+
+	after, present := decoded.Children[node.ID]
+	if !present {
+		t.Fatalf("the node is not under the root after the round trip: %v", keysOfNodes(decoded.Children))
+	}
+	if after.Kind != "goal" {
+		t.Errorf("the node came back kind %q, want %q: the field did not survive the codec", after.Kind, "goal")
+	}
+	event, ok := after.Events["shift"]
+	if !ok {
+		t.Fatalf("the event did not survive the round trip: %v", after.Events)
+	}
+	if event.Realizes != "intent-abc" {
+		t.Errorf("the event came back realizes %q, want %q: the field did not survive the codec",
+			event.Realizes, "intent-abc")
+	}
+	if event.AssignedTo != "user-x" {
+		t.Errorf("the event came back assigned_to %q, want %q: the field did not survive the codec",
+			event.AssignedTo, "user-x")
 	}
 }
 
