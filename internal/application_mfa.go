@@ -198,12 +198,26 @@ func (s *Server) sweepMFAChallenges(now int64, userID string) {
 	}
 }
 
-// verifyMFAChallenge is the verify half and the ONLY path to a full session behind MFA. It compares
-// in constant time, counts the attempt durably (the change commits whether the code was right or
-// wrong, so a crash cannot reset a lockout), destroys the challenge on success, on lockout and on a
-// structural failure, and mints the pair only when the code matched a live challenge for an account
-// that still exists.
+// verifyMFAChallenge is /mfa/verify's half: consume the challenge, then mint the JWT pair. The
+// consuming is factored out because there are now TWO things a verified code can produce — the JWT
+// pair here, and the ms_ application session at /session/mfa — and only one of them may be reached
+// per challenge. Sharing consumeMFAChallenge is what makes "the challenge is destroyed on success"
+// true for both, rather than a property one path happens to have.
 func (s *Server) verifyMFAChallenge(challengeToken, code string) (*TokenPair, error) {
+	verified, err := s.consumeMFAChallenge(challengeToken, code)
+	if err != nil {
+		return nil, err
+	}
+	return s.generateTokenPair(verified)
+}
+
+// consumeMFAChallenge is the verify half and the ONLY path past MFA. It compares in constant time,
+// counts the attempt durably (the change commits whether the code was right or wrong, so a crash
+// cannot reset a lockout), destroys the challenge on success, on lockout and on a structural
+// failure, and hands back the account only when the code matched a live challenge for an account
+// that still exists. It returns a MINIMAL user — id and username — because that is all either caller
+// needs and the hash has no business leaving the forest.
+func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, error) {
 	claims, err := s.parseMFAChallengeToken(challengeToken)
 	if err != nil {
 		return nil, err
@@ -252,7 +266,7 @@ func (s *Server) verifyMFAChallenge(challengeToken, code string) (*TokenPair, er
 	if outcome != nil {
 		return nil, outcome
 	}
-	return s.generateTokenPair(verified)
+	return verified, nil
 }
 
 // resendMFAChallenge is the /mfa/start half: swap a fresh code into an existing live challenge and

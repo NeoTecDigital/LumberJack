@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// applicationSessionTTL is how long a minted ms_ bearer lives. It is a named constant because BOTH
+// mints — the password-only one and the second-factor one — read it, and because the relay's cookie
+// max-age has to be told the same number.
+const applicationSessionTTL = 30 * 24 * 3600
+
 func (s *Server) sessionHash(token string) string {
 	h := hmac.New(sha256.New, s.jwtConfig.SecretKey)
 	h.Write([]byte(token))
@@ -44,12 +49,65 @@ func (s *Server) serveApplicationSession(next http.HandlerFunc, w http.ResponseW
 	next(w, r.WithContext(ctx))
 }
 
+// mintApplicationSession creates the ms_ bearer and stores its hash, and is FACTORED OUT of
+// handleApplicationSession so that the second step at /session/mfa reaches exactly the same mint.
+// Two copies of this block would be two places a session's lifetime, its per-account cap and its
+// sweep could drift apart — and the MFA path is the one that must not be the weaker of the two.
+//
+// It returns the token and the expiry, so the caller can answer without re-reading the store.
+func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", 0, apiErrorf(500, "Session unavailable")
+	}
+	token := "ms_" + hex.EncodeToString(raw)
+	var expiresAt int64
+	err := s.changeForest(func() error {
+		if _, err := s.forest.GetUserProfile(userID); err != nil {
+			return apiErrorf(401, "Account unavailable")
+		}
+		if s.forest.ApplicationSessions == nil {
+			s.forest.ApplicationSessions = map[string]core.ApplicationSession{}
+		}
+		now := time.Now().Unix()
+		count := 0
+		oldestKey := ""
+		var oldest int64
+		for key, item := range s.forest.ApplicationSessions {
+			if item.ExpiresAt <= now {
+				delete(s.forest.ApplicationSessions, key)
+				continue
+			}
+			if item.UserID == userID {
+				count++
+				if oldestKey == "" || item.CreatedAt < oldest {
+					oldestKey, oldest = key, item.CreatedAt
+				}
+			}
+		}
+		if count >= 20 {
+			delete(s.forest.ApplicationSessions, oldestKey)
+		}
+		expiresAt = now + applicationSessionTTL
+		s.forest.ApplicationSessions[s.sessionHash(token)] = core.ApplicationSession{UserID: userID, CreatedAt: now, ExpiresAt: expiresAt}
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return token, expiresAt, nil
+}
+
 func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if r.Method == "POST" {
 		var input struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			// PhoneLast4 is the pre-send ownership gate, read exactly as /login reads it: the last four
+			// digits of the number a code would go to, proving the caller holds the phone before one is
+			// sent. It is consulted only when the account carries MFA, and ignored otherwise.
+			PhoneLast4 string `json:"phone_last4"`
 		}
 		if json.NewDecoder(r.Body).Decode(&input) != nil {
 			http.Error(w, "Invalid credentials", 400)
@@ -60,45 +118,36 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Invalid credentials", 401)
 			return
 		}
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err != nil {
-			http.Error(w, "Session unavailable", 500)
+		// THE BYPASS THIS CLOSES. This route minted a session for any account whose password verified,
+		// MFA or not — /login had the second factor and /session did not, so the whole gate was optional
+		// for every browser client. A verified password on an MFA account now answers a CHALLENGE and
+		// nothing else: no token in the body, no session in the store, nothing to authenticate with
+		// until /session/mfa verifies a code.
+		//
+		// A missing or wrong last-four is refused with the SAME 401 a wrong password gets, so the
+		// surface carries no MFA-status oracle: a caller holding a stolen password cannot learn whether
+		// the account has a second factor, or anything about the number, and triggers no delivery. That
+		// uniformity is why the CLIENT always shows the last-four field.
+		if user.MFAEnabled {
+			if !phoneLast4Matches(user.Phone, input.PhoneLast4) {
+				http.Error(w, "Invalid credentials", 401)
+				return
+			}
+			challenge, err := s.beginMFAChallenge(user)
+			if err != nil {
+				writeAPIError(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"mfa_required": true, "challenge": challenge})
 			return
 		}
-		token = "ms_" + hex.EncodeToString(bytes)
-		err := s.changeForest(func() error {
-			if _, err := s.forest.GetUserProfile(user.ID); err != nil {
-				return apiErrorf(401, "Account unavailable")
-			}
-			if s.forest.ApplicationSessions == nil {
-				s.forest.ApplicationSessions = map[string]core.ApplicationSession{}
-			}
-			now := time.Now().Unix()
-			count := 0
-			oldestKey := ""
-			var oldest int64
-			for key, item := range s.forest.ApplicationSessions {
-				if item.ExpiresAt <= now {
-					delete(s.forest.ApplicationSessions, key)
-					continue
-				}
-				if item.UserID == user.ID {
-					count++
-					if oldestKey == "" || item.CreatedAt < oldest {
-						oldestKey, oldest = key, item.CreatedAt
-					}
-				}
-			}
-			if count >= 20 {
-				delete(s.forest.ApplicationSessions, oldestKey)
-			}
-			s.forest.ApplicationSessions[s.sessionHash(token)] = core.ApplicationSession{UserID: user.ID, CreatedAt: now, ExpiresAt: now + 30*24*3600}
-			return nil
-		})
+		minted, _, err := s.mintApplicationSession(user.ID)
 		if err != nil {
 			writeAPIError(w, err)
 			return
 		}
+		token = minted
 	}
 	if r.Method == "DELETE" {
 		if err := s.changeForest(func() error { delete(s.forest.ApplicationSessions, s.sessionHash(token)); return nil }); err != nil {
@@ -126,5 +175,40 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
+	})
+}
+
+// handleApplicationSessionMFA is POST /session/mfa: the second half of the exchange /session now
+// stops halfway through. It takes the challenge the first step handed back and the code that reached
+// the phone, and mints the session the first step withheld — answering the SAME shape /session
+// answered in one step, so the relay sets its cookie from one place either way.
+//
+// It carries NO principal, for the same reason /mfa/verify does not: the session is what this step
+// exists to obtain, so demanding one is circular. The challenge bearer IS the authority, and
+// consumeMFAChallenge validates it — signature, type, liveness, attempt budget and a constant-time
+// code compare — before this ever sees a user. authMiddleware would refuse that bearer as not a
+// session, which is why the dispatch in application.go routes here directly.
+func (s *Server) handleApplicationSessionMFA(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Challenge string `json:"challenge"`
+		Code      string `json:"code"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		http.Error(w, "Invalid request", 400)
+		return
+	}
+	user, err := s.consumeMFAChallenge(input.Challenge, input.Code)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	token, expiresAt, err := s.mintApplicationSession(user.ID)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": user.ID, "username": user.Username, "expires_at": expiresAt, "token": token,
 	})
 }

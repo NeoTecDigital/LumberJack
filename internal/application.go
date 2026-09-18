@@ -95,7 +95,10 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 	if target.Path == "/stream" {
 		return applicationError(400, "Use the Corresponder change dispatcher")
 	}
-	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
+	// /session/mfa joins the credential exchange in this exemption for the same reason /session is in
+	// it: a change-delivery backlog must not be able to strand a caller halfway through a login it has
+	// already started, holding a challenge that expires in five minutes.
+	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/session/mfa" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
 		full := false
 		s.readForest(func() { full = s.forest.Correspondence != nil && len(s.forest.Correspondence.Pending) >= 4096 })
 		if full {
@@ -112,6 +115,11 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 	out := &applicationWriter{header: make(http.Header)}
 	if target.Path == "/session" && input.Method == "POST" {
 		s.handleApplicationSession(out, req)
+	} else if target.Path == "/session/mfa" && input.Method == "POST" {
+		// PUBLIC, and deliberately so: the caller holds an "mfa_pending" challenge, not a session, so
+		// wrapping this in authMiddleware would make the step that OBTAINS a session require one. The
+		// handler validates the challenge bearer itself — see handleApplicationSessionMFA.
+		s.handleApplicationSessionMFA(out, req)
 	} else if target.Path == "/session" && (input.Method == "GET" || input.Method == "DELETE") {
 		s.authMiddleware(s.handleApplicationSession)(out, req)
 	} else if target.Path == "/principal" && input.Method == "GET" {
