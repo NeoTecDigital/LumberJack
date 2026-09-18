@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -28,28 +29,83 @@ type ApplicationResponse struct {
 	Body    []byte            `json:"body"`
 }
 
+// adminReconcileEnv names the ONE opt-in that lets the environment overwrite a stored credential.
+// It is read as an exact "1" rather than as any truthy string, because a variable that a typo can
+// switch on is a variable that resets an administrator's password by accident.
+const adminReconcileEnv = "CORRESPONDER_ADMIN_RECONCILE"
+
 // ConfigureApplication runs once, before an embedder accepts untrusted requests.
 // A populated forest keeps its account identities and password hashes.
+//
+// AND SAYS SO, which it did not. This returned successfully having done nothing whenever the store
+// already held users — the right behaviour, since a bootstrap that reset the administrator's password
+// on every start would hand the environment file a permanent key to the installation. But it was
+// SILENT about it, so an environment whose password no longer matched the stored hash looked exactly
+// like one that did, and the only symptom was a login that would not work. That happened here: a
+// datastore's admin stopped matching backend/.env after a reset and nothing in any log said so.
+//
+// The repair is explicit and opt-in. With CORRESPONDER_ADMIN_RECONCILE=1 the configured admin's
+// password hash — that account's, and no other's — is replaced from the environment, and the fact is
+// logged. Without it the behaviour is exactly what it was, plus the line.
 func (s *Server) ConfigureApplication(username, password, secret string) error {
 	if len(secret) < 32 || username == "" || len(password) < 12 {
 		return fmt.Errorf("application bootstrap needs a username, a password of at least 12 characters and a session key of at least 32 bytes")
 	}
 	s.jwtConfig = JWTConfig{SecretKey: []byte(secret), ExpiresIn: 24 * time.Hour}
+	reconcile := os.Getenv(adminReconcileEnv) == "1"
+	// The report is assembled inside the hold and logged outside it, so nothing writes to a log sink
+	// while the forest is held exclusively.
+	notice := ""
 	err := s.changeForest(func() error {
+		notice = ""
+		populated := false
 		for _, user := range s.forest.Users {
 			if user.ID != SystemUserID {
-				return nil
+				populated = true
+				break
 			}
 		}
-		user := core.User{ID: core.GenerateUserID(), Username: username}
-		if err := user.SetPassword(password); err != nil {
-			return err
+		if !populated {
+			user := core.User{ID: core.GenerateUserID(), Username: username}
+			if err := user.SetPassword(password); err != nil {
+				return err
+			}
+			return s.forest.AssignUser(user, core.AdminPermission)
 		}
-		if err := s.forest.AssignUser(user, core.AdminPermission); err != nil {
-			return err
+
+		if !reconcile {
+			notice = fmt.Sprintf("BOOTSTRAP: the configured admin %q was NOT created or updated — this datastore already holds accounts, "+
+				"and its stored password is whatever it already was. If a sign-in with the configured password is failing, that is why. "+
+				"Set %s=1 to reset THAT ACCOUNT'S password from the environment on the next start.", username, adminReconcileEnv)
+			return nil
 		}
+
+		// The repair, scoped to one account by name. It updates a password hash and NOTHING else — not
+		// permissions, not the id, not any other user — because the failure it answers is exactly one
+		// credential having diverged, and widening it would make an environment variable a way to
+		// rewrite the account table.
+		for i := range s.forest.Users {
+			if s.forest.Users[i].Username != username {
+				continue
+			}
+			if err := s.forest.Users[i].SetPassword(password); err != nil {
+				return err
+			}
+			// A repaired credential also clears the lockout counter: an account whose password was
+			// wrong has almost certainly been failed into, and leaving it shut would fix the hash and
+			// keep the symptom.
+			s.forest.Users[i].FailedLogins, s.forest.Users[i].LockedUntil = 0, 0
+			notice = fmt.Sprintf("BOOTSTRAP: %s=1 — reset the password of the existing admin account %q from the environment. "+
+				"No other account was touched.", adminReconcileEnv, username)
+			return nil
+		}
+		notice = fmt.Sprintf("BOOTSTRAP: %s=1 but this datastore holds no account named %q, so nothing was changed. "+
+			"The repair updates one existing account; it does not create one.", adminReconcileEnv, username)
 		return nil
 	})
+	if notice != "" {
+		s.logger.Warn("%s", notice)
+	}
 	if err == nil {
 		s.applicationHubEnabled.Store(true)
 	}
