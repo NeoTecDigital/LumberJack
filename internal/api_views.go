@@ -30,6 +30,10 @@ type userView struct {
 	Organization string            `json:"organization"`
 	Phone        string            `json:"phone"`
 	Permissions  []core.Permission `json:"permissions"`
+	// MFAEnabled is the one piece of second-factor state a client may see. It is carried because the
+	// client has to know a code step is coming and an administrator has to see who is enrolled; the
+	// code, its hash, the challenge and the attempt count are all elsewhere and none of them is here.
+	MFAEnabled bool `json:"mfa_enabled"`
 }
 
 // attachmentView is an attachment as a client may see one: everything needed to decide whether to
@@ -118,6 +122,7 @@ func newUserView(user core.User) userView {
 		Organization: user.Organization,
 		Phone:        user.Phone,
 		Permissions:  append([]core.Permission(nil), user.Permissions...),
+		MFAEnabled:   user.MFAEnabled,
 	}
 }
 

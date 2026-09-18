@@ -398,6 +398,10 @@ func (s *Server) registerAccountRoutes(router *mux.Router) {
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")
 	router.HandleFunc("/users/assign", s.authMiddleware(s.handleAssignUser)).Methods("POST")
 	router.HandleFunc("/users/profile", s.authMiddleware(s.handleGetUserProfile)).Methods("GET")
+	// Second-factor enrolment. BEHIND the middleware and, inside the handler, behind AdminPermission,
+	// for the same reason /users/create is: pointing an account's codes at a phone is an
+	// administrative act, and a self-service version of it turns a stolen session into a takeover.
+	router.HandleFunc("/users/mfa", s.authMiddleware(s.handleSetUserMfa)).Methods("POST")
 	router.HandleFunc("/settings/", s.authMiddleware(s.handleGetServerSettings)).Methods("GET")
 	router.HandleFunc("/settings/update", s.authMiddleware(s.handleUpdateServerSettings)).Methods("POST")
 }

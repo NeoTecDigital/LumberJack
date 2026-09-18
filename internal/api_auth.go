@@ -206,16 +206,11 @@ func phoneLast4Matches(phone, last4 string) bool {
 			return false
 		}
 	}
-	digits := make([]rune, 0, len(phone))
-	for _, r := range phone {
-		if r >= '0' && r <= '9' {
-			digits = append(digits, r)
-		}
-	}
+	digits := digitsOnly(phone)
 	if len(digits) < 4 {
 		return false
 	}
-	return string(digits[len(digits)-4:]) == last4
+	return digits[len(digits)-4:] == last4
 }
 
 // Add new handler for token refresh
@@ -290,6 +285,10 @@ func (server *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Reques
 		"organization": profile.Organization,
 		"phone":        profile.Phone,
 		"permissions":  profile.Permissions,
+		// Whether the account carries a second factor is not a secret — everything else the second
+		// factor touches is, and none of it is here. The client needs this to render its own settings,
+		// and to know a code step is coming.
+		"mfa_enabled": profile.MFAEnabled,
 	})
 }
 
