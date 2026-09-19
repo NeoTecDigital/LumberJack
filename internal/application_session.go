@@ -35,8 +35,13 @@ func (s *Server) applicationSession(token string) (core.ApplicationSession, bool
 	s.readForest(func() {
 		session, valid = s.forest.ApplicationSessions[s.sessionHash(token)]
 		if valid {
-			_, err := s.forest.GetUserProfile(session.UserID)
-			valid = err == nil && session.ExpiresAt > time.Now().Unix()
+			profile, err := s.forest.GetUserProfile(session.UserID)
+			// The epoch comes off the profile this read ALREADY had to fetch, so withdrawing a cookie
+			// an administrator has superseded costs one integer comparison and no extra work: a session
+			// opened while the account was password-only stops the moment it carries a second factor.
+			valid = err == nil &&
+				session.ExpiresAt > time.Now().Unix() &&
+				epochIsCurrent(session.CredentialEpoch, profile.CredentialEpoch)
 		}
 	})
 	return session, valid
@@ -68,7 +73,8 @@ func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
 	token := "ms_" + hex.EncodeToString(raw)
 	var expiresAt int64
 	err := s.changeForest(func() error {
-		if _, err := s.forest.GetUserProfile(userID); err != nil {
+		profile, err := s.forest.GetUserProfile(userID)
+		if err != nil {
 			return apiErrorf(401, "Account unavailable")
 		}
 		if s.forest.ApplicationSessions == nil {
@@ -94,7 +100,13 @@ func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
 			delete(s.forest.ApplicationSessions, oldestKey)
 		}
 		expiresAt = now + applicationSessionTTL
-		s.forest.ApplicationSessions[s.sessionHash(token)] = core.ApplicationSession{UserID: userID, CreatedAt: now, ExpiresAt: expiresAt}
+		// STAMPED UNDER THE SAME HOLD THAT READ IT. The epoch is taken from the profile above and
+		// written here without the lock being released in between, so an enrolment landing at the same
+		// moment either precedes this whole block — and the session is born stale — or follows it, and
+		// retires the session on its next request. There is no ordering in which it survives.
+		s.forest.ApplicationSessions[s.sessionHash(token)] = core.ApplicationSession{
+			UserID: userID, CreatedAt: now, ExpiresAt: expiresAt, CredentialEpoch: profile.CredentialEpoch,
+		}
 		return nil
 	})
 	if err != nil {

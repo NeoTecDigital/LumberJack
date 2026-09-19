@@ -34,6 +34,16 @@ func (s *Server) enqueueCorrespondence(actor string, cmd WorkCommand, path strin
 		Actor: actor, Operation: cmd.Command, At: time.Now().UTC().Format(time.RFC3339Nano), Recipients: recipients}
 }
 
+// outboundChallengeID names the challenge an item's delivery verdict belongs to. The MFA path keys
+// both by the same value, so ChallengeID and ID agree there; the fallback is for an item queued by a
+// later purpose that fills only one of them, and an empty answer simply marks nothing.
+func outboundChallengeID(item core.OutboundMessage) string {
+	if item.ChallengeID != "" {
+		return item.ChallengeID
+	}
+	return item.ID
+}
+
 func (s *Server) correspondenceState() *core.CorrespondenceState {
 	if s.forest.Correspondence == nil {
 		s.forest.Correspondence = &core.CorrespondenceState{}
@@ -57,6 +67,13 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 	var request struct {
 		Operation string `json:"operation"`
 		ID        string `json:"id"`
+		// The outbound pair's outcome fields. Outcome tells outbound_ack WHY an item is being
+		// cleared — a delivery or an expiry sweep — because those leave different marks and the op
+		// served both from one call. ErrorClass and Attempts are outbound_failed's verdict, written
+		// beside the challenge for an operator; neither ever carries a number, a code or a name.
+		Outcome    string `json:"outcome"`
+		ErrorClass string `json:"error_class"`
+		Attempts   int    `json:"attempts"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, err
@@ -210,14 +227,57 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 		// "deliver" removes a pending record. A miss answers acked:false rather than erroring — a
 		// racing retry that already cleared the id, or an id that never existed, is benign, matching
 		// deliver's {"delivered": false} for a not-found id — so the dispatcher never retries a phantom.
+		//
+		// "outcome" IS WHAT SEPARATES A DELIVERY FROM A SWEEP. This op clears an item for two
+		// unrelated reasons — a carrier took it, or its window closed unsent — and until the field
+		// existed both were the same call, so the second could not be told apart from the first.
+		// A delivery marks the challenge "sent", which is how a waiting client learns to stop
+		// asking; an expiry marks nothing, because its challenge expired with it and "sent" on a
+		// dead challenge is a delivery that did not happen. AN OMITTED OUTCOME IS A DELIVERY: that
+		// was this op's only meaning before the field, so the dispatcher's delivered path and every
+		// existing caller keep working unchanged.
 		err := s.changeForest(func() error {
 			state := s.correspondenceState()
-			if _, found := state.Outbound[request.ID]; !found {
+			item, found := state.Outbound[request.ID]
+			if !found {
 				result = map[string]interface{}{"acked": false}
 				return nil
 			}
 			delete(state.Outbound, request.ID)
+			if request.Outcome == "" || request.Outcome == deliverySent {
+				s.markChallengeDelivery(outboundChallengeID(item), deliverySent, "", request.Attempts)
+			}
 			result = map[string]interface{}{"acked": true}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	case "outbound_failed":
+		// THE GIVE-UP, AND THE REASON IT IS NOT JUST ANOTHER ACK. The dispatcher used to call
+		// outbound_ack when it ran out of attempts, so an item nobody could send was cleared by the
+		// op that means "a carrier took this". Nothing anywhere recorded that a login's code never
+		// left, and the person waiting for it was shown the same screen as somebody whose code had
+		// arrived — which is indistinguishable from a slow carrier and is the worst thing a sign-in
+		// can be ambiguous about.
+		//
+		// The item is still DELETED. It holds a plaintext code beside a phone number, and an item
+		// nothing will send again is only that pair sitting in the state file. What changes is the
+		// record left behind: the challenge keeps the verdict, the coarse failure class and the
+		// attempt count, so /mfa/delivery can tell the client and an operator can tell an
+		// unconfigured provider from a carrier outage. The challenge itself SURVIVES — a resend is
+		// exactly the thing the client should offer next, and it needs something to resend into.
+		err := s.changeForest(func() error {
+			state := s.correspondenceState()
+			item, found := state.Outbound[request.ID]
+			if !found {
+				result = map[string]interface{}{"recorded": false, "cleared": false}
+				return nil
+			}
+			delete(state.Outbound, request.ID)
+			recorded := s.markChallengeDelivery(outboundChallengeID(item), deliveryFailed,
+				request.ErrorClass, request.Attempts)
+			result = map[string]interface{}{"recorded": recorded, "cleared": true}
 			return nil
 		})
 		if err != nil {

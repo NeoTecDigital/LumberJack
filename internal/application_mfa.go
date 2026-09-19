@@ -76,6 +76,10 @@ func (s *Server) mintChallengeToken(user *core.User, challengeID string, expires
 		Username:    user.Username,
 		TokenType:   "mfa_pending",
 		ChallengeID: challengeID,
+		// The generation of the account's rules this challenge belongs to, carried for the reason a
+		// session carries it: a code posted to a number an administrator has since taken away must not
+		// still complete the login for the rest of its five minutes.
+		CredentialEpoch: user.CredentialEpoch,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expiresAt,
 			IssuedAt:  time.Now().Unix(),
@@ -136,6 +140,11 @@ func (s *Server) beginMFAChallenge(user *core.User) (string, error) {
 			Attempts:  0,
 			CreatedAt: now,
 			ExpiresAt: expiresAt,
+			// THE FIRST SEND IS A SEND, and the resend cap counts it. Writing it here rather than
+			// leaving it to challengeSends' zero-value reading is not redundant: it makes the record an
+			// administrator reads say what actually happened.
+			Sends:      1,
+			LastSendAt: now,
 		}
 		s.enqueueOutboundMFA(user, challengeID, code, now, expiresAt)
 		return nil
@@ -257,7 +266,21 @@ func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, e
 			outcome = apiErrorf(http.StatusUnauthorized, "Account unavailable")
 			return nil
 		}
-		verified = &core.User{ID: profile.ID, Username: profile.Username}
+		// The challenge belongs to the rules the account was on when it was issued. Re-pointing the
+		// number is an administrator saying the old handset is not this account's any more, and a code
+		// already on its way there must not still complete the login. Same sentence as an unknown
+		// challenge, for the reason stated on the resend path.
+		if !epochIsCurrent(claims.CredentialEpoch, profile.CredentialEpoch) {
+			delete(s.forest.MFAChallenges, claims.ChallengeID)
+			outcome = apiErrorf(http.StatusUnauthorized, "Invalid or expired challenge")
+			return nil
+		}
+		// THE EPOCH TRAVELS WITH THE MINIMAL USER. Both callers hand this straight to a mint — a JWT
+		// pair at /mfa/verify, an ms_ session at /session/mfa — so a user built without it mints
+		// credentials stamped with the zero epoch, which for any account that has ever been enrolled
+		// is already stale. The second factor would then hand back a session that its own enrolment
+		// had retired, and completing MFA correctly would be the one thing that could not log you in.
+		verified = &core.User{ID: profile.ID, Username: profile.Username, CredentialEpoch: profile.CredentialEpoch}
 		delete(s.forest.MFAChallenges, claims.ChallengeID)
 		return nil
 	}); persistErr != nil {
@@ -270,9 +293,12 @@ func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, e
 }
 
 // resendMFAChallenge is the /mfa/start half: swap a fresh code into an existing live challenge and
-// re-enqueue it, resetting the attempt count but NOT extending the expiry, so a resend cannot keep a
-// challenge alive indefinitely. The challenge id is unchanged, so the bearer the client already
-// holds stays valid.
+// re-enqueue it, NOT extending the expiry, so a resend cannot keep a challenge alive indefinitely.
+// The challenge id is unchanged, so the bearer the client already holds stays valid.
+//
+// IT IS THE TRANSACTION, NOT THE POLICY. What a resend is allowed to be — the interval, the cap, the
+// one case that waives the interval, and why the guess budget below is conspicuously NOT reset — is
+// application_mfa_resend.go, stated once and decided by mayResend. Read it there.
 func (s *Server) resendMFAChallenge(challengeToken string) error {
 	claims, err := s.parseMFAChallengeToken(challengeToken)
 	if err != nil {
@@ -300,8 +326,32 @@ func (s *Server) resendMFAChallenge(challengeToken string) error {
 			outcome = apiErrorf(http.StatusUnauthorized, "Account unavailable")
 			return nil
 		}
+		// The SAME sentence an unknown challenge gets, for the same reason: a challenge whose account
+		// has been re-enrolled since is over, and saying so in different words would make this route
+		// report administrative activity to whoever is holding the bearer.
+		if !epochIsCurrent(claims.CredentialEpoch, profile.CredentialEpoch) {
+			delete(s.forest.MFAChallenges, claims.ChallengeID)
+			outcome = apiErrorf(http.StatusUnauthorized, "Invalid or expired challenge")
+			return nil
+		}
+		if refusal := mayResend(challenge, now); refusal != nil {
+			// NOTHING IS WRITTEN on a refusal. The challenge keeps its code, its budget and its
+			// delivery verdict, because a resend that was declined is not a failed login and the code
+			// already in the user's hand must still work.
+			outcome = refusal
+			return nil
+		}
 		challenge.CodeHash = s.mfaCodeHash(code)
-		challenge.Attempts = 0
+		// Attempts IS NOT RESET, and its absence here is the fix. The budget belongs to the challenge
+		// rather than to the code: resetting it let four wrong guesses, one resend and four more run
+		// twenty-eight tries at a six-digit space through a lockout built to allow five.
+		//
+		// Back to pending, though. The verdict on the record belongs to the code being REPLACED, and a
+		// client polling /mfa/delivery right after a successful resend would otherwise read the
+		// previous failure and conclude the resend had failed too — which is the one thing the
+		// resend button exists to escape.
+		clearChallengeDelivery(&challenge)
+		recordResend(&challenge, now)
 		s.forest.MFAChallenges[claims.ChallengeID] = challenge
 		s.enqueueOutboundMFA(&core.User{ID: profile.ID, Phone: profile.Phone}, claims.ChallengeID, code, now, challenge.ExpiresAt)
 		return nil

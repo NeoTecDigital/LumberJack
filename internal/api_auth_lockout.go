@@ -159,14 +159,24 @@ func (server *Server) clearLoginFailures(userID string) {
 	}
 }
 
-// principalIsUsable reports whether an account still exists and is not shut. It is what a bearer that
-// was issued EARLIER has to be re-checked against, because a signature proves only who signed it and
-// when — not that the account it names is still one the server will act for.
-func (server *Server) principalIsUsable(userID string) bool {
+// usablePrincipal reports whether an account still exists and is not shut, AND which generation of
+// its rules a credential must have been minted under to still count. It is what a bearer that was
+// issued EARLIER has to be re-checked against, because a signature proves only who signed it and
+// when — not that the account it names is still one the server will act for, nor that what it takes
+// to be that account is what it was.
+//
+// The epoch comes back from here rather than from a second read because the caller needs both
+// answers about the SAME profile, and two reads are two chances to be told about two different
+// states of the account. epochIsCurrent is the comparison; see application_credential_epoch.go.
+func (server *Server) usablePrincipal(userID string) (int64, bool) {
+	epoch := int64(0)
 	usable := false
 	server.readForest(func() {
 		profile, err := server.forest.GetUserProfile(userID)
-		usable = err == nil && profile.LockedUntil <= time.Now().Unix()
+		if err != nil || profile.LockedUntil > time.Now().Unix() {
+			return
+		}
+		epoch, usable = profile.CredentialEpoch, true
 	})
-	return usable
+	return epoch, usable
 }

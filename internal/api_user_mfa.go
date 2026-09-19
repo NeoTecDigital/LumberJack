@@ -81,8 +81,24 @@ func (server *Server) handleSetUserMfa(w http.ResponseWriter, r *http.Request) {
 			return apiErrorf(http.StatusBadRequest, "Enabling a second factor needs a phone of at least four digits")
 		}
 
+		// WHAT WAS ISSUED UNDER THE OLD RULES STOPS HERE, and this is the whole of where that is
+		// decided. Turning a second factor ON was not retroactive: the browser cookie, the JWT session
+		// and above all the seven-day refresh token all kept working, so enrolling an account because
+		// its password had been spent shut a door the attacker had already walked through. Re-pointing
+		// the NUMBER has the same shape — a code already travelling to the handset that was just taken
+		// away still completed the login — which is why both count, not only the flag.
+		//
+		// ON A REAL CHANGE ONLY. An administrator who opens the console and saves the account it is
+		// already showing has changed nothing and must not sign that user out; the comparison is
+		// against the normalised phone, so two spellings of one line are the same line here exactly as
+		// they are at the ownership gate.
+		changed := server.forest.Users[index].Phone != phone ||
+			server.forest.Users[index].MFAEnabled != request.MFAEnabled
 		server.forest.Users[index].Phone = phone
 		server.forest.Users[index].MFAEnabled = request.MFAEnabled
+		if changed {
+			retireCredentialsLocked(&server.forest.Users[index])
+		}
 		view = newUserView(server.forest.Users[index])
 		return nil
 	}); err != nil {

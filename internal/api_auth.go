@@ -250,13 +250,21 @@ func (server *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request)
 	// whether the account still existed. So deleting an account did not end its sessions, and locking
 	// one did not stop it: the holder refreshed straight past both for seven days. A signature proves
 	// who signed it and when; it cannot prove the account is still one this server will act for.
-	if !server.principalIsUsable(claims.UserID) {
+	// AND WHAT IT TAKES TO BE THAT ACCOUNT IS RE-CHECKED TOO, which is the other half of the same
+	// hole. Existence and lock state were asked about; the account's RULES were not — so a refresh
+	// token minted while an account was password-only went on minting fresh sessions for a week after
+	// an administrator turned a second factor on, with no code presented at any point. Enrolling an
+	// account BECAUSE its password had been spent left the attacker's longest-lived credential
+	// untouched.
+	epoch, usable := server.usablePrincipal(claims.UserID)
+	if !usable || !epochIsCurrent(claims.CredentialEpoch, epoch) {
 		http.Error(w, "Invalid refresh token", http.StatusUnauthorized)
 		return
 	}
 
-	// Generate new session token
-	user := &core.User{ID: claims.UserID, Username: claims.Username}
+	// Generate new session token, under the epoch the account is on NOW — which the check above has
+	// just proved this token is still entitled to.
+	user := &core.User{ID: claims.UserID, Username: claims.Username, CredentialEpoch: epoch}
 	tokenPair, err := server.generateTokenPair(user)
 	if err != nil {
 		http.Error(w, "Failed to generate tokens", http.StatusInternalServerError)
@@ -323,6 +331,14 @@ type TokenClaims struct {
 	// challenge, so its signed claims are byte-for-byte what they were before MFA existed, and a
 	// login that does not require a second factor is unchanged on the wire.
 	ChallengeID string `json:"challenge_id,omitempty"`
+	// CredentialEpoch is the generation of the account's rules this token was minted under, and the
+	// only thing that lets a bearer whose authority is entirely in its own signature be withdrawn
+	// before it expires. See application_credential_epoch.go.
+	//
+	// omitempty ON THE SAME GROUNDS as ChallengeID's: an account nobody has ever re-enrolled is on
+	// epoch zero, so its tokens carry no such claim and their signed bytes are what they were before
+	// any of this existed. An old token read back is epoch zero too, which is the truth about it.
+	CredentialEpoch int64 `json:"credential_epoch,omitempty"`
 	jwt.StandardClaims
 }
 
@@ -356,6 +372,18 @@ func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		claims, ok := token.Claims.(*TokenClaims)
 		if !ok || claims.TokenType != "session" {
+			http.Error(w, "Invalid session token", http.StatusUnauthorized)
+			return
+		}
+
+		// THE ONE FOREST READ ON THIS PATH, and the only way a JWT is ever withdrawn. Nothing stores
+		// this token, so there is nothing to delete when an administrator changes what it takes to be
+		// this account; the signature stays valid for its whole hour regardless. Comparing the epoch
+		// it was minted under against the one the account is on now is what makes an enrolment
+		// retroactive — and it refuses a token for an account that has since gone, which its own
+		// signature could otherwise outlive. The SAME sentence as every other refusal here, so the
+		// guard discloses nothing by having a new reason.
+		if !server.credentialIsCurrent(claims.UserID, claims.CredentialEpoch) {
 			http.Error(w, "Invalid session token", http.StatusUnauthorized)
 			return
 		}
@@ -409,10 +437,16 @@ func (server *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (stri
 
 func (server *Server) generateTokenPair(user *core.User) (*TokenPair, error) {
 	// Generate session token (short-lived)
+	// BOTH TOKENS CARRY THE CALLER'S EPOCH, and the caller is responsible for it being the CURRENT
+	// one. Every path here is handed a user read out of the forest — findUserByName at /login,
+	// usablePrincipal at /refresh, the profile consumeMFAChallenge copies from — precisely so that
+	// this mint never has to guess. A user assembled from JWT claims alone would stamp the zero epoch
+	// on a fresh token and retire it the moment it was issued.
 	sessionClaims := TokenClaims{
-		UserID:    user.ID,
-		Username:  user.Username,
-		TokenType: "session",
+		UserID:          user.ID,
+		Username:        user.Username,
+		TokenType:       "session",
+		CredentialEpoch: user.CredentialEpoch,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
 			IssuedAt:  time.Now().Unix(),
@@ -427,9 +461,10 @@ func (server *Server) generateTokenPair(user *core.User) (*TokenPair, error) {
 
 	// Generate refresh token (long-lived)
 	refreshClaims := TokenClaims{
-		UserID:    user.ID,
-		Username:  user.Username,
-		TokenType: "refresh",
+		UserID:          user.ID,
+		Username:        user.Username,
+		TokenType:       "refresh",
+		CredentialEpoch: user.CredentialEpoch,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
 			IssuedAt:  time.Now().Unix(),

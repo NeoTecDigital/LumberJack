@@ -27,7 +27,7 @@ var errServerShuttingDown = apiErrorf(http.StatusServiceUnavailable, "server is 
 // every client — so a 429 tells client B it sent too many requests when client A saturated the pool.
 // RFC 7231 §6.6.4's 503 is the closer match for server-side overload; 429 is the accepted trade for a
 // boundary status that reads as one thing. See statusForError and the Retry-After below.
-var errServerBusy = apiErrorf(http.StatusTooManyRequests, "server is busy")
+var errServerBusy = apiErrorRetryAfter(http.StatusTooManyRequests, retryAfterBusySeconds, "server is busy")
 
 // retryAfterBusySeconds is the Retry-After a 429 carries, which RFC 6585 §4 says it SHOULD. The pool
 // drains a queued read in the time one projection takes, so a one-second hint is honest and keeps a

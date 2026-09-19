@@ -42,6 +42,12 @@ import (
 type apiError struct {
 	status  int
 	message string
+	// retryAfter is the Retry-After this failure should carry, in seconds, or "" for none. It is on
+	// the ERROR rather than inferred from the status because the two 429s this engine raises wait for
+	// different lengths of time: a busy worker pool drains in about a second, and a second-factor
+	// resend may be half a minute away. writeAPIError guessing "1" for both told one of them a
+	// number that was simply wrong, which is worse than saying nothing.
+	retryAfter string
 }
 
 func (e *apiError) Error() string { return e.message }
@@ -49,6 +55,11 @@ func (e *apiError) Error() string { return e.message }
 // apiErrorf builds a failure a client is answerable for.
 func apiErrorf(status int, format string, args ...interface{}) *apiError {
 	return &apiError{status: status, message: fmt.Sprintf(format, args...)}
+}
+
+// apiErrorRetryAfter builds one that also says how long to wait, which RFC 6585 §4 says a 429 SHOULD.
+func apiErrorRetryAfter(status int, retryAfter, format string, args ...interface{}) *apiError {
+	return &apiError{status: status, message: fmt.Sprintf(format, args...), retryAfter: retryAfter}
 }
 
 // writeAPIError answers a failure.
@@ -59,9 +70,11 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	var carried *apiError
 	if errors.As(err, &carried) {
 		// RFC 6585 §4: a 429 SHOULD say how long to wait. The header must be set BEFORE http.Error,
-		// which calls WriteHeader and freezes the header block. errServerBusy is the only 429 today.
-		if carried.status == http.StatusTooManyRequests {
-			w.Header().Set("Retry-After", retryAfterBusySeconds)
+		// which calls WriteHeader and freezes the header block. The number comes from the ERROR and
+		// not from the status: there is more than one 429 here now, and they do not wait the same
+		// length of time.
+		if carried.retryAfter != "" {
+			w.Header().Set("Retry-After", carried.retryAfter)
 		}
 		http.Error(w, carried.message, carried.status)
 		return

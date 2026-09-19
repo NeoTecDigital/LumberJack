@@ -311,6 +311,11 @@ func (s *Server) routes() *mux.Router {
 	// which is why these sit OUTSIDE it, beside the credential exchange they belong to.
 	router.HandleFunc("/mfa/verify", s.handleMfaVerify).Methods("POST")
 	router.HandleFunc("/mfa/start", s.handleMfaStart).Methods("POST")
+	// The pair's read, public for the same reason and holding the same credential. It answers
+	// whether the code for a challenge has gone out yet, which a client cannot learn any other way:
+	// the forward-dispatcher runs in another process and a give-up used to leave no trace at all.
+	// It submits no code, so it can spend no guess — see handleMfaDelivery.
+	router.HandleFunc("/mfa/delivery", s.handleMfaDelivery).Methods("POST")
 
 	s.registerRecordRoutes(router)
 	s.registerQueryRoutes(router)

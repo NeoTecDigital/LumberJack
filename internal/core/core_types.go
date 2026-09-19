@@ -188,4 +188,15 @@ type User struct {
 	MFAEnabled   bool         `json:"mfa_enabled,omitempty"`
 	FailedLogins int          `json:"failed_logins,omitempty"`
 	LockedUntil  int64        `json:"locked_until,omitempty"`
+	// CredentialEpoch is which generation of this account's rules a credential had to be minted under
+	// to still be honoured. It rises when an administrator changes what it takes to be this user —
+	// today, only the second factor — and every session, refresh token and challenge carries the value
+	// it was minted under, so raising it retires all of them at once without a sweep. See
+	// internal/application_credential_epoch.go, which is the only thing that reads or writes it.
+	//
+	// It is NOT MFAEpoch, on purpose: a password change and an administrative "sign this account out
+	// everywhere" retire credentials for exactly the same reason and belong on the same counter. The
+	// zero value is the first generation, so no account and no credential in an existing state file
+	// needs migrating.
+	CredentialEpoch int64 `json:"credential_epoch,omitempty"`
 }
