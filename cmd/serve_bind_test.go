@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package cmd
 
 import (
