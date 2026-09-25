@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 
@@ -20,47 +19,14 @@ func validEventID(eventID string) bool {
 	return strings.TrimSpace(eventID) != ""
 }
 
-// HTTP handler for assigning a user
+// handleAssignUser retains the route only to explain its retirement. All audience
+// changes must carry the canonical access preview revision.
 func (server *Server) handleAssignUser(w http.ResponseWriter, r *http.Request) {
-	server.logger.Enter("AssignUser")
-	defer server.logger.Exit("AssignUser")
-
-	userID, ok := userIDFrom(r)
-	if !ok {
+	if _, ok := userIDFrom(r); !ok {
 		http.Error(w, "No user in session", http.StatusUnauthorized)
 		return
 	}
-
-	var request struct {
-		Path       string          `json:"path"`
-		AssigneeID string          `json:"assignee_id"`
-		Permission core.Permission `json:"permission"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	err := server.changeNode(request.Path, userID, core.AdminPermission, func(node *core.Node) error {
-		assignee := core.User{ID: request.AssigneeID}
-		if err := node.AssignUser(assignee, request.Permission); err != nil {
-			return apiErrorf(http.StatusBadRequest, "%v", err)
-		}
-
-		node.AddActivity("assign_user", map[string]interface{}{
-			"assignee_id": request.AssigneeID,
-			"permission":  request.Permission,
-		}, userID)
-		return nil
-	})
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-
-	server.publish(mutation(mutationMetadataSet, request.Path))
-	w.WriteHeader(http.StatusOK)
+	http.Error(w, "Legacy assignment is retired. Use /access/preview and /access/apply.", http.StatusGone)
 }
 
 // HTTP handler for starting an event

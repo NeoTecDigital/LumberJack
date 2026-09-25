@@ -56,14 +56,13 @@ func (s *Server) recordCompatibilityChanges(before *correspondenceSnapshot) {
 		}
 		recipients := []string{}
 		for _, user := range s.forest.Users {
-			if user.ID != SystemUserID && node.CheckPermission(user.ID, core.ReadPermission) {
+			if user.ID != SystemUserID && node.CheckPermission(user.ID, core.ReadPermission) && s.forest.Subscriptions[user.ID][node.ID] {
 				recipients = append(recipients, user.ID)
 			}
 		}
-		// Legacy writes may not carry a reliable author stamp. Do not attribute
-		// them to whoever last edited the pin. Shared readers receive a neutral
-		// resource-change notification; an unshared pin needs no self-notification.
-		if len(recipients) < 2 {
+		// Legacy writes may lack an author stamp. Only explicit subscribers get
+		// neutral updates; a resource ACL is not a notification subscription.
+		if len(recipients) == 0 {
 			return
 		}
 		sort.Strings(recipients)

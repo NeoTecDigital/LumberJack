@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package core
 
 // MFAChallenge is one pending second factor, keyed by challenge id on the forest.
@@ -30,6 +31,12 @@ package core
 // without the send that created it, so Sends == 0 reads as one send and LastSendAt == 0 reads as
 // CreatedAt — which is exactly when that one send happened.
 type MFAChallenge struct {
+	Method        string `json:"method,omitempty"`
+	Secret        string `json:"secret,omitempty"`
+	Target        string `json:"target,omitempty"`
+	SessionKey    string `json:"session_key,omitempty"`
+	Ceremony      []byte `json:"ceremony,omitempty"`
+	Approved      bool   `json:"approved,omitempty"`
 	UserID        string `json:"user_id"`
 	CodeHash      string `json:"code_hash"`
 	Attempts      int    `json:"attempts"`

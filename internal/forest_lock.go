@@ -143,6 +143,7 @@ func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, err
 	if err := change(); err != nil {
 		return stateSnapshot{}, err
 	}
+	server.refreshAccessGrantsLocked()
 	if before != nil {
 		server.recordCompatibilityChanges(before)
 	}

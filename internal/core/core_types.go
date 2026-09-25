@@ -135,16 +135,21 @@ type Node struct {
 	// It is internal state and is excluded from user-facing node projections.
 	Correspondence      *CorrespondenceState          `json:"correspondence,omitempty"`
 	ApplicationSessions map[string]ApplicationSession `json:"application_sessions,omitempty"`
+	Subscriptions       map[string]map[string]bool    `json:"subscriptions,omitempty"`
+	Conversations       map[string]*Conversation      `json:"conversations,omitempty"`
+	AccessPolicies      map[string]AccessGrant        `json:"access_policies,omitempty"`
+	AccessGrants        map[string]AccessGrant        `json:"access_grants,omitempty"`
+	AccountSecurity     map[string]AccountSecurity    `json:"account_security,omitempty"`
 	// MFAChallenges is the forest's pending second-factor store, keyed by challenge id. Like
 	// ApplicationSessions it is backend state excluded from every user-facing node projection, and it
 	// holds only a keyed hash of each code — never the code — with an attempt count and an expiry, so
 	// a state file leak cannot be replayed into a login and a stalled challenge sweeps itself out.
 	MFAChallenges map[string]MFAChallenge `json:"mfa_challenges,omitempty"`
 	mutex         sync.RWMutex            `json:"-"`
-	CreatedBy           string                        `json:"created_by,omitempty"`
-	CreatedAt           time.Time                     `json:"created_at,omitempty"`
-	ModifiedBy          string                        `json:"modified_by,omitempty"`
-	ModifiedAt          time.Time                     `json:"modified_at,omitempty"`
+	CreatedBy     string                  `json:"created_by,omitempty"`
+	CreatedAt     time.Time               `json:"created_at,omitempty"`
+	ModifiedBy    string                  `json:"modified_by,omitempty"`
+	ModifiedAt    time.Time               `json:"modified_at,omitempty"`
 }
 
 // Add to existing types

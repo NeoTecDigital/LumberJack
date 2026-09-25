@@ -86,7 +86,11 @@ type Server struct {
 	// after a newer one.
 	stateSeq uint64
 	// stateWriter makes snapshots durable with the forest UNHELD. See state_writer.go.
-	stateWriter *stateWriter
+	stateWriter    *stateWriter
+	storageOnce    sync.Once
+	storage        *secureStorage
+	storageErr     error
+	storageRewrite bool
 	// mutations is the fan-out behind GET /stream. Published to AFTER a change is persisted and
 	// acknowledged, never before: announcing something that has not been written is the same lie
 	// as a 200 for it.

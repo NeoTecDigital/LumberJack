@@ -14,7 +14,7 @@ import (
 // Called while committing a command, so the work and its pending delivery are
 // always part of the same durable snapshot. The hub never observes a half-write.
 func (s *Server) enqueueCorrespondence(actor string, cmd WorkCommand, path string) {
-	if cmd.Command == "preferences" || cmd.Command == "initialize" {
+	if cmd.Command == "preferences" || cmd.Command == "initialize" || cmd.Command == "subscribe" {
 		return
 	}
 	node, err := s.getNodeFromPath(path)
@@ -26,7 +26,15 @@ func (s *Server) enqueueCorrespondence(actor string, cmd WorkCommand, path strin
 	recipients := []string{}
 	for _, user := range s.forest.Users {
 		if user.ID != SystemUserID && user.ID != actor && node.CheckPermission(user.ID, core.ReadPermission) {
-			recipients = append(recipients, user.ID)
+			// A sharing alert belongs to its explicit recipient, regardless of
+			// other members' subscriptions to ordinary activity on this item.
+			if cmd.Command == "share" && cmd.Username != user.Username {
+				continue
+			}
+			direct := (cmd.Command == "share" && cmd.Username == user.Username) || cmd.AssignedTo == user.ID || node.Kind == "conversation"
+			if direct || s.forest.Subscriptions[user.ID][node.ID] {
+				recipients = append(recipients, user.ID)
+			}
 		}
 	}
 	sort.Strings(recipients)
@@ -345,6 +353,9 @@ func (s *Server) handleApplicationNotifications(w http.ResponseWriter, r *http.R
 				c := item.Change
 				node, err := s.getNodeFromPath(c.Path)
 				if err != nil || node.ID != c.PinID || !node.CheckPermission(userID, core.ReadPermission) {
+					continue
+				}
+				if c.Operation != "share" && node.Kind != "conversation" && !s.forest.Subscriptions[userID][node.ID] && node.Metadata["assigned_to"] != userID {
 					continue
 				}
 				actor := "A member"

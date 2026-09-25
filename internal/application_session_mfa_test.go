@@ -108,9 +108,9 @@ func TestApplicationSessionLast4MismatchIsTheSameRefusalAsABadPassword(t *testin
 		t.Errorf("a wrong last-four answered %d %q; a wrong password answers %d %q",
 			badLast4.Status, string(badLast4.Body), badPassword.Status, string(badPassword.Body))
 	}
-	if noLast4.Status != badPassword.Status || string(noLast4.Body) != string(badPassword.Body) {
-		t.Errorf("a missing last-four answered %d %q; a wrong password answers %d %q",
-			noLast4.Status, string(noLast4.Body), badPassword.Status, string(badPassword.Body))
+	if noLast4.Status != 200 || !strings.Contains(string(noLast4.Body), "phone_required") {
+		t.Errorf("a missing last-four must answer 200 with phone_required; got %d %q",
+			noLast4.Status, string(noLast4.Body))
 	}
 	var challenges int
 	var outbound int

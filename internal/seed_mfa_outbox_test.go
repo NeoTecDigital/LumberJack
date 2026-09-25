@@ -1,5 +1,6 @@
 //go:build momentum_seed
 
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package internal
 
 import (
@@ -13,8 +14,8 @@ import (
 )
 
 // TestSeedMFAOutboxForDrain is not a unit test: it is the seeder the Julia integrated drain
-// (momentum's backend/tests/hub_outbound.jl) shells out to. No MFA-enrolment route exists on the wire
-// yet, so an MFA account is planted here in-process instead. It stands the embedded engine up over
+// (momentum's backend/tests/hub_outbound.jl) shells out to. The SMS fixture is
+// planted in-process without contacting a provider. It stands the embedded engine up over
 // <MOMENTUM_SEED_DIR>/momentum.dat — the exact state file the intercessor opens with name="momentum" —
 // plants one MFA-enabled account, drives the engine's OWN login path so a real code lands on the
 // external outbox, and leaves the persisted forest for the Julia runtime to open and drain.
@@ -44,6 +45,7 @@ import (
 //	    seed_mfa_outbox_test.go:49: MOMENTUM_SEED_DIR unset: the momentum_seed tag opts in to seeding, so a missing target dir is a misuse, not a skip
 //	FAIL
 func TestSeedMFAOutboxForDrain(t *testing.T) {
+	t.Setenv("MOMENTUM_REQUIRE_MFA", "true")
 	dir := os.Getenv("MOMENTUM_SEED_DIR")
 	if dir == "" {
 		t.Fatal("MOMENTUM_SEED_DIR unset: the momentum_seed tag opts in to seeding, so a missing target dir is a misuse, not a skip")

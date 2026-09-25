@@ -1,11 +1,15 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package core
 
 // Only a keyed hash of each opaque credential is persisted. Session records
 // remain backend state and are excluded from every user-facing node view.
 type ApplicationSession struct {
-	UserID    string `json:"user_id"`
-	CreatedAt int64  `json:"created_at"`
-	ExpiresAt int64  `json:"expires_at"`
+	UserID       string `json:"user_id"`
+	CreatedAt    int64  `json:"created_at"`
+	ExpiresAt    int64  `json:"expires_at"`
+	LastActiveAt int64  `json:"last_active_at,omitempty"`
+	MFAAt        int64  `json:"mfa_at,omitempty"`
+	DeviceName   string `json:"device_name,omitempty"`
 	// CredentialEpoch is the generation of the account's rules this session was minted under, read
 	// back on every request it authenticates. A stored record could have been DELETED when the rules
 	// changed instead — but a delete pass and a mint that is already in flight do not serialize

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/gorilla/mux"
 )
 
 // Canvas persistence: node metadata, and the DAG edges the diagram is drawn from.
@@ -82,8 +82,9 @@ func mergeMetadata(node *core.Node, patch map[string]interface{}, userID string)
 
 // linkRequest names an edge.
 type linkRequest struct {
-	ParentPath string `json:"parent_path"`
-	ChildPath  string `json:"child_path"`
+	ParentPath      string `json:"parent_path"`
+	ChildPath       string `json:"child_path"`
+	SharingRevision string `json:"sharing_revision,omitempty"`
 }
 
 // POST /nodes/link — add a parent to a node, which is what makes the structure a DAG.
@@ -107,7 +108,7 @@ func (server *Server) handleLinkNode(w http.ResponseWriter, r *http.Request) {
 		// that acknowledges the edge would recurse until the stack ran out, and the acknowledgment
 		// would be for a forest that can never be written again.
 		if reaches(child, parent.ID) {
-			return apiErrorf(http.StatusConflict,
+			return apiErrorf(http.StatusBadRequest,
 				"linking %s under %s would make a cycle", child.Name, parent.Name)
 		}
 
@@ -167,6 +168,7 @@ func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, announc
 		return
 	}
 
+	changedAudience := []map[string]interface{}{}
 	err := server.changeForest(func() error {
 		parent, err := server.getNodeFromPath(parentPath)
 		if err != nil {
@@ -181,17 +183,47 @@ func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, announc
 			!child.CheckPermission(userID, core.WritePermission) {
 			return apiErrorf(http.StatusForbidden, "Insufficient permissions")
 		}
+		action := "link"
+		if announce == mutationNodeUnlinked {
+			action = "unlink"
+		}
+		preview, err := server.linkAccessPreviewLocked(accessRequest{Action: action, ParentPath: parentPath, ChildPath: childPath}, userID)
+		if err != nil {
+			return err
+		}
+		changedAudience = preview["items"].([]map[string]interface{})
+		if len(changedAudience) > 0 && request.SharingRevision != preview["revision"] {
+			return apiErrorf(409, "This relationship changes sharing. Review its access preview before applying.")
+		}
 		// No Type check on the parent: a node holds children and events at once (phase 18.3), so any
 		// node can hold a linked child. This once refused a leaf parent — the leaf-only invariant this
 		// phase removed. A cycle is still refused, in the link change itself.
 
-		return change(parent, child, userID)
+		if err := change(parent, child, userID); err != nil {
+			return err
+		}
+		server.refreshAccessGrantsLocked()
+		graph := server.accessGraphLocked()
+		for _, item := range changedAudience {
+			server.stopRevokedAccessTimer(graph.nodes[item["id"].(string)], item["recipient_id"].(string), userID)
+		}
+		return nil
 	})
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
 
+	// Announce each affected pre-change path so a stream which knew a revoked
+	// descendant replaces its projection, even when it did not see the edge.
+	seen := map[string]bool{childPath: true}
+	for _, item := range changedAudience {
+		path := item["path"].(string)
+		if !seen[path] {
+			server.publish(mutation(announce, path))
+			seen[path] = true
+		}
+	}
 	server.publish(mutation(announce, childPath))
 	w.WriteHeader(http.StatusOK)
 }

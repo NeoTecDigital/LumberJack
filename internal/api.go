@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
+	"github.com/gorilla/mux"
 )
 
 // jwtSecretEnv names the environment variable the session signing key comes from. There is exactly
@@ -316,6 +316,10 @@ func (s *Server) routes() *mux.Router {
 	// the forward-dispatcher runs in another process and a give-up used to leave no trace at all.
 	// It submits no code, so it can spend no guess — see handleMfaDelivery.
 	router.HandleFunc("/mfa/delivery", s.handleMfaDelivery).Methods("POST")
+	router.HandleFunc("/auth/factor", s.handleAccountAuthentication).Methods("POST")
+	router.HandleFunc("/auth/webauthn/finish", s.handleAccountAuthentication).Methods("POST")
+	router.HandleFunc("/auth/qr", s.handleAccountAuthentication).Methods("POST")
+	router.HandleFunc("/auth/qr/poll", s.handleAccountAuthentication).Methods("POST")
 
 	s.registerRecordRoutes(router)
 	s.registerQueryRoutes(router)
@@ -372,6 +376,15 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 // the live feed.
 func (s *Server) registerQueryRoutes(router *mux.Router) {
 	router.HandleFunc("/workspace", s.authMiddleware(s.handleWorkspace)).Methods("GET")
+	router.HandleFunc("/access", s.authMiddleware(s.handleAccess)).Methods("GET")
+	router.HandleFunc("/access/preview", s.authMiddleware(s.handleAccess)).Methods("POST")
+	router.HandleFunc("/access/apply", s.authMiddleware(s.handleAccess)).Methods("POST")
+	router.HandleFunc("/conversations", s.authMiddleware(s.handleConversations)).Methods("GET")
+	router.HandleFunc("/conversations", s.authMiddleware(s.handleConversations)).Methods("POST")
+	router.HandleFunc("/conversations/{id}/messages", s.authMiddleware(s.handleConversations)).Methods("GET")
+	router.HandleFunc("/conversations/{id}/messages", s.authMiddleware(s.handleConversations)).Methods("POST")
+	router.HandleFunc("/conversations/{id}/membership", s.authMiddleware(s.handleConversations)).Methods("POST")
+	router.HandleFunc("/conversations/{id}/preferences", s.authMiddleware(s.handleConversations)).Methods("PATCH")
 	router.HandleFunc("/workspace/commands", s.authMiddleware(s.handleWorkCommand)).Methods("POST")
 	// The query layer. One predicate grammar, two entry points, and the discovery routes that are
 	// thin wrappers over the first of them rather than a second implementation.
@@ -400,6 +413,11 @@ func (s *Server) registerQueryRoutes(router *mux.Router) {
 
 // registerAccountRoutes registers the user and settings routes.
 func (s *Server) registerAccountRoutes(router *mux.Router) {
+	router.HandleFunc("/account/security", s.authMiddleware(s.handleAccountSecurity)).Methods("GET")
+	router.HandleFunc("/account/security", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
+	router.HandleFunc("/account/webauthn/begin", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
+	router.HandleFunc("/account/webauthn/finish", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
+	router.HandleFunc("/account/qr/approve", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")
 	router.HandleFunc("/users/assign", s.authMiddleware(s.handleAssignUser)).Methods("POST")
 	router.HandleFunc("/users/profile", s.authMiddleware(s.handleGetUserProfile)).Methods("GET")

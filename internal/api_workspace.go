@@ -15,6 +15,8 @@ import (
 )
 
 type workCommand struct {
+	Shared       bool                   `json:"shared,omitempty"`
+	Subscribed   bool                   `json:"subscribed,omitempty"`
 	Command      string                 `json:"command"`
 	Path         string                 `json:"path"`
 	ClientID     string                 `json:"client_id"`
@@ -62,7 +64,10 @@ func workRevision(node *core.Node) string {
 
 func (server *Server) workView(node *core.Node, path, userID string) map[string]interface{} {
 	members := []map[string]interface{}{}
-	for _, member := range node.Users {
+	for _, member := range server.forest.Users {
+		if node != server.forest && !node.CheckPermission(member.ID, core.ReadPermission) {
+			continue
+		}
 		// Account inventory is not a resource membership list.
 		if node == server.forest && member.ID != userID && !node.CheckPermission(userID, core.AdminPermission) {
 			continue
@@ -75,6 +80,9 @@ func (server *Server) workView(node *core.Node, path, userID string) map[string]
 			"permission": workPermission(node, member.ID)})
 	}
 	return map[string]interface{}{"id": node.ID, "path": path, "name": node.Name, "kind": node.Kind,
+		"creation_audience": server.creationAudience(node, userID),
+		"subscribed":        server.forest.Subscriptions[userID][node.ID],
+		"created_by":        node.CreatedBy, "created_at": node.CreatedAt,
 		"metadata": workMetadata(node), "revision": workRevision(node), "permission": workPermission(node, userID),
 		"members": members, "entries": newEntryViews(node.Entries), "events": newEventViews(node.Events),
 		"planned_events": newEventViews(node.PlannedEvents), "attachments": newAttachmentViews(node.Attachments)}
@@ -188,6 +196,12 @@ func (server *Server) handleWorkCommand(w http.ResponseWriter, r *http.Request) 
 
 // ApplyWorkCommand validates, commits and acknowledges one application command.
 func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, error) {
+	if cmd.Command == "share" || cmd.Shared {
+		return nil, apiErrorf(410, "Legacy sharing is retired. Use /access/preview and /access/apply.")
+	}
+	if cmd.Command == "chat" {
+		return nil, apiErrorf(410, "Legacy chat is retired. Use /conversations with explicit invitations.")
+	}
 	if cmd.Path == "" || cmd.ClientID == "" || len(cmd.ClientID) > 100 {
 		return nil, apiErrorf(400, "A target and command identity are required")
 	}
@@ -204,7 +218,11 @@ func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, 
 			return apiErrorf(404, "Work was not found")
 		}
 		initializing := cmd.Command == "initialize" && node == server.forest
-		if !initializing && !node.CheckPermission(userID, core.WritePermission) {
+		required := core.WritePermission
+		if cmd.Command == "subscribe" {
+			required = core.ReadPermission
+		}
+		if !initializing && !node.CheckPermission(userID, required) {
 			return apiErrorf(403, "You can view this work but cannot change it")
 		}
 		if node.Metadata == nil {
@@ -230,6 +248,14 @@ func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, 
 		}
 		var result interface{}
 		switch cmd.Command {
+		case "subscribe":
+			if server.forest.Subscriptions == nil {
+				server.forest.Subscriptions = map[string]map[string]bool{}
+			}
+			if server.forest.Subscriptions[userID] == nil {
+				server.forest.Subscriptions[userID] = map[string]bool{}
+			}
+			server.forest.Subscriptions[userID][node.ID] = cmd.Subscribed
 		case "initialize":
 			if node != server.forest {
 				return apiErrorf(400, "Initialize from the workspace root")
@@ -259,6 +285,7 @@ func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, 
 			if err != nil {
 				return err
 			}
+
 			changedPath = server.canonicalPath(cmd.Path) + "/" + child.Name
 			result = map[string]interface{}{"id": child.ID, "path": changedPath}
 			mutationKind = mutationNodeCreated
@@ -395,70 +422,7 @@ func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, 
 			node.PlannedEvents[eventID] = planned
 			result = map[string]interface{}{"event_id": eventID}
 			mutationKind = mutationEventPlanned
-		case "share":
-			if node == server.forest {
-				return apiErrorf(400, "Share a workspace or work item; account access is managed separately")
-			}
-			if !node.CheckPermission(userID, core.AdminPermission) {
-				return apiErrorf(403, "Only an owner can change members")
-			}
-			if cmd.Permission == nil || *cmd.Permission < -1 || *cmd.Permission > 2 {
-				return apiErrorf(400, "Choose a valid permission")
-			}
-			var memberID string
-			for _, user := range server.forest.Users {
-				if user.Username == cmd.Username {
-					memberID = user.ID
-				}
-			}
-			if memberID == "" {
-				return apiErrorf(404, "No account with that username")
-			}
-			if memberID == userID && *cmd.Permission < 2 {
-				return apiErrorf(409, "Ask another owner to change your access")
-			}
-			targets := []*core.Node{node}
-			if cmd.Recursive {
-				targets = nil
-				_ = server.walkScope(cmd.Path, nil, func(at visit) { targets = append(targets, at.node) })
-			}
-			for _, target := range targets {
-				if !target.CheckPermission(userID, core.AdminPermission) {
-					return apiErrorf(403, "You must own every included item to change access to the subtree")
-				}
-			}
-			for _, target := range targets {
-				// Revoking edit access must not strand a user's global active timer.
-				if *cmd.Permission < 1 {
-					if active := workActive(target, memberID); active != nil {
-						eventID, _ := active.Metadata["event_id"].(string)
-						if event, exists := target.Events[eventID]; exists && event.EndTime == nil {
-							now := time.Now()
-							event.EndTime, event.Status = &now, core.EventFinished
-							event.ModifiedBy, event.ModifiedAt = userID, now
-							target.Events[eventID] = event
-						}
-						target.AddEntry(core.TimeEntryStop, map[string]interface{}{"event_id": eventID, "stopped_by": userID, "reason": "access_changed"}, memberID, "", "")
-						_ = server.walkScope("", nil, func(at visit) {
-							if at.node == target {
-								ended := mutation(mutationEventEnded, at.path)
-								ended.EventID = eventID
-								additional = append(additional, ended, mutation(mutationEntryAdded, at.path))
-							}
-						})
-					}
-				}
-				kept := []core.User{}
-				for _, user := range target.Users {
-					if user.ID != memberID {
-						kept = append(kept, user)
-					}
-				}
-				if *cmd.Permission >= 0 {
-					kept = append(kept, core.User{ID: memberID, Permissions: []core.Permission{core.Permission(*cmd.Permission)}})
-				}
-				target.Users = kept
-			}
+
 		case "run":
 			result, err = server.workRun(node, cmd.TemplatePath, userID)
 			if err != nil {
@@ -502,7 +466,7 @@ func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, 
 
 func workKind(kind string) bool {
 	switch kind {
-	case "idea", "goal", "action", "procedure", "workflow", "document", "run", "workspace", "collection":
+	case "idea", "project", "category", "goal", "action", "procedure", "workflow", "document", "run", "workspace", "collection", "conversation":
 		return true
 	}
 	return false
@@ -533,14 +497,6 @@ func (server *Server) workChild(parent *core.Node, title, kind, userID string) (
 	// The forest's user inventory is not an invitation to newly created work.
 	child.Users = []core.User{{ID: userID, Permissions: []core.Permission{core.AdminPermission}}}
 	child.Metadata = map[string]interface{}{"title": title, "status": "idea", "intent_id": parent.ID}
-	if parent != server.forest {
-		for _, member := range parent.Users {
-			if member.ID == userID {
-				continue
-			}
-			child.AssignUser(core.User{ID: member.ID}, core.Permission(workPermission(parent, member.ID)))
-		}
-	}
 	return child, nil
 }
 

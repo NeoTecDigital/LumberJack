@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -227,6 +226,10 @@ func (s *Server) verifyMFAChallenge(challengeToken, code string) (*TokenPair, er
 // that still exists. It returns a MINIMAL user — id and username — because that is all either caller
 // needs and the hash has no business leaving the forest.
 func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, error) {
+	return s.consumeAccountChallenge(challengeToken, code, "")
+}
+
+func (s *Server) consumeAccountChallenge(challengeToken, code, sessionKey string) (*core.User, error) {
 	claims, err := s.parseMFAChallengeToken(challengeToken)
 	if err != nil {
 		return nil, err
@@ -237,19 +240,40 @@ func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, e
 		outcome, verified = nil, nil
 		now := time.Now().Unix()
 		challenge, ok := s.forest.MFAChallenges[claims.ChallengeID]
-		if !ok || challenge.ExpiresAt <= now {
+		if !ok || challenge.ExpiresAt <= now || challenge.SessionKey != sessionKey {
 			if ok {
 				delete(s.forest.MFAChallenges, claims.ChallengeID)
 			}
 			outcome = apiErrorf(http.StatusUnauthorized, "Invalid or expired challenge")
 			return nil
 		}
+		if sessionKey != "" {
+			held, exists := s.forest.ApplicationSessions[sessionKey]
+			if !exists || held.UserID != claims.UserID || applicationSessionDeadline(held) <= now {
+				outcome = apiErrorf(401, "Session expired")
+				return nil
+			}
+		}
 		if challenge.Attempts >= mfaMaxAttempts {
 			delete(s.forest.MFAChallenges, claims.ChallengeID)
 			outcome = apiErrorf(http.StatusUnauthorized, "Too many attempts; request a new code")
 			return nil
 		}
-		if subtle.ConstantTimeCompare([]byte(challenge.CodeHash), []byte(s.mfaCodeHash(code))) != 1 {
+		profile, profileErr := s.forest.GetUserProfile(challenge.UserID)
+		if profileErr != nil || profile.LockedUntil > now || !epochIsCurrent(claims.CredentialEpoch, profile.CredentialEpoch) || challenge.UserID != claims.UserID {
+			delete(s.forest.MFAChallenges, claims.ChallengeID)
+			outcome = apiErrorf(401, "Invalid or expired challenge")
+			return nil
+		}
+		if !s.checkAccountFactor(challenge, code, now) {
+			for index := range s.forest.Users {
+				if s.forest.Users[index].ID == claims.UserID {
+					s.forest.Users[index].FailedLogins++
+					if s.forest.Users[index].FailedLogins >= loginFailureLimit {
+						s.forest.Users[index].LockedUntil = now + int64(loginLockout.Seconds())
+					}
+				}
+			}
 			challenge.Attempts++
 			if challenge.Attempts >= mfaMaxAttempts {
 				delete(s.forest.MFAChallenges, claims.ChallengeID)
@@ -260,7 +284,7 @@ func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, e
 			}
 			return nil
 		}
-		profile, err := s.forest.GetUserProfile(challenge.UserID)
+		profile, err = s.forest.GetUserProfile(challenge.UserID)
 		if err != nil {
 			delete(s.forest.MFAChallenges, claims.ChallengeID)
 			outcome = apiErrorf(http.StatusUnauthorized, "Account unavailable")
@@ -281,6 +305,18 @@ func (s *Server) consumeMFAChallenge(challengeToken, code string) (*core.User, e
 		// is already stale. The second factor would then hand back a session that its own enrolment
 		// had retired, and completing MFA correctly would be the one thing that could not log you in.
 		verified = &core.User{ID: profile.ID, Username: profile.Username, CredentialEpoch: profile.CredentialEpoch}
+		if challenge.SessionKey != "" {
+			if held, exists := s.forest.ApplicationSessions[challenge.SessionKey]; exists && held.UserID == profile.ID && applicationSessionDeadline(held) > now {
+				held.MFAAt = now
+				s.forest.ApplicationSessions[challenge.SessionKey] = held
+			}
+		}
+		for index := range s.forest.Users {
+			if s.forest.Users[index].ID == profile.ID {
+				s.forest.Users[index].FailedLogins = 0
+				s.forest.Users[index].LockedUntil = 0
+			}
+		}
 		delete(s.forest.MFAChallenges, claims.ChallengeID)
 		return nil
 	}); persistErr != nil {
@@ -334,6 +370,10 @@ func (s *Server) resendMFAChallenge(challengeToken string) error {
 			outcome = apiErrorf(http.StatusUnauthorized, "Invalid or expired challenge")
 			return nil
 		}
+		if challenge.Method != "" && challenge.Method != "sms" && challenge.Method != "email" && challenge.Method != "email_enroll" && challenge.Method != "sms_enroll" {
+			outcome = apiErrorf(400, "This factor does not send a code")
+			return nil
+		}
 		if refusal := mayResend(challenge, now); refusal != nil {
 			// NOTHING IS WRITTEN on a refusal. The challenge keeps its code, its budget and its
 			// delivery verdict, because a resend that was declined is not a failed login and the code
@@ -354,6 +394,17 @@ func (s *Server) resendMFAChallenge(challengeToken string) error {
 		recordResend(&challenge, now)
 		s.forest.MFAChallenges[claims.ChallengeID] = challenge
 		s.enqueueOutboundMFA(&core.User{ID: profile.ID, Phone: profile.Phone}, claims.ChallengeID, code, now, challenge.ExpiresAt)
+		if challenge.Method != "" {
+			state := s.correspondenceState()
+			message := state.Outbound[claims.ChallengeID]
+			if challenge.Method == "email" || challenge.Method == "email_enroll" {
+				message.Channel = "email"
+			}
+			if challenge.Target != "" {
+				message.To = challenge.Target
+			}
+			state.Outbound[claims.ChallengeID] = message
+		}
 		return nil
 	}); persistErr != nil {
 		return persistErr

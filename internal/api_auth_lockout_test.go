@@ -237,7 +237,7 @@ func TestAuthLogsNameNoUsernames(t *testing.T) {
 //
 //	--- FAIL: TestApplicationSessionLastsADayNotAMonth (0.11s)
 //	    api_auth_lockout_test.go:260: the session runs for 720h0m0s, want 24h0m0s
-func TestApplicationSessionLastsADayNotAMonth(t *testing.T) {
+func TestApplicationSessionAdvertisesIdleDeadline(t *testing.T) {
 	server, _ := newStockServer(t)
 	user := addPasswordUser(t, server, "day-long", "the-real-password")
 
@@ -252,8 +252,8 @@ func TestApplicationSessionLastsADayNotAMonth(t *testing.T) {
 		t.Fatalf("the answer was not JSON: %q", string(response.Body))
 	}
 	lifetime := time.Duration(body.ExpiresAt-time.Now().Unix()) * time.Second
-	if lifetime > 24*time.Hour || lifetime < 23*time.Hour+59*time.Minute {
-		t.Errorf("the session runs for %v, want %v", lifetime, 24*time.Hour)
+	if lifetime > 60*time.Minute || lifetime < 59*time.Minute {
+		t.Errorf("the session runs for %v, want %v", lifetime, 60*time.Minute)
 	}
 }
 
@@ -271,23 +271,32 @@ func TestRefreshRefusesAPrincipalThatIsGoneOrLocked(t *testing.T) {
 	server, _ := newStockServer(t)
 	user := addPasswordUser(t, server, "refresher", "the-real-password")
 
-	refreshFor := func(id, username string) int {
-		pair, err := server.generateTokenPair(&core.User{ID: id, Username: username})
-		if err != nil {
-			t.Fatalf("generateTokenPair: %v", err)
-		}
-		return serve(t, server, jsonRequest(t, "POST", "/refresh", map[string]interface{}{
-			"refresh_token": pair.RefreshToken,
-		})).Code
+	ghost := addPasswordUser(t, server, "deleted-refresher", "the-real-password")
+	ghostPair, err := server.generateTokenPair(&ghost)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	if code := refreshFor("user-nobody-holds", "ghost"); code != http.StatusUnauthorized {
+	livePair, err := server.generateTokenPair(&user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A credential must be minted while the principal exists, then invalidated.
+	for index := range server.forest.Users {
+		if server.forest.Users[index].ID == ghost.ID {
+			server.forest.Users = append(server.forest.Users[:index], server.forest.Users[index+1:]...)
+			break
+		}
+	}
+	refreshFor := func(token string) int {
+		return serve(t, server, jsonRequest(t, "POST", "/refresh", map[string]interface{}{"refresh_token": token})).Code
+	}
+	if code := refreshFor(ghostPair.RefreshToken); code != http.StatusUnauthorized {
 		t.Errorf("refresh for an account nobody holds answered %d", code)
 	}
 	for attempt := 0; attempt < loginFailureLimit; attempt++ {
 		passwordLogin(t, server, user.Username, "not-the-password")
 	}
-	if code := refreshFor(user.ID, user.Username); code != http.StatusUnauthorized {
+	if code := refreshFor(livePair.RefreshToken); code != http.StatusUnauthorized {
 		t.Errorf("refresh for a locked account answered %d", code)
 	}
 }

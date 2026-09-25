@@ -230,6 +230,16 @@ func (n *Node) PlanEvent(eventID string, userID string, plannedStart, plannedEnd
 // constants are declared in. An admin who had to be granted WritePermission separately to append
 // to an event is an admin in name only, and every event route asks for WritePermission.
 func (n *Node) CheckPermission(userID string, permission Permission) bool {
+	// Ownership is an independent, non-revocable source until an explicit
+	// ownership transfer changes CreatedBy; a manager cannot erase it.
+	if userID != "" && userID == n.CreatedBy && permission <= AdminPermission {
+		return true
+	}
+	for _, grant := range n.AccessGrants {
+		if grant.RecipientID == userID && grant.Permission >= permission && (grant.ExpiresAt == 0 || grant.ExpiresAt > time.Now().Unix()) {
+			return true
+		}
+	}
 	for _, user := range n.Users {
 		if user.ID == userID {
 			for _, perm := range user.Permissions {

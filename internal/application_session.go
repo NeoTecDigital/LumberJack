@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package internal
 
 import (
@@ -13,15 +14,17 @@ import (
 	"time"
 )
 
-// applicationSessionTTL is how long a minted ms_ bearer lives. It is a named constant because BOTH
-// mints — the password-only one and the second-factor one — read it, and because the relay's cookie
-// max-age has to be told the same number.
-//
-// A DAY, not the thirty it was. Thirty days was inherited rather than chosen, and a browser session
-// that outlives a stolen laptop by a month is a credential nobody remembers issuing; a day is long
-// enough that a working day never asks twice and short enough that a lost device stops mattering by
-// tomorrow. The refresh path is where a longer life is earned, and it re-checks the account.
+// Browser activity extends the idle window, never the absolute lifetime.
 const applicationSessionTTL = 24 * 3600
+const applicationSessionIdleTTL = 60 * 60
+
+func applicationSessionDeadline(session core.ApplicationSession) int64 {
+	last := session.LastActiveAt
+	if last == 0 {
+		last = session.CreatedAt
+	}
+	return min(session.ExpiresAt, session.CreatedAt+applicationSessionTTL, last+applicationSessionIdleTTL)
+}
 
 func (s *Server) sessionHash(token string) string {
 	h := hmac.New(sha256.New, s.jwtConfig.SecretKey)
@@ -30,21 +33,34 @@ func (s *Server) sessionHash(token string) string {
 }
 
 func (s *Server) applicationSession(token string) (core.ApplicationSession, bool) {
+	key := s.sessionKeyFromBearer(token)
+	return s.registeredSession(key)
+}
+
+func (s *Server) registeredSession(key string) (core.ApplicationSession, bool) {
 	var session core.ApplicationSession
 	valid := false
 	s.readForest(func() {
-		session, valid = s.forest.ApplicationSessions[s.sessionHash(token)]
-		if valid {
-			profile, err := s.forest.GetUserProfile(session.UserID)
-			// The epoch comes off the profile this read ALREADY had to fetch, so withdrawing a cookie
-			// an administrator has superseded costs one integer comparison and no extra work: a session
-			// opened while the account was password-only stops the moment it carries a second factor.
-			valid = err == nil &&
-				session.ExpiresAt > time.Now().Unix() &&
-				epochIsCurrent(session.CredentialEpoch, profile.CredentialEpoch)
-		}
+		session, valid = s.registeredSessionLocked(key, time.Now().Unix())
 	})
 	return session, valid
+}
+
+// registeredSessionLocked is the single validity predicate for reads and
+// renewal. The caller must hold the forest read or write lock throughout it.
+func (s *Server) registeredSessionLocked(key string, now int64) (core.ApplicationSession, bool) {
+	session, exists := s.forest.ApplicationSessions[key]
+	if !exists {
+		return core.ApplicationSession{}, false
+	}
+	profile, err := s.forest.GetUserProfile(session.UserID)
+	if err != nil || profile.LockedUntil > now || applicationSessionDeadline(session) <= now || !epochIsCurrent(session.CredentialEpoch, profile.CredentialEpoch) {
+		return core.ApplicationSession{}, false
+	}
+	if requireAccountMFA() && (session.MFAAt <= 0 || len(securityMethods(s.forest.AccountSecurity[session.UserID], profile)) == 0) {
+		return core.ApplicationSession{}, false
+	}
+	return session, true
 }
 
 func (s *Server) serveApplicationSession(next http.HandlerFunc, w http.ResponseWriter, r *http.Request, token string) {
@@ -54,7 +70,7 @@ func (s *Server) serveApplicationSession(next http.HandlerFunc, w http.ResponseW
 		return
 	}
 	ctx := context.WithValue(r.Context(), "user_id", session.UserID)
-	ctx, cancel := context.WithDeadline(ctx, time.Unix(session.ExpiresAt, 0))
+	ctx, cancel := context.WithDeadline(ctx, time.Unix(applicationSessionDeadline(session), 0))
 	defer cancel()
 	next(w, r.WithContext(ctx))
 }
@@ -66,6 +82,10 @@ func (s *Server) serveApplicationSession(next http.HandlerFunc, w http.ResponseW
 //
 // It returns the token and the expiry, so the caller can answer without re-reading the store.
 func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
+	return s.mintApplicationSessionAtEpoch(userID, nil)
+}
+
+func (s *Server) mintApplicationSessionAtEpoch(userID string, expected *int64) (string, int64, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", 0, apiErrorf(500, "Session unavailable")
@@ -74,7 +94,7 @@ func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
 	var expiresAt int64
 	err := s.changeForest(func() error {
 		profile, err := s.forest.GetUserProfile(userID)
-		if err != nil {
+		if err != nil || profile.LockedUntil > time.Now().Unix() || (expected != nil && !epochIsCurrent(*expected, profile.CredentialEpoch)) {
 			return apiErrorf(401, "Account unavailable")
 		}
 		if s.forest.ApplicationSessions == nil {
@@ -85,7 +105,7 @@ func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
 		oldestKey := ""
 		var oldest int64
 		for key, item := range s.forest.ApplicationSessions {
-			if item.ExpiresAt <= now {
+			if applicationSessionDeadline(item) <= now {
 				delete(s.forest.ApplicationSessions, key)
 				continue
 			}
@@ -105,19 +125,27 @@ func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
 		// moment either precedes this whole block — and the session is born stale — or follows it, and
 		// retires the session on its next request. There is no ordering in which it survives.
 		s.forest.ApplicationSessions[s.sessionHash(token)] = core.ApplicationSession{
-			UserID: userID, CreatedAt: now, ExpiresAt: expiresAt, CredentialEpoch: profile.CredentialEpoch,
+			UserID: userID, CreatedAt: now, LastActiveAt: now, ExpiresAt: expiresAt, CredentialEpoch: profile.CredentialEpoch, MFAAt: now,
 		}
 		return nil
 	})
 	if err != nil {
 		return "", 0, err
 	}
-	return token, expiresAt, nil
+	return token, min(expiresAt, time.Now().Unix()+applicationSessionIdleTTL), nil
 }
 
 func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request) {
+	s.handleBrowserSession(w, r, false)
+}
+
+func (s *Server) handleApplicationActivity(w http.ResponseWriter, r *http.Request) {
+	s.handleBrowserSession(w, r, true)
+}
+
+func (s *Server) handleBrowserSession(w http.ResponseWriter, r *http.Request, activity bool) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if r.Method == "POST" {
+	if r.Method == "POST" && !activity {
 		var input struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -148,17 +176,17 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 		// surface carries no MFA-status oracle: a caller holding a stolen password cannot learn whether
 		// the account has a second factor, or anything about the number, and triggers no delivery. That
 		// uniformity is why the CLIENT always shows the last-four field.
-		if user.MFAEnabled {
-			challenge, err := s.beginMFAChallenge(user)
-			if err != nil {
-				writeAPIError(w, err)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"mfa_required": true, "challenge": challenge})
+		challenge, err := s.beginAccountLogin(user, input.PhoneLast4)
+		if err != nil {
+			writeAPIError(w, err)
 			return
 		}
-		minted, _, err := s.mintApplicationSession(user.ID)
+		if challenge != nil {
+			securityJSON(w, challenge)
+			return
+		}
+
+		minted, _, err := s.mintApplicationSessionAtEpoch(user.ID, &user.CredentialEpoch)
 		if err != nil {
 			writeAPIError(w, err)
 			return
@@ -166,7 +194,7 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 		token = minted
 	}
 	if r.Method == "DELETE" {
-		if err := s.changeForest(func() error { delete(s.forest.ApplicationSessions, s.sessionHash(token)); return nil }); err != nil {
+		if err := s.changeForest(func() error { delete(s.forest.ApplicationSessions, s.sessionKeyFromBearer(token)); return nil }); err != nil {
 			writeAPIError(w, err)
 			return
 		}
@@ -179,14 +207,31 @@ func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Session expired or signed out", 401)
 		return
 	}
+	// Session inspection is read-only. Only the explicit activity operation can
+	// renew the idle deadline; background reads and streams cannot do so.
+	if activity {
+		var err error
+		session, err = s.renewApplicationSession(s.sessionKeyFromBearer(token))
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
 	s.readForest(func() {
+		// A concurrent invalidation during persistence must not produce a valid
+		// descriptor after the renewal transaction has released its lock.
+		session, ok = s.registeredSessionLocked(s.sessionKeyFromBearer(token), time.Now().Unix())
+		if !ok {
+			http.Error(w, "Session expired or signed out", 401)
+			return
+		}
 		profile, err := s.forest.GetUserProfile(session.UserID)
 		if err != nil {
 			http.Error(w, "Account unavailable", 401)
 			return
 		}
-		result := map[string]interface{}{"id": profile.ID, "username": profile.Username, "expires_at": session.ExpiresAt}
-		if r.Method == "POST" {
+		result := map[string]interface{}{"id": profile.ID, "username": profile.Username, "expires_at": applicationSessionDeadline(session), "absolute_expires_at": min(session.ExpiresAt, session.CreatedAt+applicationSessionTTL)}
+		if r.Method == "POST" && !activity {
 			result["token"] = token
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -218,13 +263,34 @@ func (s *Server) handleApplicationSessionMFA(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, err)
 		return
 	}
-	token, expiresAt, err := s.mintApplicationSession(user.ID)
+	token, expiresAt, err := s.mintApplicationSessionAtEpoch(user.ID, &user.CredentialEpoch)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": user.ID, "username": user.Username, "expires_at": expiresAt, "token": token,
+		"id": user.ID, "username": user.Username, "expires_at": expiresAt, "token": token, "absolute_expires_at": time.Now().Unix() + applicationSessionTTL,
 	})
+}
+
+// renewApplicationSession is the activity write shared by the HTTP handler and
+// deterministic tests that invalidate an account after a successful read.
+func (s *Server) renewApplicationSession(key string) (core.ApplicationSession, error) {
+	var session core.ApplicationSession
+	err := s.changeForest(func() error {
+		now := time.Now().Unix()
+		held, valid := s.registeredSessionLocked(key, now)
+		if !valid {
+			return apiErrorf(401, "Session expired or signed out")
+		}
+		held.LastActiveAt = now
+		s.forest.ApplicationSessions[key] = held
+		session = held
+		return nil
+	})
+	if err != nil {
+		return core.ApplicationSession{}, err
+	}
+	return session, nil
 }

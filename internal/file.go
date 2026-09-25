@@ -51,6 +51,15 @@ func (server *Server) loadFromFile(filename string) error {
 	}
 
 	server.forest = forest
+	if server.storageRewrite {
+		// The opt-in migration/re-wrap is atomic and completes before serving.
+		// A failed KMS request leaves the original file untouched and aborts startup.
+		server.stateWriter.markDurable(nil)
+		if err := server.persistState(filename); err != nil {
+			return err
+		}
+		server.storageRewrite = false
+	}
 	// The forest is NOT logged. It carries its users, and its users carry bcrypt hashes; Debug is
 	// ungated and the log file it writes to is the one GET /logs serves.
 	server.logger.Debug("Loaded forest with %d users and %d children", len(server.forest.Users), len(server.forest.Children))
@@ -59,6 +68,19 @@ func (server *Server) loadFromFile(filename string) error {
 
 // readState reads whichever shape the file is in and answers the forest it holds.
 func (server *Server) readState(file *os.File) (*core.Node, error) {
+	if forest, encrypted, err := server.readEncryptedState(file); encrypted || err != nil {
+		return forest, err
+	}
+	storage, err := server.storageCodec()
+	if err != nil {
+		return nil, err
+	}
+	if storage != nil {
+		if os.Getenv("CORRESPONDER_STORAGE_MIGRATE_LEGACY") != "1" {
+			return nil, fmt.Errorf("plaintext state requires explicit migration: set CORRESPONDER_STORAGE_MIGRATE_LEGACY=1 for the reviewed offline cutover")
+		}
+		server.storageRewrite = true
+	}
 	flat, err := hasStateMagic(file)
 	if err != nil {
 		return nil, err
@@ -142,7 +164,6 @@ func (server *Server) readSealedPayload(reader io.Reader) ([]byte, error) {
 	return data, nil
 }
 
-// TODO: Encrypt this
 // persistState serializes the forest and makes it durable. It took a `data interface{}` that it
 // never looked at — callers passed a node or the forest and got the forest either way.
 //
@@ -339,6 +360,10 @@ func syncDir(dir string) error {
 // 0644 temp file leaks exactly as widely as a 0644 state file, for the whole window it exists and
 // forever afterwards.
 func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) error {
+	encrypted, secure, err := server.prepareEncryptedState(jsonData)
+	if err != nil {
+		return err
+	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, stateFileMode)
 	if err != nil {
 		server.logger.Failure("Failed to create temporary file: %v", err)
@@ -351,6 +376,12 @@ func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) err
 	if err := file.Chmod(stateFileMode); err != nil {
 		server.logger.Failure("Failed to set permissions on temporary file: %v", err)
 		return err
+	}
+	if secure {
+		if _, err := file.Write(encrypted); err != nil {
+			return err
+		}
+		return file.Sync()
 	}
 
 	// The banner goes in FRONT of the hash, which is the one place a build that predates this

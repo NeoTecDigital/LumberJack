@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package embedded
 
 import (
@@ -6,6 +7,9 @@ import (
 )
 
 func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
+	// Observed before fixture repair: password-only login panicked with
+	// "interface conversion: interface {} is nil, not string" (FAIL, 0.084s).
+	isolatedApplicationSecurity(t)
 	cfg := embeddedConfig(t)
 	password, key := applicationCredential(), applicationCredential()
 	var h *Handle
@@ -47,19 +51,21 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 		return result
 	}
 	login := func(username string) string {
-		return call("POST", "/login", "", map[string]string{"username": username, "password": password})["session_token"].(string)
+		return applicationMFALogin(t, h, username, password)
 	}
 	token := login("operator")
 	call("POST", "/users/create", token, map[string]string{"username": "bob", "password": password, "email": "bob@example.test"})
 	bob := login("bob")
 	workspace := call("GET", "/workspace", token, nil)
 	root := workspace["nodes"].([]interface{})[0].(map[string]interface{})["path"].(string)
-	created := call("POST", "/workspace/commands", token, map[string]interface{}{"command": "create", "path": root, "client_id": "create", "title": "Shared idea", "kind": "idea"})
+	create := map[string]interface{}{"command": "create", "path": root, "client_id": "create", "title": "Shared idea", "kind": "idea"}
+	created := call("POST", "/workspace/commands", token, create)
 	path := created["path"].(string)
-	share := map[string]interface{}{"command": "share", "path": path, "client_id": "share", "username": "bob", "permission": 1}
-	call("POST", "/workspace/commands", token, share)
 	// Replaying an acknowledged command does not queue a second delivery.
-	call("POST", "/workspace/commands", token, share)
+	call("POST", "/workspace/commands", token, create)
+	share := map[string]interface{}{"action": "grant", "path": path, "username": "bob", "permission": 1, "scope": "item"}
+	share["revision"] = call("POST", "/access/preview", token, share)["revision"]
+	grant := call("POST", "/access/apply", token, share)["grant_id"]
 	before := hub("pending", "")
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
@@ -92,7 +98,9 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 		t.Fatal("read acknowledgment was lost")
 	}
 	call("POST", "/workspace/commands", token, map[string]interface{}{"command": "log", "path": path, "client_id": "queued-before-revoke", "content": "Private update"})
-	call("POST", "/workspace/commands", token, map[string]interface{}{"command": "share", "path": path, "client_id": "revoke", "username": "bob", "permission": -1})
+	revoke := map[string]interface{}{"action": "revoke", "path": path, "grant_id": grant}
+	revoke["revision"] = call("POST", "/access/preview", token, revoke)["revision"]
+	call("POST", "/access/apply", token, revoke)
 	json.Unmarshal(hub("pending", ""), &pending)
 	for _, item := range pending {
 		hub("deliver", item["id"].(string))

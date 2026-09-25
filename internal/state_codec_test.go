@@ -45,6 +45,11 @@ func populatedNode(t *testing.T) *core.Node {
 	node.CommandReceipts = map[string]interface{}{"user-id:command-id": map[string]interface{}{"digest": "verified"}}
 	node.Correspondence = &core.CorrespondenceState{Delivered: 1}
 	node.ApplicationSessions = map[string]core.ApplicationSession{"hash": {UserID: "user-id", ExpiresAt: 1}}
+	node.Subscriptions = map[string]map[string]bool{"user-id": {"node-id": true}}
+	node.Conversations = map[string]*core.Conversation{"conversation-id": {ID: "conversation-id", Kind: "dm"}}
+	node.AccessPolicies = map[string]core.AccessGrant{"grant-id": {ID: "grant-id", RootID: "node-id", RecipientID: "user-id", Scope: "item"}}
+	node.AccessGrants = map[string]core.AccessGrant{"grant-id": {ID: "grant-id", RootID: "node-id", RecipientID: "user-id", Scope: "item"}}
+	node.AccountSecurity = map[string]core.AccountSecurity{"user-id": {VerifiedEmail: "fixture@example.invalid"}}
 	node.MFAChallenges = map[string]core.MFAChallenge{"challenge-id": {UserID: "user-id", CodeHash: "hash", ExpiresAt: 1}}
 	node.CreatedBy = "user-id"
 	node.CreatedAt = stamp

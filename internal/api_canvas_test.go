@@ -342,9 +342,9 @@ func TestLinkRefusesACycle(t *testing.T) {
 	answer := serveRoute(t, server, "POST", "/nodes/link", userID, map[string]string{
 		"parent_path": "top/middle/bottom", "child_path": "top",
 	})
-	if answer.Code != http.StatusConflict {
+	if answer.Code != http.StatusBadRequest {
 		t.Errorf("Linking an ancestor under its own descendant: got %d, want %d: %s",
-			answer.Code, http.StatusConflict, answer.Body.String())
+			answer.Code, http.StatusBadRequest, answer.Body.String())
 	}
 
 	// A node cannot be its own parent either.

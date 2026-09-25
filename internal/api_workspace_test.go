@@ -44,8 +44,7 @@ func TestWorkspaceMultiuserCommands(t *testing.T) {
 	cmd.Title = "Different payload"
 	workTestCommand(t, server, "admin", cmd, 409)
 	workTestCommand(t, server, "bob", workCommand{Command: "log", Path: path, ClientID: "denied", Content: "no"}, 403)
-	edit := 1
-	workTestCommand(t, server, "admin", workCommand{Command: "share", Path: path, ClientID: "grant", Username: "bob", Permission: &edit}, 200)
+	grantID := reviewedAccessGrant(t, server, "admin", path, "bob", 1, "item")
 	log := workCommand{Command: "log", Path: path, ClientID: "bob-message", Content: "Progress from Bob"}
 	workTestCommand(t, server, "bob", log, 200)
 	workTestCommand(t, server, "bob", log, 200)
@@ -63,8 +62,7 @@ func TestWorkspaceMultiuserCommands(t *testing.T) {
 	entryID := timer["result"].(map[string]interface{})["id"].(string)
 	workTestCommand(t, server, "bob", workCommand{Command: "timer_stop", Path: path, ClientID: "stop", EventID: entryID}, 200)
 	workTestCommand(t, server, "bob", workCommand{Command: "timer_stop", Path: path, ClientID: "second-stop", EventID: entryID}, 409)
-	remove := -1
-	workTestCommand(t, server, "admin", workCommand{Command: "share", Path: path, ClientID: "revoke", Username: "bob", Permission: &remove}, 200)
+	reviewedAccessRevoke(t, server, "admin", path, grantID)
 	workTestCommand(t, server, "bob", workCommand{Command: "log", Path: path, ClientID: "after-revoke", Content: "no"}, 403)
 	rec := httptest.NewRecorder()
 	server.handleWorkspace(rec, withUser(httptest.NewRequest("GET", "/workspace", nil), "bob"))

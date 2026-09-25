@@ -26,6 +26,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Existing data/handler fixtures exercise password-only setup explicitly.
+	// Security tests opt back into mandatory enrollment with t.Setenv.
+	os.Setenv("MOMENTUM_REQUIRE_MFA", "false")
 	// The server FAILS CLOSED without a signing key, so the suite has to supply one the way a
 	// deployment does.
 	if err := os.Setenv("LUMBERJACK_JWT_SECRET", "test-signing-key-not-a-deployment-key"); err != nil {
@@ -480,23 +483,15 @@ func TestHandleAssignUser(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	rr := post(t, app.handleAssignUser, "admin", body)
-	if rr.Code != http.StatusOK {
-		logger.Failure("Handler returned wrong status code: got %v want %v\nBody: %v",
-			rr.Code, http.StatusOK, rr.Body.String())
-		t.Errorf("Handler returned wrong status code: got %v want %v\nBody: %v",
-			rr.Code, http.StatusOK, rr.Body.String())
-	} else {
-		logger.Success("User assigned successfully")
+	if rr.Code != http.StatusGone {
+		t.Fatalf("Retired assignment returned %d: %s", rr.Code, rr.Body.String())
 	}
-
-	// The assignment actually landed on the node, which a test that only reads the status code
-	// could not tell from a handler that answered 200 and did nothing.
 	node, err := app.forest.GetNode("test-node")
 	if err != nil {
-		t.Fatalf("Failed to find the node the user was assigned to: %v", err)
+		t.Fatal(err)
 	}
-	if !node.CheckPermission("test_user", core.WritePermission) {
-		t.Error("The assignee has no write permission on the node")
+	if node.CheckPermission("test_user", core.WritePermission) {
+		t.Error("Retired assignment changed permissions")
 	}
 
 	// A caller with no user in the context is refused rather than crashing the process, which is

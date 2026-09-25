@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
@@ -40,6 +41,16 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Account unavailable", http.StatusUnauthorized)
 		return
 	}
+	credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	validate := func() bool {
+		// Direct library handlers may receive a trusted context; public routes
+		// always reach this through authentication with a bearer credential.
+		if credential == "" {
+			return true
+		}
+		session, ok := server.applicationSession(credential)
+		return ok && session.UserID == userID
+	}
 
 	flusher, streamable := w.(http.Flusher)
 	if !streamable {
@@ -70,10 +81,6 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			if _, err := server.forest.GetUserProfile(userID); err != nil {
 				return
 			}
-			if server.forest.CheckPermission(userID, core.AdminPermission) {
-				allowed = true
-				return
-			}
 			node, err := server.getNodeFromPath(event.NodePath)
 			allowed = err == nil && node.CheckPermission(userID, core.ReadPermission)
 		})
@@ -87,11 +94,14 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, past := range client.replay {
+		if !validate() {
+			return
+		}
 		send(past)
 	}
 	flusher.Flush()
 
-	pump(r, w, flusher, client, send)
+	pump(r, w, flusher, client, send, validate)
 }
 
 // writeStreamHeaders opens a response that is never supposed to end.
@@ -105,19 +115,22 @@ func writeStreamHeaders(w http.ResponseWriter) {
 }
 
 // pump writes mutations to a client until it goes away.
-func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription, send func(mutationEvent)) {
+func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription, send func(mutationEvent), validate func() bool) {
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
 
 	for {
 		select {
 		case event, open := <-client.events:
-			if !open {
+			if !open || !validate() {
 				return
 			}
 			send(event)
 			flusher.Flush()
 		case <-heartbeat.C:
+			if !validate() {
+				return
+			}
 			writeComment(w, "keep-alive")
 			flusher.Flush()
 		case <-r.Context().Done():

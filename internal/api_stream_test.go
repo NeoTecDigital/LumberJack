@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/gorilla/mux"
 )
 
 // GET /stream.
@@ -512,14 +512,12 @@ func TestStreamDoesNotRevealPrivateResourceIdentities(t *testing.T) {
 	waitForSubscriber(t, server)
 	workTestCommand(t, server, owner, workCommand{Command: "log", Path: path, ClientID: "private-log", Content: "Secret"}, 200)
 	reader.silentFor(t, 50*time.Millisecond)
-	read := 0
-	workTestCommand(t, server, owner, workCommand{Command: "share", Path: path, ClientID: "share", Username: "viewer", Permission: &read}, 200)
+	grantID := reviewedAccessGrant(t, server, owner, path, "viewer", 0, "item")
 	event := reader.nextEvent(t, time.Second)
 	if event.NodePath != path {
 		t.Fatal("newly shared work was not announced")
 	}
-	remove := -1
-	workTestCommand(t, server, owner, workCommand{Command: "share", Path: path, ClientID: "revoke", Username: "viewer", Permission: &remove}, 200)
+	reviewedAccessRevoke(t, server, owner, path, grantID)
 	deadline := time.After(time.Second)
 	resync := false
 refresh:

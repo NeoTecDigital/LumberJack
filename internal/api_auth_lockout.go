@@ -94,12 +94,16 @@ func (server *Server) authenticateCredential(username, password, phoneLast4 stri
 	// The ownership gate counts too. It is a guess against a four-digit space, which is a far smaller
 	// space than the password — so leaving it uncounted would make it the cheapest thing to attack on
 	// the account, and the one that triggers an SMS on success.
-	if user.MFAEnabled && !phoneLast4Matches(user.Phone, phoneLast4) {
+	if user.MFAEnabled && phoneLast4 != "" && !phoneLast4Matches(user.Phone, phoneLast4) {
 		server.recordLoginFailure(user.ID)
 		return nil, errInvalidCredentials()
 	}
 
-	server.clearLoginFailures(user.ID)
+	hasFactor := false
+	server.readForest(func() { hasFactor = len(securityMethods(server.forest.AccountSecurity[user.ID], user)) != 0 })
+	if !requireAccountMFA() && !hasFactor {
+		server.clearLoginFailures(user.ID)
+	}
 	return user, nil
 }
 

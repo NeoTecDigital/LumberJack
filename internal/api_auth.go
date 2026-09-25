@@ -140,19 +140,13 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// proven by the check above. A match mints a code, stores only its hash, queues the code for
 	// delivery, and answers a challenge the caller must complete at /mfa/verify. NOTHING here returns
 	// the code.
-	if foundUser.MFAEnabled {
-		challenge, err := server.beginMFAChallenge(foundUser)
-		if err != nil {
-			server.logger.Failure("Failed to begin MFA challenge: %v", err)
-			writeAPIError(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"mfa_required": true,
-			"challenge":    challenge,
-		})
-		server.logger.Success("MFA challenge issued")
+	challenge, err := server.beginAccountLogin(foundUser, credentials.PhoneLast4)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if challenge != nil {
+		securityJSON(w, challenge)
 		return
 	}
 
@@ -231,6 +225,9 @@ func (server *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request)
 	}
 
 	token, err := jwt.ParseWithClaims(request.RefreshToken, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
 		return server.jwtConfig.SecretKey, nil
 	})
 
@@ -265,9 +262,9 @@ func (server *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request)
 	// Generate new session token, under the epoch the account is on NOW — which the check above has
 	// just proved this token is still entitled to.
 	user := &core.User{ID: claims.UserID, Username: claims.Username, CredentialEpoch: epoch}
-	tokenPair, err := server.generateTokenPair(user)
+	tokenPair, err := server.signedSessionPair(user, claims.SessionID)
 	if err != nil {
-		http.Error(w, "Failed to generate tokens", http.StatusInternalServerError)
+		writeAPIError(w, err)
 		return
 	}
 
@@ -296,6 +293,7 @@ func (server *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		profile = newUserView(*user)
+		profile.MFAEnabled = len(securityMethods(server.forest.AccountSecurity[userID], user)) != 0
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -323,6 +321,7 @@ type TokenPair struct {
 }
 
 type TokenClaims struct {
+	SessionID string `json:"session_id,omitempty"`
 	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
 	TokenType string `json:"token_type"` // "session", "refresh" or "mfa_pending"
@@ -388,6 +387,12 @@ func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		held, live := server.registeredSession(claims.SessionID)
+		if !live || held.UserID != claims.UserID {
+			http.Error(w, "Session expired or signed out", 401)
+			return
+		}
+		claims.ExpiresAt = min(claims.ExpiresAt, applicationSessionDeadline(held))
 		// Add user info to context
 		ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
 		if claims.ExpiresAt > 0 {
@@ -433,52 +438,4 @@ func (server *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (stri
 	}
 
 	return userID, true
-}
-
-func (server *Server) generateTokenPair(user *core.User) (*TokenPair, error) {
-	// Generate session token (short-lived)
-	// BOTH TOKENS CARRY THE CALLER'S EPOCH, and the caller is responsible for it being the CURRENT
-	// one. Every path here is handed a user read out of the forest — findUserByName at /login,
-	// usablePrincipal at /refresh, the profile consumeMFAChallenge copies from — precisely so that
-	// this mint never has to guess. A user assembled from JWT claims alone would stamp the zero epoch
-	// on a fresh token and retire it the moment it was issued.
-	sessionClaims := TokenClaims{
-		UserID:          user.ID,
-		Username:        user.Username,
-		TokenType:       "session",
-		CredentialEpoch: user.CredentialEpoch,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
-			IssuedAt:  time.Now().Unix(),
-		},
-	}
-
-	sessionToken := jwt.NewWithClaims(jwt.SigningMethodHS256, sessionClaims)
-	sessionTokenString, err := sessionToken.SignedString(server.jwtConfig.SecretKey)
-	if err != nil {
-		return nil, err
-	}
-
-	// Generate refresh token (long-lived)
-	refreshClaims := TokenClaims{
-		UserID:          user.ID,
-		Username:        user.Username,
-		TokenType:       "refresh",
-		CredentialEpoch: user.CredentialEpoch,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
-			IssuedAt:  time.Now().Unix(),
-		},
-	}
-
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(server.jwtConfig.SecretKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return &TokenPair{
-		SessionToken: sessionTokenString,
-		RefreshToken: refreshTokenString,
-	}, nil
 }

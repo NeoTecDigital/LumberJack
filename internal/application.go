@@ -178,6 +178,8 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 		s.handleApplicationSessionMFA(out, req)
 	} else if target.Path == "/session" && (input.Method == "GET" || input.Method == "DELETE") {
 		s.authMiddleware(s.handleApplicationSession)(out, req)
+	} else if target.Path == "/session/activity" && input.Method == "POST" {
+		s.authMiddleware(s.handleApplicationActivity)(out, req)
 	} else if target.Path == "/principal" && input.Method == "GET" {
 		s.authMiddleware(s.handleApplicationPrincipal)(out, req)
 	} else if target.Path == "/notifications" && (input.Method == "GET" || input.Method == "POST") {

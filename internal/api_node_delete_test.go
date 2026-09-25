@@ -297,11 +297,7 @@ func TestCascadeRefusesWithoutWriteOnEveryNodeItRemoves(t *testing.T) {
 	if err := server.forest.AssignUser(limited, core.ReadPermission); err != nil {
 		t.Fatalf("Failed to add the limited user: %v", err)
 	}
-	if code := post(t, server.handleAssignUser, adminUserID, map[string]interface{}{
-		"path": "work/branch", "assignee_id": limited.ID, "permission": int(core.WritePermission),
-	}).Code; code != http.StatusOK {
-		t.Fatalf("Granting write on the branch alone: got %d", code)
-	}
+	reviewedAccessGrant(t, server, adminUserID, "work/branch", "limited", 1, "item")
 
 	code, _ := deleteNode(t, server, limited.ID, "work/branch", deleteModeCascade)
 	if code != http.StatusForbidden {
