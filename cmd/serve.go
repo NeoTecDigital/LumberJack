@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -18,7 +20,65 @@ import (
 // published password on an admin account.
 const adminPassEnv = "LUMBERJACK_ADMIN_PASS"
 
+// bindHostEnv is the other way to say where the engine listens, and it is the SAME NAME the relay
+// already reads to find the engine (LUMBERJACK_HOST in backend/.env.example), so one value in one
+// file cannot describe two different addresses.
+//
+// It exists to make binding off-loopback possible, not easy: unset means 127.0.0.1, exactly as
+// RELAY_HOST does for the relay in front of it. This host carries LAN, Tailscale and VPN addresses,
+// and `Addr: ":" + port` used to hand the login route to all three with no TLS in front of it.
+const bindHostEnv = "LUMBERJACK_HOST"
+
+// resolveBindHost decides what gets bound: the flag, then the environment, then LOOPBACK. Whitespace
+// is not an opt-in — a blank value is someone saying nothing, and saying nothing must never widen
+// what is reachable.
+func resolveBindHost(flagValue string) string {
+	if host := strings.TrimSpace(flagValue); host != "" {
+		return host
+	}
+	if host := strings.TrimSpace(os.Getenv(bindHostEnv)); host != "" {
+		return host
+	}
+	return internal.LoopbackHost
+}
+
+// serveProcessInfo builds the record the server is started from, and is THE SEAM between the host
+// this command resolved and the socket internal.ListenAddr opens.
+//
+// It is a function rather than a literal inside RunE because it is the one line in this file with
+// no test above or below it that would catch its loss: the resolver can be right and the listener
+// can be right while nothing carries the first to the second, and dropping BindHost here fails
+// SAFE — every install keeps loopback, and --host and LUMBERJACK_HOST are silently ignored. That is
+// the "feature removal rather than a default" the internal tests exist to prevent, arriving from
+// the other side.
+func serveProcessInfo(bindHost string) types.ProcessInfo {
+	return types.ProcessInfo{
+		ID:           "srv-" + serveDBName,
+		PID:          os.Getpid(),
+		Name:         serveDBName,
+		ServerURL:    bindHost,
+		BindHost:     bindHost,
+		ServerPort:   servePort,
+		LogPath:      serveLogDir,
+		DatabasePath: serveDataDir,
+	}
+}
+
+// warnIfExposed says so, loudly, when the address being bound is reachable from another machine.
+// The engine speaks plain HTTP and sends no CORS headers, so an operator who did this by accident
+// gets one chance to notice.
+func warnIfExposed(host string) {
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return
+	}
+	fmt.Printf("[LumberJack] WARNING: binding %s, which is reachable off this machine. The API "+
+		"speaks plain HTTP with no CORS allowlist; put a TLS terminator in front of it or bind "+
+		"127.0.0.1 instead.\n", host)
+}
+
 var (
+	serveHost      string
 	servePort      string
 	serveDataDir   string
 	serveLogDir    string
@@ -36,7 +96,10 @@ var serveCmd = &cobra.Command{
 Ideal for development, Docker containers, and relay server integration.
 
 Example:
-    lumberjack serve --port 8080 --db default --data-dir ./data/lumberjack`,
+    lumberjack serve --port 8080 --db default --data-dir ./data/lumberjack
+
+Binds 127.0.0.1 unless --host or LUMBERJACK_HOST says otherwise. The API speaks plain HTTP
+with no CORS allowlist, so exposing it beyond loopback is a deliberate act.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if serveDBName == "" {
 			serveDBName = "default"
@@ -66,15 +129,12 @@ Example:
 			return fmt.Errorf("failed to create log dir: %w", err)
 		}
 
-		processInfo := types.ProcessInfo{
-			ID:           "srv-" + serveDBName,
-			PID:          os.Getpid(),
-			Name:         serveDBName,
-			ServerURL:    "127.0.0.1",
-			ServerPort:   servePort,
-			LogPath:      serveLogDir,
-			DatabasePath: serveDataDir,
-		}
+		// Where it LISTENS, resolved once and then both bound and printed, so the line the
+		// operator reads is the address the socket is actually on.
+		bindHost := resolveBindHost(serveHost)
+		warnIfExposed(bindHost)
+
+		processInfo := serveProcessInfo(bindHost)
 
 		serverConfig := types.ServerConfig{
 			Organization: serveAdminOrg,
@@ -115,7 +175,8 @@ Example:
 			return fmt.Errorf("failed to start server: %w", err)
 		}
 
-		fmt.Printf("[LumberJack] Ready and listening on http://127.0.0.1:%s (db: %s)\n", servePort, serveDBName)
+		fmt.Printf("[LumberJack] Ready and listening on http://%s (db: %s)\n",
+			net.JoinHostPort(bindHost, servePort), serveDBName)
 
 		// Wait for shutdown signal
 		sigChan := make(chan os.Signal, 1)
@@ -130,6 +191,8 @@ Example:
 func init() {
 	rootCmd.AddCommand(serveCmd)
 	serveCmd.Flags().StringVarP(&servePort, "port", "p", "8080", "Port to run API server on")
+	serveCmd.Flags().StringVar(&serveHost, "host", "", "Address to bind (or "+bindHostEnv+"); "+
+		"defaults to "+internal.LoopbackHost+". Anything else is reachable off this machine")
 	serveCmd.Flags().StringVar(&serveDataDir, "data-dir", "./data/lumberjack", "Directory to store .dat files")
 	serveCmd.Flags().StringVar(&serveLogDir, "log-dir", "./logs/lumberjack", "Directory for logs")
 	serveCmd.Flags().StringVarP(&serveDBName, "db", "d", "default", "Database name")
