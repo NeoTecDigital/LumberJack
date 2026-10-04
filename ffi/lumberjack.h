@@ -203,7 +203,10 @@ lj_status_t ic_lj_echo(lj_cstr in, int64_t in_len,
 
 /* Application service extension: JSON requests, authenticated per call, no
  * network listener. The call allocates its whole result once; free it using
- * ic_lj_application_free, including on non-2xx application responses. */
+ * ic_lj_application_free, including on non-2xx application responses. The
+ * envelope's `body` is standard base64 in both directions — a binary body,
+ * such as an object for POST /objects or the bytes GET /objects/{id} answers,
+ * is carried that way, and the 64 MiB application cap is on the decoded bytes. */
 lj_status_t ic_lj_application_configure(lj_handle_t h, lj_cstr req, int64_t req_len);
 lj_status_t ic_lj_application_call(lj_handle_t h, lj_cstr req, int64_t req_len,
                                   char **out, int64_t *out_len);
