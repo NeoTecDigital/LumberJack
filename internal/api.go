@@ -351,6 +351,9 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/auth/qr/poll", s.handleAccountAuthentication).Methods("POST")
 
 	s.registerRecordRoutes(router)
+	// The graph command engine, BEFORE the query routes: those end in the /nodes/{path} catch-alls,
+	// and a route group is registered ahead of a catch-all or not at all.
+	s.registerGraphRoutes(router)
 	s.registerQueryRoutes(router)
 	s.registerAccountRoutes(router)
 	return router

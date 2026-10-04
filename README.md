@@ -128,6 +128,26 @@ other moment loses only writes that were never acknowledged. A write that fails 
 answered **500**, and the change stays in memory: the process is then serving a forest newer than
 its file, and it must be restarted, which drops back to the last state that was acknowledged.
 
+### Where the graph lives
+
+The command engine behind `/graph` (see **Graph** under API Endpoints) keeps **no file of its own**.
+Everything it holds is in the forest, under one child of the root named `graph`, written by the
+same lock and the same writer as every other change — so a `200` from `POST /graph/commands` is the
+same promise as every other `200` above, and a restart loses nothing it acknowledged.
+
+- **Each entity is a node** under `graph`. Containment is parentage: an entity with an occurrence
+  in a scope is a child of that scope's node, and one in no scope hangs from `graph` itself.
+- **Occurrences, edges, views, aliases and command receipts** are nodes under `graph/_occurrences`,
+  `graph/_edges`, `graph/_views`, `graph/_aliases` and `graph/_commands`.
+- A record is stored on its node as **JSON text** under `metadata["graph.record"]`, byte for byte,
+  so integer geometry and revisions never pass through a float.
+- **Every command appends one journal entry** to the `graph` node — revision, command id, actor,
+  time and the list of changes — which is what `GET /graph/events` pages, so the journal survives a
+  restart. **Every put appends one history entry** to the record's own node, holding the prior
+  value, the command id and the actor. **Receipts never expire**: a retry replays, years later.
+- Node ids are namespaced by collection (`graph:entities:<id>`, `graph:occurrences:<id>`, …) because
+  the state file keys its node table by id and an entity and an occurrence may share one.
+
 The version the engine answers with is on `GET /health`, which needs no credentials:
 
 ```bash
@@ -517,6 +537,61 @@ curl -X POST http://localhost:8080/settings/update \
     "server_port": "8080",
     "dashboard_url": "http://localhost:3000"
   }'
+```
+
+### Graph
+
+The command engine: a graph of **entities**, **occurrences** (an entity placed in a scope, with
+fixed-point geometry), **edges**, **views** and **aliases**, changed only through **all-or-nothing
+commands** that name the revisions they replace. The routes sit on the main router behind the same
+session as everything else. A command needs **Write** on the `graph` node (on the forest root
+until the first command creates it); the reads need **Read**. State lives in the forest — see *Where
+the graph lives* above.
+
+#### Read the graph
+```bash
+curl http://localhost:8080/graph -H "Authorization: Bearer <token>"
+# {"revision":3,"entities":{...},"occurrences":{...},"edges":{},"views":{},"aliases":{}}
+```
+
+#### Commit a command
+Every entity write names the revision it replaces (`0` to create); every membership or edge change
+names the `topology` revision of each scope it touches. An entity is `id` (64 lowercase hex) and a
+nonblank `kind`, both immutable after creation; `revision` and `topology_revision` are the engine's
+and a put that omits them does not erase them. A batch is applied whole or not at all.
+```bash
+curl -X POST http://localhost:8080/graph/commands \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{
+    "id": "cmd-1", "fingerprint": "sha256-of-the-intent", "actor": "agent:planner",
+    "expected": {"entities": {"<scope>": 0, "<task>": 0}, "occurrences": {"<occ>": 0}, "topology": {"<scope>": 0}},
+    "operations": [
+      {"op": "put", "collection": "entities", "id": "<scope>", "value": {"id": "<scope>", "kind": "scope"}},
+      {"op": "put", "collection": "entities", "id": "<task>", "value": {"id": "<task>", "kind": "task"}},
+      {"op": "put", "collection": "occurrences", "id": "<occ>", "value": {"id": "<occ>", "entity_id": "<task>", "scope_id": "<scope>",
+        "geometry": {"x": 0, "y": 0, "width": 1000, "height": 1000, "scale": 1000000}}}
+    ]
+  }'
+# {"command_id":"cmd-1","revision":1,"changes":[{"collection":"entities","id":"<scope>","revision":1,"op":"put"},...],"replayed":false}
+```
+Resending the same `id` with the same payload **replays** the stored result with `"replayed": true`
+— after a restart too. The same `id` with a different payload is `409`. A stale revision is `409`
+and names what disagreed:
+```json
+{"error":{"code":"conflict","message":"occurrences \"<occ>\" expected 0, current 1","collection":"occurrences","id":"<occ>","expected":0,"actual":1}}
+```
+
+#### Page the journal
+```bash
+curl "http://localhost:8080/graph/events?since=0&limit=500" -H "Authorization: Bearer <token>"
+# {"events":[{"revision":1,"command_id":"cmd-1","actor":"agent:planner","at":"...","changes":[...]}],"next":500}
+```
+`limit` defaults to 500 and is capped at 5000; `next` is present when there is more, and is the
+`since` that fetches it.
+
+#### Read a receipt
+```bash
+curl http://localhost:8080/graph/commands/cmd-1 -H "Authorization: Bearer <token>"
 ```
 
 ## Response Formats
