@@ -31,7 +31,8 @@ import (
 // A 5xx FROM POST /graph/commands MEANS THE OUTCOME IS UNKNOWN. The command may be in memory and
 // not on the disk, so the caller retries THE SAME command id: a command that was applied is
 // replayed and flushed again, and one that was not is applied. While the forest is ahead of its
-// file the engine refuses every other command with 503.
+// file every command first tries to flush it; the engine refuses every other command with 503 only
+// while that flush still fails.
 
 // graphCommandLimit bounds a command body. A batch of a few thousand entities is a few megabytes.
 const graphCommandLimit = 16 << 20
@@ -126,6 +127,7 @@ func (s *Server) handleGraphCommand(w http.ResponseWriter, r *http.Request) {
 		writeGraphError(w, http.StatusBadRequest, "invalid_command", err.Error(), nil)
 		return
 	}
+	s.flushOutstandingForest()
 	var result graph.Result
 	err = s.changeForest(func() error {
 		if !s.graphPermittedLocked(userID, core.WritePermission) {
@@ -143,6 +145,20 @@ func (s *Server) handleGraphCommand(w http.ResponseWriter, r *http.Request) {
 		s.publish(mutation(mutationMetadataSet, s.canonicalPath(graph.RootName)))
 	}
 	writeGraphJSON(w, http.StatusOK, result)
+}
+
+// flushOutstandingForest writes the forest as it stands when a failed flush left it ahead of its
+// file, so that a disk which has recovered is found out by ANY command and not only by a retry of
+// the one that failed — a caller that restarted no longer knows that id.
+//
+// It decides nothing itself. A flush that succeeds ends the doubt and the engine takes the command;
+// one that fails has been logged by changeForest and leaves the forest ahead, which the engine
+// answers as before: 503 for a new command, and a replay for an id it has seen.
+func (s *Server) flushOutstandingForest() {
+	if !s.stateWriter.behind() {
+		return
+	}
+	_ = s.changeForest(func() error { return nil })
 }
 
 func decodeGraphCommand(w http.ResponseWriter, r *http.Request) (graph.Command, error) {

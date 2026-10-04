@@ -97,9 +97,6 @@ func TestGraphTakesCommandsAgainOnceAnyFlushSucceeds(t *testing.T) {
 		t.Fatalf("a command whose flush failed: %d", status)
 	}
 	unblock()
-	if status, _ := graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-2", 20, 2)); status != http.StatusServiceUnavailable {
-		t.Fatalf("a new command before any flush succeeded: %d", status)
-	}
 	if status, _ := graphCall(t, server, token, "POST", "/nodes", map[string]string{"path": "work/n", "type": "leaf"}); status != http.StatusOK {
 		t.Fatalf("an ordinary write: %d", status)
 	}
@@ -109,6 +106,35 @@ func TestGraphTakesCommandsAgainOnceAnyFlushSucceeds(t *testing.T) {
 	server = reopenGraphServer(t, server, config)
 	if status, body := graphCall(t, server, graphAdmin(t, server), "POST", "/graph/commands", graphMove("move-1", 10, 1)); status != http.StatusOK || body["replayed"] != true {
 		t.Fatalf("the command answered 500 was not on the disk after all: %d %v", status, body)
+	}
+}
+
+// A caller that restarted no longer knows the id it was answered 5xx for, so it cannot retry it.
+// Once the disk takes writes again a NEW command is enough: the forest is flushed as it stands
+// before the engine sees the command, which puts the command that failed on the disk with it.
+func TestGraphRecoversFromAFailedFlushOnANewCommand(t *testing.T) {
+	server, config := newGraphServer(t)
+	token := graphAdmin(t, server)
+	graphCall(t, server, token, "POST", "/graph/commands", graphSeed())
+
+	unblock := blockStateFile(t, server)
+	if status, body := graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-1", 10, 1)); status != http.StatusInternalServerError {
+		t.Fatalf("a command whose flush failed: %d %v", status, body)
+	}
+	unblock()
+	status, body := graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-2", 20, 2))
+	if status != http.StatusOK || body["replayed"] != false || body["revision"].(float64) != 3 {
+		t.Fatalf("a new command once the disk recovered: %d %v", status, body)
+	}
+
+	server = reopenGraphServer(t, server, config)
+	token = graphAdmin(t, server)
+	if status, snapshot := graphCall(t, server, token, "GET", "/graph", nil); status != http.StatusOK || snapshot["revision"].(float64) != 3 {
+		t.Fatalf("the disk after recovery: %d %v", status, snapshot)
+	}
+	status, body = graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-1", 10, 1))
+	if status != http.StatusOK || body["replayed"] != true || body["revision"].(float64) != 2 {
+		t.Fatalf("the command answered 500 is not on the disk: %d %v", status, body)
 	}
 }
 

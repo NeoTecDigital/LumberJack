@@ -611,9 +611,11 @@ record before it was deleted therefore cannot write over what replaced it.
 **A `5xx` means the outcome is unknown: retry the same command `id`.** The command may have been
 applied in memory and not reached the disk. Retrying the same `id` is always safe — a command that
 was applied is replayed and flushed again, and one that was not is simply a new command — and is
-how the caller finds out. While a failed write is outstanding every *other* command is refused
-`503` (`"code":"unavailable"`) and changes nothing; that ends with the next write that reaches the
-disk, the retry's or any other route's.
+how the caller finds out. While a failed write is outstanding every command first tries to write
+the forest again, so once the disk has recovered a new command succeeds and takes the earlier one
+to the disk with it — a caller that no longer knows the failed `id` needs nothing else. Only while
+that write still fails is every *other* command refused `503` (`"code":"unavailable"`), changing
+nothing.
 
 #### Page the journal
 ```bash
