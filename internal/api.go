@@ -418,6 +418,10 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleGetAttachment)).Methods("GET")
 	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleDeleteAttachment)).Methods("DELETE")
 	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
+	// The object log. Raw bytes addressed by their BLAKE3, appended beside the state file and never
+	// rewritten with it. See api_objects.go for why the permission is the root's.
+	router.HandleFunc("/objects", s.authMiddleware(s.handlePutObject)).Methods("POST")
+	router.HandleFunc("/objects/{id}", s.authMiddleware(s.handleGetObject)).Methods("GET", "HEAD")
 	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
 }
 
@@ -498,6 +502,7 @@ func (s *Server) shutdown(ctx context.Context) error {
 
 	// Wait for all workers to finish
 	s.apiQueue.wg.Wait()
+	s.closeObjects()
 
 	var err error
 	if s.server != nil {

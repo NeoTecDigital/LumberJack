@@ -96,7 +96,11 @@ type Server struct {
 	grantsHeld bool
 	// graph is the command engine over the `graph` root of the forest. It keeps the graph decoded
 	// between commands and is used only with the forest held. See internal/graph and api_graph.go.
-	graph          *graph.Engine
+	graph *graph.Engine
+	// objectStore is the append-only object log beside the state file, opened on first use. It is
+	// written OUTSIDE forestMutex and never rewrites `.dat`. See object_store.go.
+	objectStore    *objectStore
+	objectsMu      sync.Mutex
 	storageOnce    sync.Once
 	storage        *secureStorage
 	storageErr     error
