@@ -145,6 +145,21 @@ same promise as every other `200` above, and a restart loses nothing it acknowle
   time and the list of changes — which is what `GET /graph/events` pages, so the journal survives a
   restart. **Every put appends one history entry** to the record's own node, holding the prior
   value, the command id and the actor. **Receipts never expire**: a retry replays, years later.
+- **A delete keeps the node.** The record text is replaced by a **tombstone** under
+  `metadata["graph.tombstone"]` — the record's last revision, its kind and the value it held — and a
+  history entry records the delete, so nothing the node's history held is lost. A bucketed record's
+  tombstone stays in its bucket; a deleted entity leaves the containment tree for
+  `graph/_tombstones`. Re-creating the id takes the same node up again.
+- **Only the engine writes beneath `graph`.** Every generic write route — `POST /nodes`,
+  `PATCH /nodes/{path}/metadata`, `DELETE /nodes/{path}`, `/nodes/link`, `/entries`, `/events`,
+  `/time`, `/attachments`, `/workspace/commands` — answers **403** for a target that is `graph` or
+  anything under it, whoever asks. The generic *read* routes still show it.
+- **The `graph` node is created by the first command, for the principal that sent it and no one
+  else.** It does not inherit the forest root's users: holding Write on the forest root is not
+  holding anything on the graph. Its creator is its Admin and grants others through `/access`.
+- The engine keeps the graph **decoded in memory** between commands and checks each command against
+  what it touches, so a command costs what it changes rather than what the graph holds. The forest
+  is still the only store: the copy is rebuilt from it on open.
 - Node ids are namespaced by collection (`graph:entities:<id>`, `graph:occurrences:<id>`, …) because
   the state file keys its node table by id and an entity and an occurrence may share one.
 
@@ -544,8 +559,9 @@ curl -X POST http://localhost:8080/settings/update \
 The command engine: a graph of **entities**, **occurrences** (an entity placed in a scope, with
 fixed-point geometry), **edges**, **views** and **aliases**, changed only through **all-or-nothing
 commands** that name the revisions they replace. The routes sit on the main router behind the same
-session as everything else. A command needs **Write** on the `graph` node (on the forest root
-until the first command creates it); the reads need **Read**. State lives in the forest — see *Where
+session as everything else. A command needs **Write** on the `graph` node and the reads need
+**Read**; until the first command creates that node the check is on the forest root, and the
+principal whose command creates it becomes its only member. State lives in the forest — see *Where
 the graph lives* above.
 
 #### Read the graph
@@ -558,7 +574,10 @@ curl http://localhost:8080/graph -H "Authorization: Bearer <token>"
 Every entity write names the revision it replaces (`0` to create); every membership or edge change
 names the `topology` revision of each scope it touches. An entity is `id` (64 lowercase hex) and a
 nonblank `kind`, both immutable after creation; `revision` and `topology_revision` are the engine's
-and a put that omits them does not erase them. A batch is applied whole or not at all.
+and a put that omits them does not erase them. A put's `value.id` may be left out; one that is
+present and differs from the operation's `id` is refused `400`, naming both. A batch is applied
+whole or not at all. The body takes exactly `id`, `fingerprint`, `actor`, `expected` and
+`operations` — any other field is `400`.
 ```bash
 curl -X POST http://localhost:8080/graph/commands \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
@@ -575,11 +594,26 @@ curl -X POST http://localhost:8080/graph/commands \
 # {"command_id":"cmd-1","revision":1,"changes":[{"collection":"entities","id":"<scope>","revision":1,"op":"put"},...],"replayed":false}
 ```
 Resending the same `id` with the same payload **replays** the stored result with `"replayed": true`
-— after a restart too. The same `id` with a different payload is `409`. A stale revision is `409`
-and names what disagreed:
+— after a restart too. The same `id` with a different payload is `409`. "The same payload" is the
+body as it was sent: an `actor` that was left out is compared as left out, whichever session
+retries, and it is recorded as that session's user. A stale revision is `409` and names what
+disagreed:
 ```json
 {"error":{"code":"conflict","message":"occurrences \"<occ>\" expected 0, current 1","collection":"occurrences","id":"<occ>","expected":0,"actual":1}}
 ```
+
+**Deleting and re-creating.** A deleted record is in no collection of `GET /graph`, but its id is
+not new again: it stays at the revision it was deleted at. Re-creating it names that revision as
+`expected` (naming `0` is the `409` above, whose `actual` is the revision to name), continues the
+count from there, and — for an entity — must keep the kind it had. A writer that last saw the
+record before it was deleted therefore cannot write over what replaced it.
+
+**A `5xx` means the outcome is unknown: retry the same command `id`.** The command may have been
+applied in memory and not reached the disk. Retrying the same `id` is always safe — a command that
+was applied is replayed and flushed again, and one that was not is simply a new command — and is
+how the caller finds out. While a failed write is outstanding every *other* command is refused
+`503` (`"code":"unavailable"`) and changes nothing; that ends with the next write that reaches the
+disk, the retry's or any other route's.
 
 #### Page the journal
 ```bash

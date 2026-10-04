@@ -88,6 +88,21 @@ func (writer *stateWriter) markDurable(hash []byte) {
 	writer.durableHash = hash
 }
 
+// behind reports that the forest in memory is AHEAD of the state file: the newest flush attempted
+// failed, and none has succeeded since.
+//
+// The change that failed is still in memory (see changeForest), so the next flush that succeeds —
+// whoever asks for it — publishes it and ends this. Until then a caller that was answered 5xx does
+// not know whether its change will survive, and the graph engine refuses to stack new commands on
+// that doubt. Sequence numbers only rise, so "the newest attempt failed" is exactly failedSeq
+// being past durableSeq.
+func (writer *stateWriter) behind() bool {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+
+	return writer.failedSeq > writer.durableSeq
+}
+
 // commit answers once the snapshot's contents are on the disk, and MUST be called with no lock on
 // the forest held.
 //

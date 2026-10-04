@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/graph"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 
@@ -86,7 +87,10 @@ type Server struct {
 	// after a newer one.
 	stateSeq uint64
 	// stateWriter makes snapshots durable with the forest UNHELD. See state_writer.go.
-	stateWriter    *stateWriter
+	stateWriter *stateWriter
+	// graph is the command engine over the `graph` root of the forest. It keeps the graph decoded
+	// between commands and is used only with the forest held. See internal/graph and api_graph.go.
+	graph          *graph.Engine
 	storageOnce    sync.Once
 	storage        *secureStorage
 	storageErr     error

@@ -35,21 +35,19 @@ func TestGraphReplaySurvivesReopen(t *testing.T) {
 	token := graphAdmin(t, server)
 	graphCall(t, server, token, "POST", "/graph/commands", graphSeed())
 	cmd := graphMove("move-1", 2500, 1)
-	cmd["client_fingerprint"] = "original-public-mutate"
-	cmd["result_metadata"] = map[string]interface{}{"local_refs": map[string]string{"pin": graphOcc}}
 	status, first := graphCall(t, server, token, "POST", "/graph/commands", cmd)
 	if status != http.StatusOK || first["replayed"] != false || first["revision"].(float64) != 2 {
 		t.Fatalf("first: %d %v", status, first)
 	}
 	status, second := graphCall(t, server, token, "POST", "/graph/commands", cmd)
-	if status != http.StatusOK || second["replayed"] != true || second["revision"].(float64) != 2 || second["result_metadata"] == nil {
+	if status != http.StatusOK || second["replayed"] != true || second["revision"].(float64) != 2 || len(second["changes"].([]interface{})) != 1 {
 		t.Fatalf("replay: %d %v", status, second)
 	}
 
 	server = reopenGraphServer(t, server, config)
 	token = graphAdmin(t, server)
 	status, receipt := graphCall(t, server, token, "GET", "/graph/commands/move-1", nil)
-	if status != http.StatusOK || receipt["client_fingerprint"] != "original-public-mutate" {
+	if status != http.StatusOK || receipt["fingerprint"] != "move-1" || receipt["payload_digest"] == "" {
 		t.Fatalf("durable receipt: %d %v", status, receipt)
 	}
 	status, replay := graphCall(t, server, token, "POST", "/graph/commands", cmd)

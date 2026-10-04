@@ -100,16 +100,16 @@ func semanticID(id string) bool {
 	return true
 }
 
-// commandDigest covers the whole supplied payload, so reusing an id with a changed fingerprint,
-// actor or operation set cannot replay a different command's result.
+// commandDigest covers the payload AS THE CALLER SENT IT, so reusing an id with a changed
+// fingerprint, actor or operation set cannot replay a different command's result. It is taken
+// before the actor is defaulted: a retry that left the actor out again must match the first
+// attempt whoever the session belongs to, and one that now names an actor is a different command.
 func commandDigest(cmd Command) string {
 	payload := map[string]interface{}{
-		"fingerprint":        cmd.Fingerprint,
-		"client_fingerprint": cmd.ClientFingerprint,
-		"actor":              cmd.Actor,
-		"expected":           cmd.Expected,
-		"operations":         cmd.Operations,
-		"result_metadata":    cmd.ResultMetadata,
+		"fingerprint": cmd.Fingerprint,
+		"actor":       cmd.Actor,
+		"expected":    cmd.Expected,
+		"operations":  cmd.Operations,
 	}
 	sum := sha256.Sum256(canonicalJSON(payload))
 	return hex.EncodeToString(sum[:])

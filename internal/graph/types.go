@@ -21,17 +21,16 @@ type Record map[string]json.RawMessage
 // Command is one all-or-nothing batch. ID is the caller's idempotency handle: the same id with the
 // same payload replays the stored result, and the same id with a different payload is a conflict.
 type Command struct {
-	ID                string                     `json:"id"`
-	Fingerprint       string                     `json:"fingerprint"`
-	ClientFingerprint string                     `json:"client_fingerprint,omitempty"`
-	Actor             string                     `json:"actor,omitempty"`
-	Expected          Expected                   `json:"expected"`
-	Operations        []Operation                `json:"operations"`
-	ResultMetadata    map[string]json.RawMessage `json:"result_metadata,omitempty"`
+	ID          string      `json:"id"`
+	Fingerprint string      `json:"fingerprint"`
+	Actor       string      `json:"actor,omitempty"`
+	Expected    Expected    `json:"expected"`
+	Operations  []Operation `json:"operations"`
 }
 
-// Expected names the revisions a command was written against. Zero names a record that does not
-// exist yet, so a creation cannot silently overwrite.
+// Expected names the revisions a command was written against. Zero names a record that has never
+// existed, so a creation cannot silently overwrite; a record that was deleted is named by the
+// revision its tombstone kept.
 type Expected struct {
 	Entities    map[string]uint64 `json:"entities"`
 	Occurrences map[string]uint64 `json:"occurrences"`
@@ -57,21 +56,28 @@ type Change struct {
 
 // Result is what a command answers, and what its receipt replays.
 type Result struct {
-	CommandID      string                     `json:"command_id"`
-	Revision       uint64                     `json:"revision"`
-	Changes        []Change                   `json:"changes"`
-	Replayed       bool                       `json:"replayed"`
-	ResultMetadata map[string]json.RawMessage `json:"result_metadata,omitempty"`
+	CommandID string   `json:"command_id"`
+	Revision  uint64   `json:"revision"`
+	Changes   []Change `json:"changes"`
+	Replayed  bool     `json:"replayed"`
 }
 
 // Receipt is the durable record of one accepted command.
 type Receipt struct {
-	Fingerprint       string `json:"fingerprint"`
-	ClientFingerprint string `json:"client_fingerprint,omitempty"`
-	PayloadDigest     string `json:"payload_digest"`
-	Actor             string `json:"actor"`
-	At                string `json:"at"`
-	Result            Result `json:"result"`
+	Fingerprint   string `json:"fingerprint"`
+	PayloadDigest string `json:"payload_digest"`
+	Actor         string `json:"actor"`
+	At            string `json:"at"`
+	Result        Result `json:"result"`
+}
+
+// Tombstone is what a delete leaves on the record's node: the revision the record was last at, its
+// kind, and the value it held. Recreating the id continues from Revision and must keep Kind, so a
+// writer that last saw the record before it was deleted cannot overwrite what replaced it.
+type Tombstone struct {
+	Revision uint64          `json:"revision"`
+	Kind     string          `json:"kind,omitempty"`
+	Prior    json.RawMessage `json:"prior"`
 }
 
 // Event is one journal entry: the revision a command produced and what it changed.
@@ -114,6 +120,9 @@ var (
 	ErrConflict = errors.New("graph revision conflict")
 	// ErrInvalid marks a command that is malformed or would leave the graph invalid.
 	ErrInvalid = errors.New("invalid graph command")
+	// ErrUnavailable refuses a new command while the forest in memory is ahead of its state file:
+	// the last flush failed and none has succeeded since. Replays are still answered.
+	ErrUnavailable = errors.New("graph is waiting for a failed write to reach the disk")
 )
 
 // Conflict says exactly what a stale command disagreed with, so the 409 can name it.

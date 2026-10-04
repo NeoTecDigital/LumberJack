@@ -121,9 +121,9 @@ func (server *Server) removeNodeUnderHold(path, mode, userID string) (nodeRemova
 	removed := nodeRemoval{Mode: mode}
 
 	err := server.changeForest(func() error {
-		node, err := server.getNodeFromPath(path)
+		node, err := server.writeTargetLocked(path, "")
 		if err != nil {
-			return apiErrorf(http.StatusNotFound, "%v", err)
+			return err
 		}
 		parent, err := server.parentForDeletion(node, path)
 		if err != nil {
@@ -133,6 +133,12 @@ func (server *Server) removeNodeUnderHold(path, mode, userID string) (nodeRemova
 		doomed, err := server.doomedFor(node, path, mode)
 		if err != nil {
 			return err
+		}
+		// A cascade names one node and removes many. None of them may be the graph's.
+		for _, at := range doomed {
+			if err := server.refuseGraphWrite(at.path, at.node); err != nil {
+				return err
+			}
 		}
 		if err := writableThroughout(doomed, parent, userID); err != nil {
 			return err

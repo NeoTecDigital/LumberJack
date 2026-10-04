@@ -17,16 +17,8 @@ const (
 	MaxEventLimit     = 5000
 )
 
-// SnapshotOf is the whole graph under forest. The caller holds the forest for reading.
-func SnapshotOf(forest *core.Node) (Snapshot, error) {
-	state, _, err := load(Root(forest))
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return state.snapshot(), nil
-}
-
-// ReceiptFor is the stored receipt of a command, if there is one. The caller holds the forest.
+// ReceiptFor is the stored receipt of a command, if there is one. Receipts and the journal are read
+// straight from the forest: one node by id, and the root's own entries. The caller holds the forest.
 func ReceiptFor(forest *core.Node, id string) (Receipt, bool, error) {
 	root := Root(forest)
 	if root == nil {

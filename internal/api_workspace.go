@@ -213,9 +213,13 @@ func (server *Server) ApplyWorkCommand(userID string, cmd WorkCommand) ([]byte, 
 	var additional []mutationEvent
 	committed := false
 	err := server.changeForest(func() error {
-		node, err := server.getNodeFromPath(cmd.Path)
-		if err != nil {
+		node, err := server.writeTargetLocked(cmd.Path, "")
+		var refused *apiError
+		if asAPIError(err, &refused) && refused.status == http.StatusNotFound {
 			return apiErrorf(404, "Work was not found")
+		}
+		if err != nil {
+			return err
 		}
 		initializing := cmd.Command == "initialize" && node == server.forest
 		required := core.WritePermission

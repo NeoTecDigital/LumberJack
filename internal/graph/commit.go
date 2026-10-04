@@ -10,228 +10,186 @@ import (
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
-// Commit validates one command against the graph under forest and only then writes it.
-//
-// Validation runs on a CANDIDATE built from a copy of the decoded state, so a command that is
-// refused — for any reason — has touched nothing in the forest. The write phase that follows cannot
-// fail. The caller holds the forest exclusively and persists after this returns; nothing here
-// touches the disk.
-func Commit(forest *core.Node, cmd Command, userID string, now time.Time) (Result, error) {
-	if err := validateCommandShape(&cmd); err != nil {
-		return Result{}, err
-	}
-	if strings.TrimSpace(cmd.Actor) == "" {
-		cmd.Actor = userID
-	}
-	root := Root(forest)
-	base, lay, err := load(root)
-	if err != nil {
-		return Result{}, err
-	}
-	receipt, found, err := lay.receipt(cmd.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	if found {
-		return replay(receipt, cmd)
-	}
-	st, err := stage(base, cmd)
-	if err != nil {
-		return Result{}, err
-	}
-	result := Result{CommandID: cmd.ID, Revision: st.candidate.Revision, Changes: st.changes, ResultMetadata: cmd.ResultMetadata}
-	if root == nil {
-		if root, err = ensureRoot(forest, userID); err != nil {
-			return Result{}, err
-		}
-		lay.root = root
-	}
-	w := &writer{lay: lay, base: base, candidate: st.candidate, cmd: cmd, userID: userID, now: now}
-	w.write(st, result)
-	return result, nil
-}
-
-// replay answers a command whose id has been seen: the stored result if the payload is the same,
-// a conflict if it is not.
-func replay(receipt Receipt, cmd Command) (Result, error) {
-	if receipt.Fingerprint != cmd.Fingerprint || receipt.ClientFingerprint != cmd.ClientFingerprint || receipt.PayloadDigest != commandDigest(cmd) {
-		return Result{}, conflictf(commandsCollection, cmd.ID, "was already used with different content")
-	}
-	out := receipt.Result
-	out.Replayed = true
-	return out, nil
-}
-
-// staged is a validated candidate together with what producing it changed.
+// staged is a validated draft together with what producing it changed.
 type staged struct {
-	candidate *State
-	changes   []Change
-	scopes    map[string]struct{}
+	draft   *draft
+	changes []Change
 }
 
-// stage builds and validates the candidate. It is the whole of what can refuse a command.
-func stage(base *State, cmd Command) (staged, error) {
-	if err := checkExpected(base, cmd.Expected); err != nil {
+// stage builds and validates the draft. It is the whole of what can refuse a well-formed command.
+func stage(base *State, ops []operation, expected Expected) (staged, error) {
+	if err := checkExpected(base, expected); err != nil {
 		return staged{}, err
 	}
-	if err := requireRecordExpected(base, cmd); err != nil {
+	if err := requireRecordExpected(expected, ops); err != nil {
 		return staged{}, err
 	}
-	candidate := base.clone()
-	changes, scopes, err := applyOperations(candidate, cmd)
-	if err != nil {
+	d := newDraft(base)
+	changes, scopes := applyOperations(d, ops)
+	if err := validateDraft(d); err != nil {
 		return staged{}, err
 	}
-	if err := validateImmutable(base, candidate, cmd); err != nil {
+	if err := requireTopologyExpected(base, expected, scopes); err != nil {
 		return staged{}, err
 	}
-	if err := validateState(candidate); err != nil {
-		return staged{}, err
-	}
-	if err := requireTopologyExpected(base, cmd.Expected, scopes); err != nil {
-		return staged{}, err
-	}
-	candidate.Revision = base.Revision + 1
-	bumpTopology(base, candidate, scopes)
-	fillChangeRevisions(candidate, changes)
-	return staged{candidate: candidate, changes: changes, scopes: scopes}, nil
+	bumpTopology(d, scopes)
+	fillChangeRevisions(d, changes)
+	return staged{draft: d, changes: changes}, nil
 }
 
-// writer carries an accepted command into the forest nodes.
+// writer carries an accepted draft into the forest nodes, and then into the kept state.
 type writer struct {
-	lay       *layout
-	base      *State
-	candidate *State
-	cmd       Command
-	userID    string
-	now       time.Time
+	lay    *layout
+	state  *State
+	draft  *draft
+	cmd    Command
+	digest string
+	userID string
+	now    time.Time
 }
 
-func (w *writer) write(st staged, result Result) {
-	touched := map[string]struct{}{}
-	for _, change := range st.changes {
-		if change.Op == "put" {
-			w.put(change.Collection, change.ID, touched)
+func (w *writer) write(result Result) {
+	moved := w.moved()
+	for _, k := range w.draft.order {
+		if held := w.draft.slots[k]; held.live {
+			w.put(k, held)
 		} else {
-			w.remove(change.Collection, change.ID, touched)
+			w.bury(k)
 		}
 	}
-	w.refreshScopes(st.scopes)
-	w.relink(touched)
+	for _, k := range w.draft.carried {
+		w.lay.node(k.collection, k.id).Metadata[recordKey] = w.draft.slots[k].text()
+	}
+	w.state.absorb(w.draft)
+	w.relink(moved)
 	w.storeReceipt(result)
 	w.journal(result)
 	root := w.lay.root
 	root.Metadata = ensureMetadata(root.Metadata)
-	root.Metadata[revisionKey] = strconv.FormatUint(w.candidate.Revision, 10)
+	root.Metadata[revisionKey] = strconv.FormatUint(w.state.Revision, 10)
 	root.ModifiedBy, root.ModifiedAt = w.userID, w.now
 }
 
-// put writes the candidate's value onto the record's node, creating the node on first sight, and
-// appends the history entry holding what it replaced.
-func (w *writer) put(collection, id string, touched map[string]struct{}) {
-	node := w.lay.node(collection, id)
-	if node == nil {
-		node = w.create(collection, id)
+// put writes a member's value onto its node — creating the node on first sight, or taking its
+// tombstone up again — and appends the history entry holding what it replaced. A re-creation
+// replaces nothing live, so its prior is nil; the value it follows is on the delete entry before it.
+func (w *writer) put(k key, held slot) {
+	node, prior := w.lay.node(k.collection, k.id), interface{}(nil)
+	switch {
+	case node != nil:
+		prior = node.Metadata[recordKey]
+	case w.lay.tombs[k] != nil:
+		node = w.revive(k)
+	default:
+		node = w.create(k)
 	}
-	prior := w.storedText(w.base, collection, id)
 	node.Metadata = ensureMetadata(node.Metadata)
-	node.Metadata[recordKey] = w.storedText(w.candidate, collection, id)
-	if collection == CollectionEntities {
-		node.Kind = recordString(w.candidate.Entities[id], "kind")
+	node.Metadata[recordKey] = held.text()
+	if k.collection == CollectionEntities {
+		node.Kind = recordString(held.record, "kind")
 	}
+	w.history(node, kindPut, prior)
+}
+
+func (w *writer) history(node *core.Node, kind string, prior interface{}) {
 	node.ModifiedBy, node.ModifiedAt = w.userID, w.now
 	node.AddEntry(
-		map[string]interface{}{"type": kindPut, "command_id": w.cmd.ID, "actor": w.cmd.Actor, "prior": prior},
-		map[string]interface{}{typedKey: kindPut}, w.userID, "", "")
-	w.touch(collection, id, touched)
+		map[string]interface{}{"type": kind, "command_id": w.cmd.ID, "actor": w.cmd.Actor, "prior": prior},
+		map[string]interface{}{typedKey: kind}, w.userID, "", "")
 }
 
-// storedText is a collection member as the text its node stores, or nil when the state lacks it.
-func (w *writer) storedText(state *State, collection, id string) interface{} {
-	if collection == CollectionAliases {
-		target, ok := state.Aliases[id]
-		if !ok {
-			return nil
-		}
-		return recordText(target)
-	}
-	record := state.record(collection, id)
-	if record == nil {
-		return nil
-	}
-	return recordText(record)
-}
-
-func (w *writer) create(collection, id string) *core.Node {
-	node := newGraphNode(nodeID(collection, id), id, w.userID, w.now)
-	if collection == CollectionEntities {
+func (w *writer) create(k key) *core.Node {
+	node := newGraphNode(nodeID(k.collection, k.id), k.id, w.userID, w.now)
+	if k.collection == CollectionEntities {
 		link(w.lay.root, node) // relink moves it under its scopes once every node exists
 	} else {
-		link(w.lay.ensureBucket(collection, w.userID, w.now), node)
+		link(w.lay.ensureBucket(k.collection, w.userID, w.now), node)
 	}
-	w.lay.nodes[collection][id] = node
+	w.lay.nodes[k.collection][k.id] = node
 	return node
 }
 
-func (w *writer) remove(collection, id string, touched map[string]struct{}) {
-	w.touch(collection, id, touched)
-	node := w.lay.node(collection, id)
-	if node == nil {
+// revive takes a deleted record's node up again, history and all.
+func (w *writer) revive(k key) *core.Node {
+	node := w.lay.tombs[k]
+	delete(node.Metadata, tombstoneKey)
+	if k.collection == CollectionEntities {
+		unlink(w.lay.buckets[tombstonesCollection], node)
+		link(w.lay.root, node)
+	}
+	delete(w.lay.tombs, k)
+	w.lay.nodes[k.collection][k.id] = node
+	return node
+}
+
+// bury turns a live record's node into its tombstone. The node is KEPT: it holds the record's
+// history, and the tombstone on it is what a re-creation must continue from. A record that was
+// not live — never created, or already deleted — is left exactly as it was.
+func (w *writer) bury(k key) {
+	node := w.lay.node(k.collection, k.id)
+	tomb, live := w.state.entomb(k)
+	if node == nil || !live {
 		return
 	}
+	prior := node.Metadata[recordKey]
+	delete(node.Metadata, recordKey)
+	node.Metadata[tombstoneKey] = recordText(tomb)
+	w.history(node, kindDelete, prior)
+	if k.collection == CollectionEntities {
+		w.detach(node)
+		link(w.lay.ensureBucket(tombstonesCollection, w.userID, w.now), node)
+	}
+	delete(w.lay.nodes[k.collection], k.id)
+	w.lay.tombs[k] = node
+}
+
+// detach takes an entity's node out of the containment tree, both ways. Nothing can still be
+// placed in a deleted scope, so the children it lets go are relinked by this same command.
+func (w *writer) detach(node *core.Node) {
 	for parentID := range node.Parents {
 		if parent := w.parentNode(parentID); parent != nil {
-			unlink(parent, node)
+			delete(parent.Children, node.ID)
 		}
 	}
 	node.Parents = map[string]string{}
-	delete(w.lay.nodes[collection], id)
+	for _, child := range node.Children {
+		delete(child.Parents, node.ID)
+	}
+	node.Children = map[string]*core.Node{}
 }
 
-// touch marks the entities whose parentage a change may have moved: the entity itself, and the
-// entity an occurrence placed before and after the change.
-func (w *writer) touch(collection, id string, touched map[string]struct{}) {
-	switch collection {
-	case CollectionEntities:
-		touched[id] = struct{}{}
-	case CollectionOccurrences:
-		for _, state := range []*State{w.base, w.candidate} {
-			if entity := recordString(state.Occurrences[id], "entity_id"); entity != "" {
-				touched[entity] = struct{}{}
-			}
+// moved is the entities whose parentage the command may have changed: each entity it wrote, and
+// the entity an occurrence placed before and after. It is read before the state is advanced.
+func (w *writer) moved() map[string]struct{} {
+	moved := map[string]struct{}{}
+	for _, k := range w.draft.order {
+		switch k.collection {
+		case CollectionEntities:
+			moved[k.id] = struct{}{}
+		case CollectionOccurrences:
+			moved[recordString(w.state.Occurrences[k.id], "entity_id")] = struct{}{}
+			moved[recordString(w.draft.slots[k].record, "entity_id")] = struct{}{}
 		}
 	}
+	delete(moved, "")
+	return moved
 }
 
-// refreshScopes writes the advanced topology_revision onto each scope whose membership changed.
-// It is not a put, so no history entry is appended for it.
-func (w *writer) refreshScopes(scopes map[string]struct{}) {
-	for scopeID := range scopes {
-		node := w.lay.node(CollectionEntities, scopeID)
-		record := w.candidate.Entities[scopeID]
-		if node == nil || record == nil {
-			continue
-		}
-		node.Metadata[recordKey] = recordText(record)
-	}
-}
-
-// relink makes each touched entity's parents exactly the scopes it has an occurrence in, or the
-// graph root when it has none.
-func (w *writer) relink(touched map[string]struct{}) {
-	scopes := w.candidate.scopesOf()
-	for id := range touched {
+// relink makes each moved entity's parents exactly the scopes it has an occurrence in, or the
+// graph root when it has none. The state has been advanced, so its index is the new containment.
+func (w *writer) relink(moved map[string]struct{}) {
+	for id := range moved {
 		node := w.lay.node(CollectionEntities, id)
-		if node == nil || w.candidate.Entities[id] == nil {
+		if node == nil {
 			continue
 		}
-		w.syncParents(node, w.desiredParents(scopes[id]))
+		w.syncParents(node, w.desiredParents(w.state.index.scopes[id]))
 	}
 }
 
-func (w *writer) desiredParents(scopeIDs map[string]struct{}) map[string]*core.Node {
+func (w *writer) desiredParents(scopes map[string]string) map[string]*core.Node {
 	desired := map[string]*core.Node{}
-	for scopeID := range scopeIDs {
+	for _, scopeID := range scopes {
 		if parent := w.lay.node(CollectionEntities, scopeID); parent != nil {
 			desired[parent.ID] = parent
 		}
@@ -281,12 +239,11 @@ func (w *writer) parentNode(parentID string) *core.Node {
 // later must still replay rather than reapply.
 func (w *writer) storeReceipt(result Result) {
 	receipt := Receipt{
-		Fingerprint:       w.cmd.Fingerprint,
-		ClientFingerprint: w.cmd.ClientFingerprint,
-		PayloadDigest:     commandDigest(w.cmd),
-		Actor:             w.cmd.Actor,
-		At:                w.now.Format(time.RFC3339Nano),
-		Result:            result,
+		Fingerprint:   w.cmd.Fingerprint,
+		PayloadDigest: w.digest,
+		Actor:         w.cmd.Actor,
+		At:            w.now.Format(time.RFC3339Nano),
+		Result:        result,
 	}
 	node := newGraphNode(nodeID(commandsCollection, w.cmd.ID), w.cmd.ID, w.userID, w.now)
 	node.Metadata[recordKey] = recordText(receipt)

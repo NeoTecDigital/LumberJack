@@ -113,6 +113,17 @@ func TestGraphRoutesRequireSessionAndPermission(t *testing.T) {
 	if status, body := graphCall(t, server, admin, "POST", "/graph/commands", graphSeed()); status != http.StatusOK || body["revision"].(float64) != 1 {
 		t.Fatalf("seed: %d %v", status, body)
 	}
+	// Read on the forest root is not Read on the graph: the graph root lists only its creator.
+	if status, _ := graphCall(t, server, readerToken, "GET", "/graph", nil); status != http.StatusForbidden {
+		t.Fatalf("a reader of the forest root read the graph: %d", status)
+	}
+	// Its creator grants it, through the access routes — which the graph is not closed to.
+	grant := map[string]interface{}{"action": "grant", "path": "graph", "username": "reader", "permission": 0, "scope": "item"}
+	_, preview := graphCall(t, server, admin, "POST", "/access/preview", grant)
+	grant["revision"] = preview["revision"]
+	if status, body := graphCall(t, server, admin, "POST", "/access/apply", grant); status != http.StatusOK || body["applied"] != true {
+		t.Fatalf("the graph's creator could not grant Read on it: %d %v", status, body)
+	}
 	if status, _ := graphCall(t, server, nobody, "GET", "/graph", nil); status != http.StatusForbidden {
 		t.Fatalf("unpermitted read: %d", status)
 	}

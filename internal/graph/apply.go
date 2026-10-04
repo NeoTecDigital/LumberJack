@@ -2,27 +2,19 @@
 
 package graph
 
-import "encoding/json"
-
-// checkExpected compares every expectation the caller sent against the base.
+// checkExpected compares every expectation the caller sent against the base. A deleted record is
+// still at the revision its tombstone kept, so a writer that last saw it alive — or never saw it
+// at all — does not match a record that has since been recreated.
 func checkExpected(base *State, expected Expected) error {
-	for id, want := range expected.Entities {
-		if got := recordUint(base.Entities[id], "revision"); got != want {
-			return staleConflict(CollectionEntities, id, want, got)
-		}
-	}
-	for id, want := range expected.Occurrences {
-		if got := recordUint(base.Occurrences[id], "revision"); got != want {
-			return staleConflict(CollectionOccurrences, id, want, got)
-		}
-	}
-	for id, want := range expected.Views {
-		if got := recordUint(base.Views[id], "revision"); got != want {
-			return staleConflict(CollectionViews, id, want, got)
+	for _, collection := range []string{CollectionEntities, CollectionOccurrences, CollectionViews} {
+		for id, want := range expectedFor(expected, collection) {
+			if got := base.revisionOf(key{collection, id}); got != want {
+				return staleConflict(collection, id, want, got)
+			}
 		}
 	}
 	for id, want := range expected.Topology {
-		if got := recordUint(base.Entities[id], "topology_revision"); got != want {
+		if got := base.topologyOf(id); got != want {
 			return staleConflict("topology", id, want, got)
 		}
 	}
@@ -31,19 +23,16 @@ func checkExpected(base *State, expected Expected) error {
 
 // requireRecordExpected makes entity, occurrence and view writes NAME the version they replace.
 // This is stricter than checking only the entries a caller happened to send: creation names
-// revision 0, so an accidental upsert cannot silently overwrite a record.
-func requireRecordExpected(base *State, cmd Command) error {
-	for _, op := range cmd.Operations {
-		expected := expectedFor(cmd.Expected, op.Collection)
-		if expected == nil {
+// revision 0 and re-creation names the tombstone's, so an accidental upsert cannot silently
+// overwrite a record. The values themselves were compared by checkExpected.
+func requireRecordExpected(expected Expected, ops []operation) error {
+	for _, op := range ops {
+		named := expectedFor(expected, op.Collection)
+		if named == nil {
 			continue
 		}
-		want, ok := expected[op.ID]
-		if !ok {
+		if _, ok := named[op.ID]; !ok {
 			return conflictf(op.Collection, op.ID, "requires an expected revision")
-		}
-		if got := recordUint(base.record(op.Collection, op.ID), "revision"); got != want {
-			return staleConflict(op.Collection, op.ID, want, got)
 		}
 	}
 	return nil
@@ -74,65 +63,41 @@ func requireTopologyExpected(base *State, expected Expected, scopes map[string]s
 		if !ok {
 			return conflictf("topology", id, "requires an expected topology revision for a membership or edge change")
 		}
-		if got := recordUint(base.Entities[id], "topology_revision"); got != want {
+		if got := base.topologyOf(id); got != want {
 			return staleConflict("topology", id, want, got)
 		}
 	}
 	return nil
 }
 
-// applyOperations plays the operations onto the candidate, in order, and reports what changed and
-// which scopes' topology moved.
-func applyOperations(candidate *State, cmd Command) ([]Change, map[string]struct{}, error) {
-	changes := make([]Change, 0, len(cmd.Operations))
+// applyOperations plays the operations onto the draft, in order, and reports what changed and
+// which scopes' topology moved. Every value was decoded by prepare, so nothing here can refuse.
+func applyOperations(d *draft, ops []operation) ([]Change, map[string]struct{}) {
+	changes := make([]Change, 0, len(ops))
 	scopes := map[string]struct{}{}
-	for _, op := range cmd.Operations {
-		if err := noteTopology(candidate, op, scopes); err != nil {
-			return nil, nil, err
-		}
-		if err := applyOperation(candidate, op); err != nil {
-			return nil, nil, err
-		}
+	for _, op := range ops {
+		noteTopology(d, op, scopes)
+		applyOperation(d, op)
 		changes = append(changes, Change{Collection: op.Collection, ID: op.ID, Op: op.Op})
 	}
-	return changes, scopes, nil
+	return changes, scopes
 }
 
 // noteTopology records which scopes an occurrence or edge operation changes the membership of.
 // Geometry is occurrence-local: only a membership change invalidates a scope's topology, so
 // independent drags do not conflict globally.
-func noteTopology(candidate *State, op Operation, scopes map[string]struct{}) error {
+func noteTopology(d *draft, op operation, scopes map[string]struct{}) {
+	old := d.record(op.Collection, op.ID)
 	switch op.Collection {
 	case CollectionOccurrences:
-		old := candidate.Occurrences[op.ID]
-		next, err := optionalRecord(op)
-		if err != nil {
-			return err
-		}
-		if membershipChanged(old, next) {
+		if membershipChanged(old, op.record) {
 			addScope(scopes, old)
-			addScope(scopes, next)
+			addScope(scopes, op.record)
 		}
 	case CollectionEdges:
-		addScope(scopes, candidate.Edges[op.ID])
-		next, err := optionalRecord(op)
-		if err != nil {
-			return err
-		}
-		addScope(scopes, next)
+		addScope(scopes, old)
+		addScope(scopes, op.record)
 	}
-	return nil
-}
-
-func optionalRecord(op Operation) (Record, error) {
-	if op.Op != "put" {
-		return nil, nil
-	}
-	record, err := parseRecord(op.Value)
-	if err != nil {
-		return nil, invalidf("put %s/%s: %v", op.Collection, op.ID, err)
-	}
-	return record, nil
 }
 
 func addScope(scopes map[string]struct{}, record Record) {
@@ -145,34 +110,30 @@ func membershipChanged(old, next Record) bool {
 	if old == nil || next == nil {
 		return true
 	}
-	for _, key := range []string{"scope_id", "entity_id", "view_id"} {
-		if recordString(old, key) != recordString(next, key) {
+	for _, field := range []string{"scope_id", "entity_id", "view_id"} {
+		if recordString(old, field) != recordString(next, field) {
 			return true
 		}
 	}
 	return false
 }
 
-func applyOperation(candidate *State, op Operation) error {
-	if op.Collection == CollectionAliases {
-		return applyAlias(candidate, op)
+func applyOperation(d *draft, op operation) {
+	k := key{op.Collection, op.ID}
+	switch {
+	case op.Op == "delete":
+		d.set(k, slot{})
+	case op.Collection == CollectionAliases:
+		d.set(k, slot{target: op.target, live: true})
+	default:
+		record := op.record
+		setString(record, "id", op.ID)
+		setUint(record, "revision", d.revisionOf(k)+1)
+		if op.Collection == CollectionEntities {
+			carryTopologyRevision(d.predecessor(k), record)
+		}
+		d.set(k, slot{record: record, live: true})
 	}
-	if op.Op == "delete" {
-		candidate.remove(op.Collection, op.ID)
-		return nil
-	}
-	record, err := parseRecord(op.Value)
-	if err != nil {
-		return invalidf("put %s/%s: %v", op.Collection, op.ID, err)
-	}
-	old := candidate.record(op.Collection, op.ID)
-	setString(record, "id", op.ID)
-	setUint(record, "revision", recordUint(old, "revision")+1)
-	if op.Collection == CollectionEntities {
-		carryTopologyRevision(old, record)
-	}
-	candidate.put(op.Collection, op.ID, record)
-	return nil
 }
 
 // carryTopologyRevision keeps the engine-owned counter across a put. A caller that wrote an entity
@@ -188,40 +149,22 @@ func carryTopologyRevision(old, next Record) {
 	}
 }
 
-func applyAlias(candidate *State, op Operation) error {
-	if op.Op == "delete" {
-		delete(candidate.Aliases, op.ID)
-		return nil
-	}
-	var target string
-	if err := json.Unmarshal(op.Value, &target); err != nil || !safeID(target) {
-		return invalidf("alias %q must target a safe id string", op.ID)
-	}
-	candidate.Aliases[op.ID] = target
-	return nil
-}
-
 // bumpTopology advances the counter of every scope whose membership changed and still exists. A
 // deleted scope has no surviving record to carry one.
-func bumpTopology(base, candidate *State, scopes map[string]struct{}) {
+func bumpTopology(d *draft, scopes map[string]struct{}) {
 	for scopeID := range scopes {
-		if scopeID == "" {
-			continue
+		if scopeID != "" {
+			d.bump(scopeID)
 		}
-		record, exists := candidate.Entities[scopeID]
-		if !exists {
-			continue
-		}
-		setUint(record, "topology_revision", recordUint(base.Entities[scopeID], "topology_revision")+1)
 	}
 }
 
 // fillChangeRevisions reports the revision each put left its record at.
-func fillChangeRevisions(candidate *State, changes []Change) {
+func fillChangeRevisions(d *draft, changes []Change) {
 	for i := range changes {
 		if changes[i].Op != "put" {
 			continue
 		}
-		changes[i].Revision = recordUint(candidate.record(changes[i].Collection, changes[i].ID), "revision")
+		changes[i].Revision = recordUint(d.record(changes[i].Collection, changes[i].ID), "revision")
 	}
 }

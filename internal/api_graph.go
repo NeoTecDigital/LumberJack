@@ -21,8 +21,17 @@ import (
 // file holds the change, exactly as it does for every other write.
 //
 // Permission is checked on the graph root: Write to command, Read to look. Before the first
-// command has created that root, it is checked on the forest root the graph root inherits its
-// users from.
+// command has created that root it is checked on the forest root, and the principal whose command
+// creates it becomes its only member — the graph root does NOT inherit the forest root's users.
+//
+// THESE ROUTES ARE THE ONLY WRITERS BENEATH THAT ROOT. Every generic write route refuses a target
+// there (refuseGraphWrite, in forest_lock.go), which is what lets the engine keep the graph decoded
+// between commands and what keeps a record's kind, revision and receipts the engine's to change.
+//
+// A 5xx FROM POST /graph/commands MEANS THE OUTCOME IS UNKNOWN. The command may be in memory and
+// not on the disk, so the caller retries THE SAME command id: a command that was applied is
+// replayed and flushed again, and one that was not is applied. While the forest is ahead of its
+// file the engine refuses every other command with 503.
 
 // graphCommandLimit bounds a command body. A batch of a few thousand entities is a few megabytes.
 const graphCommandLimit = 16 << 20
@@ -69,7 +78,7 @@ func (s *Server) readGraph(w http.ResponseWriter, r *http.Request, read func() (
 }
 
 func (s *Server) handleGraphSnapshot(w http.ResponseWriter, r *http.Request) {
-	s.readGraph(w, r, func() (interface{}, error) { return graph.SnapshotOf(s.forest) })
+	s.readGraph(w, r, func() (interface{}, error) { return s.graph.Snapshot(s.forest) })
 }
 
 func (s *Server) handleGraphEvents(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +132,7 @@ func (s *Server) handleGraphCommand(w http.ResponseWriter, r *http.Request) {
 			return apiErrorf(http.StatusForbidden, "Insufficient permissions")
 		}
 		var commitErr error
-		result, commitErr = graph.Commit(s.forest, cmd, userID, time.Now().UTC())
+		result, commitErr = s.graph.Commit(s.forest, cmd, userID, time.Now().UTC())
 		return commitErr
 	})
 	if err != nil {
@@ -150,8 +159,9 @@ func decodeGraphCommand(w http.ResponseWriter, r *http.Request) (graph.Command, 
 }
 
 // writeGraphFailure maps an engine error to its status: a conflict is 409 and names what it
-// disagreed with, an invalid command is 400, a refusal carries its own status, and anything else
-// is the server's fault and is logged rather than disclosed.
+// disagreed with, an invalid command is 400, a command refused while a failed write is still
+// outstanding is 503, a refusal carries its own status, and anything else is the server's fault
+// and is logged rather than disclosed.
 func (s *Server) writeGraphFailure(w http.ResponseWriter, err error) {
 	var conflict *graph.Conflict
 	var carried *apiError
@@ -160,6 +170,9 @@ func (s *Server) writeGraphFailure(w http.ResponseWriter, err error) {
 		writeGraphError(w, http.StatusConflict, "conflict", conflict.Error(), conflictDetails(conflict))
 	case errors.Is(err, graph.ErrInvalid):
 		writeGraphError(w, http.StatusBadRequest, "invalid_command", err.Error(), nil)
+	case errors.Is(err, graph.ErrUnavailable):
+		writeGraphError(w, http.StatusServiceUnavailable, "unavailable",
+			"A previous write has not reached the disk. Retry the command that was answered 5xx, with the same id.", nil)
 	case errors.As(err, &carried):
 		writeGraphError(w, carried.status, graphErrorCode(carried.status), carried.message, nil)
 	default:

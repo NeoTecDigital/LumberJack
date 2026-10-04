@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/graph"
 	"github.com/NeoTecDigital/LumberJack/types"
 	"github.com/gorilla/mux"
 )
@@ -102,6 +103,7 @@ func newServerCore(config types.ServerConfig) *Server {
 	// The writer is the only thing that touches the state file, and it does so with the forest
 	// unheld. Every entrypoint goes through here, so every one gets one.
 	server.stateWriter = newStateWriter(server.publishSnapshot)
+	server.graph = graph.NewEngine(server.stateWriter.behind)
 	server.startRuntime()
 	return server
 }

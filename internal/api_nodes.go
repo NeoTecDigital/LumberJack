@@ -75,6 +75,10 @@ func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, u
 	var created nodeAnswer
 
 	err := server.changeForest(func() error {
+		// Refused by PATH: there is no node yet to ask, and `graph` itself is the engine's to create.
+		if err := server.refuseGraphWrite(path, nil); err != nil {
+			return err
+		}
 		node, err := server.createNodePath(path, nodeType, userID)
 		if err != nil {
 			server.logger.Failure("Failed to create node %s: %v", path, err)

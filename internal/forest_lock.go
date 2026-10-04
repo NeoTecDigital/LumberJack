@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/graph"
 )
 
 // The one lock over the forest, and the shapes every route uses to take it.
@@ -156,16 +157,60 @@ func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, err
 	return snapshot, nil
 }
 
+// refuseGraphWrite is the ONE guard every generic write passes through: it refuses a target that
+// is the `graph` root or anything beneath it, whoever asks and whatever they hold on it.
+//
+// THE DEFECT THIS EXISTS TO CLOSE: the graph is a subtree of the forest, so every route that
+// writes a node by path could write the graph's. PATCH /nodes/graph/…/metadata rewrote an entity's
+// kind — the one field the engine holds immutable — and DELETE /nodes/graph/_commands?mode=cascade
+// removed every receipt, after which a retried command was applied a second time. Neither went
+// through a command, so neither was validated, journaled, or given a revision.
+//
+// Only POST /graph/commands writes there. The target is named two ways and BOTH are checked: by
+// PATH, which is all there is when the node does not exist yet, and by the NODE a path resolved
+// to, so a graph node reached under some other name is refused as well. Pass a nil node when
+// there is none to check. The caller holds the forest.
+func (server *Server) refuseGraphWrite(path string, node *core.Node) error {
+	segments := server.segmentsFrom(path)
+	named := len(segments) > 0 && segments[0] == graph.RootName
+	if !named && !graph.Owns(server.forest, node) {
+		return nil
+	}
+	return apiErrorf(http.StatusForbidden,
+		"%s belongs to the graph engine: it is changed only through POST /graph/commands", server.canonicalPath(path))
+}
+
+// writeTargetLocked resolves the node a generic write names, and is how every such write that
+// starts from a path finds its node: the graph is refused before the lookup, so the answer is the
+// same whether or not the node exists, and again on the node the lookup reached.
+//
+// what prefixes the 404 for a path that names nothing ("parent: "). The caller holds the forest.
+func (server *Server) writeTargetLocked(path, what string) (*core.Node, error) {
+	if err := server.refuseGraphWrite(path, nil); err != nil {
+		return nil, err
+	}
+	node, err := server.getNodeFromPath(path)
+	if err != nil {
+		return nil, apiErrorf(http.StatusNotFound, "%s%v", what, err)
+	}
+	if err := server.refuseGraphWrite(path, node); err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
 // changeNode is the shape every mutating route has: find the node a path names, confirm the caller
 // may change it, change it, and persist — all under one exclusive hold.
 //
 // The lookup is INSIDE the hold. It walks the Children map of every node on the path, which is a
-// read of the same maps a concurrent mutation writes.
+// read of the same maps a concurrent mutation writes. It goes through writeTargetLocked, so every
+// route built on this shape — entries, events, time, metadata, attachments — is closed to the
+// graph at once.
 func (server *Server) changeNode(path, userID string, permission core.Permission, change func(*core.Node) error) error {
 	return server.changeForest(func() error {
-		node, err := server.getNodeFromPath(path)
+		node, err := server.writeTargetLocked(path, "")
 		if err != nil {
-			return apiErrorf(http.StatusNotFound, "%v", err)
+			return err
 		}
 
 		if !node.CheckPermission(userID, permission) {
