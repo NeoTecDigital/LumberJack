@@ -46,6 +46,33 @@ To delete configuration:
 ./lumberjack delete
 ```
 
+### Configuration: `config.yaml`
+
+The CLI keeps its databases in `/etc/lumberjack/config.yaml`. Two optional blocks say how a
+forest reaches the disk; left out, both are the defaults, which is exactly what every earlier
+build did:
+
+```yaml
+persistence:
+  mode: snapshot          # default: the whole state file per write. "tiered": hot log + cold snapshot
+  hot_sync: commit        # when the hot log is synced to disk: commit | interval | none
+  hot_sync_interval_ms: 20
+  cold_every_commits: 2000
+  cold_every_seconds: 60
+sync:
+  role: single            # single | primary | replica — only single runs in this build
+  listen: ""              # primary: address replicas connect to
+  primary: ""             # replica: the primary's address
+  ack: local              # when a commit is acknowledged: local | one | quorum
+```
+
+**The embedded runtime reads the same two blocks from `<database_path>/config.yaml`**, beside the
+state file, when the config it was opened with leaves them empty. A host that opens a forest
+through `embedded.Open` or the C ABI opts into tiered persistence by writing that file. `lumberjack
+serve --data-dir DIR` reads `DIR/config.yaml` the same way. A block that names something this
+build does not do — a misspelt mode, `role: replica` — refuses to open rather than running as
+something else.
+
 ## The state file
 
 Everything the engine holds lives in one file, `<name>.dat`, in the configured database path. It is
@@ -127,6 +154,42 @@ with a volatile write cache it does not honour, or a filesystem mounted `nobarri
 other moment loses only writes that were never acknowledged. A write that fails to reach the disk is
 answered **500**, and the change stays in memory: the process is then serving a forest newer than
 its file, and it must be restarted, which drops back to the last state that was acknowledged.
+
+### Tiered persistence: `mode: tiered`
+
+Rewriting the whole file per write costs the size of the store: measured through the graph
+engine, 101 ms per command at 2,000 records and 527 ms at 10,000, growing with every write ever
+made because receipts, journal and history accumulate. `mode: tiered` makes a write cost the size
+of the change.
+
+- **Hot layer.** Every commit appends one record to an append-only log beside the state file,
+  `<name>.dat.log.<sequence>`: a sequence number, the nodes it changed (each encoded as the state
+  codec encodes a node), the ids it deleted, a length and a checksum. **A 200 means the record is
+  as durable as `hot_sync` asks**: `commit` syncs it before answering; `interval` answers once it
+  is written and syncs in the background every `hot_sync_interval_ms`; `none` leaves the sync to
+  the operating system. Concurrent commits share one write and one fsync. A record that fails to
+  reach the disk is retried ahead of the next commit, and the engine refuses new graph commands
+  until it lands.
+- **Cold layer.** A background writer rewrites the full state file with the same atomic writer as
+  snapshot mode every `cold_every_commits` commits or `cold_every_seconds` seconds, and on a clean
+  shutdown. The document carries `log_sequence`, the last record it contains, so it is written
+  atomically with the forest. Segments are deleted only once a durable state file wholly covers
+  them. **The forest is held only for the encode**: a commit during a snapshot waits for one
+  encode of the forest, not for the hash, the gzip, the write or the fsyncs.
+- **Recovery.** Load the state file, replay the log past its sequence, in order. A torn tail in
+  the last segment — a record left short or unverifiable by a crash mid-write, with nothing
+  intact after it — is cut; it was never acknowledged. Anything else refuses to open with an error
+  naming the segment and the offset: a damaged record followed by an intact one, an intact record
+  out of sequence, or a log that begins past what the state file covers.
+- **The graph engine hands the log its changed nodes.** A command logs the nodes it wrote: the
+  record's node with its new history entry, the receipt, and the graph root with the one journal
+  entry it appended — not the whole journal, and not the root's child list when no entity moved.
+  Every other write route logs what a comparison of the whole forest against its last encoding
+  finds changed; correct, and the size of the forest.
+- **The change sequence survives a restart.** The mutation stream numbers from the log's last
+  record on open, so `/changes` and `/stream` cursors do not restart at one.
+- **An encrypted store refuses `mode: tiered`**, with an error that says why: the sealed state
+  file would have a plaintext log beside it.
 
 ### Where the graph lives
 

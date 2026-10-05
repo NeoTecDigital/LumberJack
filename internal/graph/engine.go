@@ -78,9 +78,17 @@ func (e *Engine) Snapshot(forest *core.Node) (Snapshot, error) {
 // caller that was answered 5xx finds out what happened. A new command is refused while the forest
 // is ahead of its file: accepting it would stack a second unacknowledged change on the first.
 func (e *Engine) Commit(forest *core.Node, cmd Command, userID string, now time.Time) (Result, error) {
+	result, _, err := e.CommitTracked(forest, cmd, userID, now)
+	return result, err
+}
+
+// CommitTracked is Commit that also reports every node the command wrote, so the caller can
+// persist the change rather than the store. A replayed command wrote nothing and reports an empty
+// set; a refused one reports nil.
+func (e *Engine) CommitTracked(forest *core.Node, cmd Command, userID string, now time.Time) (Result, *Touched, error) {
 	ops, err := prepare(&cmd)
 	if err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	digest := commandDigest(cmd)
 	if strings.TrimSpace(cmd.Actor) == "" {
@@ -89,29 +97,36 @@ func (e *Engine) Commit(forest *core.Node, cmd Command, userID string, now time.
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	if err := e.open(forest); err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	if receipt, found, err := e.lay.receipt(cmd.ID); err != nil || found {
-		return replay(receipt, cmd, digest, err)
+		result, err := replay(receipt, cmd, digest, err)
+		if err != nil {
+			return Result{}, nil, err
+		}
+		return result, newTouched(), nil
 	}
 	if e.behind != nil && e.behind() {
-		return Result{}, ErrUnavailable
+		return Result{}, nil, ErrUnavailable
 	}
 	if e.unsound != nil {
-		return Result{}, e.unsound
+		return Result{}, nil, e.unsound
 	}
 	st, err := stage(e.state, ops, cmd.Expected)
 	if err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
+	touched := newTouched()
 	if e.root == nil {
+		touched.edges(forest)
 		e.root = newRoot(forest, userID, now)
+		touched.created(e.root)
 		e.lay.root = e.root
 	}
 	result := Result{CommandID: cmd.ID, Revision: st.draft.revision, Changes: st.changes}
-	w := &writer{lay: e.lay, state: e.state, draft: st.draft, cmd: cmd, digest: digest, userID: userID, now: now}
+	w := &writer{lay: e.lay, state: e.state, draft: st.draft, cmd: cmd, digest: digest, userID: userID, now: now, touched: touched}
 	w.write(result)
-	return result, nil
+	return result, touched, nil
 }
 
 // replay answers a command whose id has been seen: the stored result if the payload is the same,

@@ -37,15 +37,17 @@ func stage(base *State, ops []operation, expected Expected) (staged, error) {
 	return staged{draft: d, changes: changes}, nil
 }
 
-// writer carries an accepted draft into the forest nodes, and then into the kept state.
+// writer carries an accepted draft into the forest nodes, and then into the kept state. Every
+// node it writes is reported to touched, before the write, so persistence can log the change.
 type writer struct {
-	lay    *layout
-	state  *State
-	draft  *draft
-	cmd    Command
-	digest string
-	userID string
-	now    time.Time
+	lay     *layout
+	state   *State
+	draft   *draft
+	cmd     Command
+	digest  string
+	userID  string
+	now     time.Time
+	touched *Touched
 }
 
 func (w *writer) write(result Result) {
@@ -58,13 +60,16 @@ func (w *writer) write(result Result) {
 		}
 	}
 	for _, k := range w.draft.carried {
-		w.lay.node(k.collection, k.id).Metadata[recordKey] = w.draft.slots[k].text()
+		node := w.lay.node(k.collection, k.id)
+		w.touched.content(node)
+		node.Metadata[recordKey] = w.draft.slots[k].text()
 	}
 	w.state.absorb(w.draft)
 	w.relink(moved)
 	w.storeReceipt(result)
 	w.journal(result)
 	root := w.lay.root
+	w.touched.content(root)
 	root.Metadata = ensureMetadata(root.Metadata)
 	root.Metadata[revisionKey] = strconv.FormatUint(w.state.Revision, 10)
 	root.ModifiedBy, root.ModifiedAt = w.userID, w.now
@@ -77,6 +82,7 @@ func (w *writer) put(k key, held slot) {
 	node, prior := w.lay.node(k.collection, k.id), interface{}(nil)
 	switch {
 	case node != nil:
+		w.touched.content(node)
 		prior = node.Metadata[recordKey]
 	case w.lay.tombs[k] != nil:
 		node = w.revive(k)
@@ -92,6 +98,7 @@ func (w *writer) put(k key, held slot) {
 }
 
 func (w *writer) history(node *core.Node, kind string, prior interface{}) {
+	w.touched.content(node)
 	node.ModifiedBy, node.ModifiedAt = w.userID, w.now
 	node.AddEntry(
 		map[string]interface{}{"type": kind, "command_id": w.cmd.ID, "actor": w.cmd.Actor, "prior": prior},
@@ -100,10 +107,11 @@ func (w *writer) history(node *core.Node, kind string, prior interface{}) {
 
 func (w *writer) create(k key) *core.Node {
 	node := newGraphNode(nodeID(k.collection, k.id), k.id, w.userID, w.now)
+	w.touched.created(node)
 	if k.collection == CollectionEntities {
-		link(w.lay.root, node) // relink moves it under its scopes once every node exists
+		w.link(w.lay.root, node) // relink moves it under its scopes once every node exists
 	} else {
-		link(w.lay.ensureBucket(k.collection, w.userID, w.now), node)
+		w.link(w.bucket(k.collection), node)
 	}
 	w.lay.nodes[k.collection][k.id] = node
 	return node
@@ -112,10 +120,11 @@ func (w *writer) create(k key) *core.Node {
 // revive takes a deleted record's node up again, history and all.
 func (w *writer) revive(k key) *core.Node {
 	node := w.lay.tombs[k]
+	w.touched.content(node)
 	delete(node.Metadata, tombstoneKey)
 	if k.collection == CollectionEntities {
-		unlink(w.lay.buckets[tombstonesCollection], node)
-		link(w.lay.root, node)
+		w.unlink(w.lay.buckets[tombstonesCollection], node)
+		w.link(w.lay.root, node)
 	}
 	delete(w.lay.tombs, k)
 	w.lay.nodes[k.collection][k.id] = node
@@ -131,13 +140,14 @@ func (w *writer) bury(k key) {
 	if node == nil || !live {
 		return
 	}
+	w.touched.content(node)
 	prior := node.Metadata[recordKey]
 	delete(node.Metadata, recordKey)
 	node.Metadata[tombstoneKey] = recordText(tomb)
 	w.history(node, kindDelete, prior)
 	if k.collection == CollectionEntities {
 		w.detach(node)
-		link(w.lay.ensureBucket(tombstonesCollection, w.userID, w.now), node)
+		w.link(w.bucket(tombstonesCollection), node)
 	}
 	delete(w.lay.nodes[k.collection], k.id)
 	w.lay.tombs[k] = node
@@ -146,16 +156,43 @@ func (w *writer) bury(k key) {
 // detach takes an entity's node out of the containment tree, both ways. Nothing can still be
 // placed in a deleted scope, so the children it lets go are relinked by this same command.
 func (w *writer) detach(node *core.Node) {
+	w.touched.edges(node)
 	for parentID := range node.Parents {
 		if parent := w.parentNode(parentID); parent != nil {
+			w.touched.edges(parent)
 			delete(parent.Children, node.ID)
 		}
 	}
 	node.Parents = map[string]string{}
 	for _, child := range node.Children {
+		w.touched.edges(child)
 		delete(child.Parents, node.ID)
 	}
 	node.Children = map[string]*core.Node{}
+}
+
+// link and unlink maintain both halves of an edge and report both ends touched.
+func (w *writer) link(parent, child *core.Node) {
+	w.touched.edges(parent)
+	w.touched.edges(child)
+	link(parent, child)
+}
+
+func (w *writer) unlink(parent, child *core.Node) {
+	w.touched.edges(parent)
+	w.touched.edges(child)
+	unlink(parent, child)
+}
+
+// bucket is a collection's bucket, created on first use — and reported as created, with the root
+// it hangs from.
+func (w *writer) bucket(collection string) *core.Node {
+	bucket, created := w.lay.ensureBucket(collection, w.userID, w.now)
+	if created {
+		w.touched.created(bucket)
+		w.touched.edges(w.lay.root)
+	}
+	return bucket
 }
 
 // moved is the entities whose parentage the command may have changed: each entity it wrote, and
@@ -206,14 +243,15 @@ func (w *writer) syncParents(node *core.Node, desired map[string]*core.Node) {
 			continue
 		}
 		if parent := w.parentNode(parentID); parent != nil {
-			unlink(parent, node)
+			w.unlink(parent, node)
 		} else {
+			w.touched.edges(node)
 			delete(node.Parents, parentID) // the parent left the graph in this same command
 		}
 	}
 	for _, parent := range desired {
 		if _, linked := node.Parents[parent.ID]; !linked {
-			link(parent, node)
+			w.link(parent, node)
 		}
 	}
 }
@@ -246,8 +284,9 @@ func (w *writer) storeReceipt(result Result) {
 		Result:        result,
 	}
 	node := newGraphNode(nodeID(commandsCollection, w.cmd.ID), w.cmd.ID, w.userID, w.now)
+	w.touched.created(node)
 	node.Metadata[recordKey] = recordText(receipt)
-	link(w.lay.ensureBucket(commandsCollection, w.userID, w.now), node)
+	w.link(w.bucket(commandsCollection), node)
 	w.lay.nodes[commandsCollection][w.cmd.ID] = node
 }
 
@@ -257,6 +296,7 @@ func (w *writer) journal(result Result) {
 	event := Event{Revision: result.Revision, CommandID: w.cmd.ID, Actor: w.cmd.Actor, At: w.now.Format(time.RFC3339Nano), Changes: result.Changes}
 	revision := strconv.FormatUint(event.Revision, 10)
 	root := w.lay.root
+	w.touched.content(root)
 	root.Entries = append(root.Entries, core.Entry{
 		ID:        "graph:event:" + revision,
 		Content:   map[string]interface{}{"type": kindCommand, "event": recordText(event)},

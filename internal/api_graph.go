@@ -129,13 +129,16 @@ func (s *Server) handleGraphCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	s.flushOutstandingForest()
 	var result graph.Result
-	err = s.changeForest(func() error {
+	// TRACKED: the engine says which nodes it wrote, so persistence logs the change and the hub
+	// is told from the same set, and neither walks the forest.
+	err = s.changeForestTracked(func() (*graph.Touched, error) {
 		if !s.graphPermittedLocked(userID, core.WritePermission) {
-			return apiErrorf(http.StatusForbidden, "Insufficient permissions")
+			return nil, apiErrorf(http.StatusForbidden, "Insufficient permissions")
 		}
+		var touched *graph.Touched
 		var commitErr error
-		result, commitErr = s.graph.Commit(s.forest, cmd, userID, time.Now().UTC())
-		return commitErr
+		result, touched, commitErr = s.graph.CommitTracked(s.forest, cmd, userID, time.Now().UTC())
+		return touched, commitErr
 	})
 	if err != nil {
 		s.writeGraphFailure(w, err)
@@ -154,8 +157,23 @@ func (s *Server) handleGraphCommand(w http.ResponseWriter, r *http.Request) {
 // It decides nothing itself. A flush that succeeds ends the doubt and the engine takes the command;
 // one that fails has been logged by changeForest and leaves the forest ahead, which the engine
 // answers as before: 503 for a new command, and a replay for an id it has seen.
+//
+// A REPLAY GOES THROUGH THE SAME DURABLE COMMIT AS AN ORIGINAL. The engine answers a stored
+// result for an id it has seen, but changeForest does not return until the store is durable to
+// the configured policy — the whole forest in snapshot mode, every staged record in tiered mode —
+// so a replay of a command whose write failed is answered 5xx until that write lands, never 200
+// on the strength of a receipt the disk does not yet hold. TestAReplayIsNotAcknowledgedUntilTheCommandIsDurable
+// pins this in both modes.
 func (s *Server) flushOutstandingForest() {
-	if !s.stateWriter.behind() {
+	if !s.persistBehind() {
+		return
+	}
+	if s.tier != nil {
+		// The records are already staged; only the append is owed. A change of nothing would
+		// stage a further record of the same nodes on every retry.
+		if err := s.tier.log.Commit(0); err != nil {
+			s.logger.Failure("Failed to append to the log: %v", err)
+		}
 		return
 	}
 	_ = s.changeForest(func() error { return nil })

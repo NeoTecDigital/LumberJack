@@ -88,6 +88,12 @@ type Server struct {
 	stateSeq uint64
 	// stateWriter makes snapshots durable with the forest UNHELD. See state_writer.go.
 	stateWriter *stateWriter
+	// tier is tiered persistence when the config asks for it, and nil in snapshot mode, where the
+	// stateWriter above is what makes a change durable. See persistence.go.
+	tier *tier
+	// grantsHeld says some node may still carry access grants, so a refresh with no policies left
+	// must still run to clear them. It starts true, because a loaded forest's nodes may carry any.
+	grantsHeld bool
 	// graph is the command engine over the `graph` root of the forest. It keeps the graph decoded
 	// between commands and is used only with the forest held. See internal/graph and api_graph.go.
 	graph          *graph.Engine

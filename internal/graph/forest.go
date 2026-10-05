@@ -263,15 +263,16 @@ func ensureMetadata(metadata map[string]interface{}) map[string]interface{} {
 	return metadata
 }
 
-// ensureBucket is the bucket a collection's nodes hang under, created on first use.
-func (lay *layout) ensureBucket(collection, userID string, now time.Time) *core.Node {
+// ensureBucket is the bucket a collection's nodes hang under, created on first use — and whether
+// this call created it.
+func (lay *layout) ensureBucket(collection, userID string, now time.Time) (*core.Node, bool) {
 	if bucket := lay.buckets[collection]; bucket != nil {
-		return bucket
+		return bucket, false
 	}
 	bucket := newGraphNode(bucketID(collection), bucketName(collection), userID, now)
 	link(lay.root, bucket)
 	lay.buckets[collection] = bucket
-	return bucket
+	return bucket, true
 }
 
 func newGraphNode(id, name, userID string, now time.Time) *core.Node {

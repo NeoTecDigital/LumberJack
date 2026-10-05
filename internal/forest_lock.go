@@ -116,8 +116,27 @@ func (server *Server) readForest(read func()) {
 // is lost, which is exactly what a 500 promised. Nothing acknowledged is ever lost — that is the
 // contract, and TestChangeForestReportsAPersistThatCouldNotLand pins it. (The state writer clears its
 // durable-hash on a failed flush, so the next persist WRITES rather than taking the unchanged skip.)
+//
+// IN TIERED MODE the same hold covers the mutation and the encoding of the CHANGE, and what
+// becomes durable before the answer is the log record rather than a whole state file. See
+// persistence.go.
 func (server *Server) changeForest(change func() error) error {
-	snapshot, err := server.applyChangeLocked(change)
+	return server.commitChange(func() (*graph.Touched, error) { return nil, change() }, false)
+}
+
+// changeForestTracked is changeForest for a caller that can say which nodes it wrote — the graph
+// engine. The change answers the touched set, which persistence logs instead of the forest, and
+// the hub is told from it instead of from a walk of the whole forest.
+func (server *Server) changeForestTracked(change func() (*graph.Touched, error)) error {
+	return server.commitChange(change, true)
+}
+
+// commitChange routes a change to whichever persistence holds the forest.
+func (server *Server) commitChange(change func() (*graph.Touched, error), tracked bool) error {
+	if server.tier != nil {
+		return server.commitTiered(change, tracked)
+	}
+	snapshot, err := server.applyChangeLocked(change, tracked)
 	if err != nil {
 		return err
 	}
@@ -133,20 +152,12 @@ func (server *Server) changeForest(change func() error) error {
 // exclusive hold, and answers the snapshot the caller must make durable.
 //
 // The hold ends when this returns. Nothing below it may touch the disk.
-func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
+func (server *Server) applyChangeLocked(change func() (*graph.Touched, error), tracked bool) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
-	var before *correspondenceSnapshot
-	if server.applicationHubEnabled.Load() {
-		before = server.captureCorrespondence()
-	}
 
-	if err := change(); err != nil {
+	if _, err := server.runChangeLocked(change, tracked); err != nil {
 		return stateSnapshot{}, err
-	}
-	server.refreshAccessGrantsLocked()
-	if before != nil {
-		server.recordCompatibilityChanges(before)
 	}
 
 	snapshot, err := server.encodeStateLocked(server.statePath())
@@ -155,6 +166,44 @@ func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, err
 		return stateSnapshot{}, apiErrorf(http.StatusInternalServerError, "Failed to save state")
 	}
 	return snapshot, nil
+}
+
+// runChangeLocked runs a change and everything that follows a change under the hold: the access
+// grants are refreshed, and the hub is told what changed. The caller holds the forest exclusively.
+//
+// A TRACKED change says which nodes it wrote, so the hub is told from that set and the two walks
+// of the whole forest that used to bracket every write do not run. An untracked change is
+// bracketed as before. Whatever the grant refresh and the hub themselves wrote is added to the
+// tracked set whole, so a persistence that logs the set logs those too.
+func (server *Server) runChangeLocked(change func() (*graph.Touched, error), tracked bool) (*graph.Touched, error) {
+	hub := server.applicationHubEnabled.Load()
+	var before *correspondenceSnapshot
+	if hub && !tracked {
+		before = server.captureCorrespondence()
+	}
+
+	touched, err := change()
+	if err != nil {
+		return nil, err
+	}
+	if tracked && touched == nil {
+		touched = graph.NewTouched()
+	}
+	for _, node := range server.refreshAccessGrantsLocked() {
+		if touched != nil {
+			touched.Rewrite(node)
+		}
+	}
+	switch {
+	case !hub:
+	case touched != nil:
+		if server.recordTrackedChanges(touched) {
+			touched.Rewrite(server.forest)
+		}
+	default:
+		server.recordCompatibilityChanges(before)
+	}
+	return touched, nil
 }
 
 // refuseGraphWrite is the ONE guard every generic write passes through: it refuses a target that

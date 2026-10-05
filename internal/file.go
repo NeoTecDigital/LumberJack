@@ -3,7 +3,6 @@ package internal
 import (
 	"compress/gzip"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -36,8 +35,14 @@ func (server *Server) loadFromFile(filename string) error {
 	}
 	defer file.Close()
 
-	forest, err := server.readState(file)
+	table, err := server.readState(file)
 	if err != nil {
+		return err
+	}
+
+	// The table becomes the forest through whichever persistence the config names: linked as it
+	// is in snapshot mode, or with the hot log replayed over it first in tiered mode.
+	if err := server.openStore(table); err != nil {
 		return err
 	}
 
@@ -46,11 +51,10 @@ func (server *Server) loadFromFile(filename string) error {
 	// never name. The ids are DERIVED from the position the file already records, so they are the
 	// same on every load of that file rather than fresh on every start, and the ordinary persist
 	// carries them to disk at the first mutation. See core/entry_identity.go.
-	if named := core.BackfillEntryIDs(forest); named > 0 {
+	if named := core.BackfillEntryIDs(server.forest); named > 0 {
 		server.logger.Info("Named %d entries that were written before entries had ids", named)
 	}
 
-	server.forest = forest
 	if server.storageRewrite {
 		// The opt-in migration/re-wrap is atomic and completes before serving.
 		// A failed KMS request leaves the original file untouched and aborts startup.
@@ -66,10 +70,13 @@ func (server *Server) loadFromFile(filename string) error {
 	return nil
 }
 
-// readState reads whichever shape the file is in and answers the forest it holds.
-func (server *Server) readState(file *os.File) (*core.Node, error) {
+// readState reads whichever shape the file is in and answers the node table it holds, unlinked.
+func (server *Server) readState(file *os.File) (*stateTable, error) {
 	if forest, encrypted, err := server.readEncryptedState(file); encrypted || err != nil {
-		return forest, err
+		if err != nil {
+			return nil, err
+		}
+		return tableFromForest(forest)
 	}
 	storage, err := server.storageCodec()
 	if err != nil {
@@ -92,33 +99,19 @@ func (server *Server) readState(file *os.File) (*core.Node, error) {
 	}
 
 	if flat {
-		forest, err := decodeState(data)
+		table, err := decodeTable(data)
 		if err != nil {
 			server.logger.Failure("Failed to read the node table: %v", err)
 			return nil, fmt.Errorf("error reading the node table: %v", err)
 		}
-		return forest, nil
+		return table, nil
 	}
 
-	return server.readNestedState(data)
-}
-
-// readNestedState reads a file written before the node table existed, and REJOINS it.
-//
-// Such a file writes a node once per path to it, so a node with two parents comes back as two
-// objects carrying one id — see core.Canonicalize. The rejoin is exact because every occurrence of
-// one id in such a file is a serialization of the same object.
-func (server *Server) readNestedState(data []byte) (*core.Node, error) {
-	var loadedForest core.Node
-	if err := json.Unmarshal(data, &loadedForest); err != nil {
-		server.logger.Failure("Failed to unmarshal data: %v", err)
-		return nil, fmt.Errorf("error validating data: %v", err)
+	forest, err := server.readNestedState(data)
+	if err != nil {
+		return nil, err
 	}
-
-	if forks := core.Canonicalize(&loadedForest); forks > 0 {
-		server.logger.Info("Rejoined %d duplicated occurrences of shared nodes while loading the state file", forks)
-	}
-	return &loadedForest, nil
+	return tableFromForest(forest)
 }
 
 // hasStateMagic reports whether the file begins with the banner, leaving the reader positioned
@@ -175,6 +168,16 @@ func (server *Server) readSealedPayload(reader io.Reader) ([]byte, error) {
 func (server *Server) persistState(filename string) error {
 	server.logger.Enter("persistState")
 	defer server.logger.Exit("persistState")
+
+	if server.tier != nil {
+		// Tiered: whatever changed goes to the log as one record, and the state file is written
+		// at once — this path is an install or a migration, which must leave a file behind.
+		if err := server.changeForest(func() error { return nil }); err != nil {
+			return err
+		}
+		_, err := server.snapshotCold()
+		return err
+	}
 
 	snapshot, err := server.snapshotForest(filename)
 	if err != nil {
