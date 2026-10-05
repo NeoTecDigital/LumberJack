@@ -44,6 +44,10 @@ type Log struct {
 	failedSeq  uint64
 	failedErr  error
 	attempts   uint64
+	// syncErr is the failure of the last background sync, cleared by the next one that succeeds.
+	// Under interval and none a write is acknowledged before it is synced, so a sync that fails is
+	// the one way an acknowledged write can be not yet durable; the log reports itself behind.
+	syncErr error
 
 	current  *segment
 	segments []*segment
@@ -90,11 +94,13 @@ func (l *Log) LastStaged() uint64 {
 	return l.nextSeq - 1
 }
 
-// Behind reports that the newest write attempted failed and nothing has succeeded since.
+// Behind reports that the newest write attempted failed and nothing has succeeded since, or that
+// the last sync of acknowledged writes failed: either way the forest is ahead of what the disk is
+// known to hold.
 func (l *Log) Behind() bool {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	return l.failedSeq > l.writtenSeq
+	return l.failedSeq > l.writtenSeq || l.syncErr != nil
 }
 
 // Commit answers once seq is durable to the configured hot_sync. It MUST be called with no lock on
@@ -368,6 +374,7 @@ func (l *Log) Sync() error {
 
 	l.mutex.Lock()
 	l.writing = false
+	l.syncErr = err
 	if err == nil && l.syncedSeq < written {
 		l.syncedSeq = written
 	}

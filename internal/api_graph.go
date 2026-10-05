@@ -62,6 +62,15 @@ func (s *Server) readGraph(w http.ResponseWriter, r *http.Request, read func() (
 		writeGraphError(w, http.StatusUnauthorized, "unauthorized", "Sign in required", nil)
 		return
 	}
+	// A READ SHOWS NOTHING THE DISK DOES NOT HOLD. A receipt, the graph or the journal read out of
+	// memory while a failed write is outstanding would let a caller act on a command that a kill
+	// still loses — the daemon replays from GET /graph/commands/{id}. The read first retries the
+	// write, and answers 503 while the store is still behind. See flushOutstandingForest.
+	s.flushOutstandingForest()
+	if s.persistBehind() {
+		s.writeGraphFailure(w, graph.ErrUnavailable)
+		return
+	}
 	var body interface{}
 	var err error
 	s.readForest(func() {
@@ -169,10 +178,14 @@ func (s *Server) flushOutstandingForest() {
 		return
 	}
 	if s.tier != nil {
-		// The records are already staged; only the append is owed. A change of nothing would
-		// stage a further record of the same nodes on every retry.
+		// The records are already staged; only the append, or the sync behind it, is owed. A
+		// change of nothing would stage a further record of the same nodes on every retry.
 		if err := s.tier.log.Commit(0); err != nil {
 			s.logger.Failure("Failed to append to the log: %v", err)
+			return
+		}
+		if err := s.tier.log.Sync(); err != nil {
+			s.logger.Failure("Failed to sync the log: %v", err)
 		}
 		return
 	}

@@ -64,6 +64,10 @@ journal; `GET /graph/commands/{id}` reads a receipt.
   mode, the log in tiered mode — and is answered 5xx again if that fails, rather than `200` with
   `replayed: true` on the strength of a receipt the disk does not yet hold. Pinned in both modes
   by a test that refuses the disk, retries, restores it and reopens.
+- **The reads show nothing the disk does not hold.** `GET /graph`, `GET /graph/events` and
+  `GET /graph/commands/{id}` first retry an outstanding failed write — or, in tiered mode, a
+  failed append or sync — and answer 503 `unavailable` while the store is still behind, instead of
+  serving a receipt, a revision or a journal entry held only in memory.
 - The engine keeps the graph decoded between commands and checks each command against what it
   touches, so a command costs what it changes.
 

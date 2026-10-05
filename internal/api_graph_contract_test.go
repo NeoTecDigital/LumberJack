@@ -57,8 +57,10 @@ func TestGraphRefusesNewCommandsUntilAFailedFlushIsRetried(t *testing.T) {
 	if status != http.StatusServiceUnavailable || graphErrorCodeOf(body) != "unavailable" {
 		t.Fatalf("a new command while the forest is ahead of its file: %d %v", status, body)
 	}
-	if status, _ := graphCall(t, server, token, "GET", "/graph/commands/move-2", nil); status != http.StatusNotFound {
-		t.Fatalf("the refused command left a receipt: %d", status)
+	// While the forest is ahead of its file the reads answer 503 too: a receipt held only in
+	// memory is not shown, and neither is the absence of one. See readGraph.
+	if status, body := graphCall(t, server, token, "GET", "/graph/commands/move-2", nil); status != http.StatusServiceUnavailable || graphErrorCodeOf(body) != "unavailable" {
+		t.Fatalf("a receipt read while the forest is ahead of its file: %d %v", status, body)
 	}
 	if status, body := graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-1", 10, 1)); status != http.StatusInternalServerError {
 		t.Fatalf("the retry while the disk still fails: %d %v", status, body)
@@ -68,6 +70,9 @@ func TestGraphRefusesNewCommandsUntilAFailedFlushIsRetried(t *testing.T) {
 	status, body = graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-1", 10, 1))
 	if status != http.StatusOK || body["replayed"] != true || body["revision"].(float64) != 2 {
 		t.Fatalf("the retry of the same command id did not converge: %d %v", status, body)
+	}
+	if status, _ := graphCall(t, server, token, "GET", "/graph/commands/move-2", nil); status != http.StatusNotFound {
+		t.Fatalf("the refused command left a receipt: %d", status)
 	}
 	status, body = graphCall(t, server, token, "POST", "/graph/commands", graphMove("move-2", 20, 2))
 	if status != http.StatusOK || body["replayed"] != false || body["revision"].(float64) != 3 {
