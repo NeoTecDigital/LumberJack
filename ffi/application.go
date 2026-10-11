@@ -23,15 +23,11 @@ func ic_lj_application_configure(h C.lj_handle_t, req C.lj_cstr, n C.int64_t) (s
 	if bad != statusOK {
 		return bad
 	}
-	var config struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Secret   string `json:"secret"`
-	}
+	var config applicationConfiguration
 	if json.Unmarshal(body, &config) != nil {
 		return statusCodec
 	}
-	if err := handle.ConfigureApplication(config.Username, config.Password, config.Secret); err != nil {
+	if err := configureApplication(handle, config); err != nil {
 		return statusInvalid
 	}
 	return statusOK

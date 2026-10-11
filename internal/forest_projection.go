@@ -62,7 +62,7 @@ func newNodeView(node *core.Node, userID string) nodeView {
 //
 // The caller must hold the forest for reading.
 func (p *forestProjector) project(node *core.Node) nodeView {
-	if node == nil {
+	if node == nil || isStagedNode(node) {
 		return nodeView{}
 	}
 	if p.emitted[node.ID] {

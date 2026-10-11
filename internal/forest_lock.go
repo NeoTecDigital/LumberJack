@@ -135,13 +135,21 @@ func (server *Server) changeForest(change func() error) error {
 func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
+	protected, err := server.captureStagedProtectionLocked()
+	if err != nil {
+		return stateSnapshot{}, err
+	}
 	var before *correspondenceSnapshot
 	if server.applicationHubEnabled.Load() {
 		before = server.captureCorrespondence()
 	}
 
-	if err := change(); err != nil {
-		return stateSnapshot{}, err
+	changeErr := change()
+	if err := server.verifyStagedProtectionLocked(protected); err != nil {
+		return stateSnapshot{}, apiErrorf(http.StatusForbidden, "%v", err)
+	}
+	if changeErr != nil {
+		return stateSnapshot{}, changeErr
 	}
 	server.refreshAccessGrantsLocked()
 	if before != nil {

@@ -31,12 +31,13 @@ import (
 // Its fields are set once at Open and never change except refs, which the registry mutex guards. The
 // server pointer is what two handles over one path SHARE.
 type Runtime struct {
-	server *internal.Server
-	path   string   // canonical state path — the registry key; the flock is on its <state>.lock sidecar
-	lock   *os.File // the file description holding the sidecar flock, released on the last Close
-	epoch  uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
-	refs   int      // open handles over this runtime; guarded by registryMu
-	closed chan struct{}
+	domainLifetime *domainRuntimeLifetime
+	server         *internal.Server
+	path           string   // canonical state path — the registry key; the flock is on its <state>.lock sidecar
+	lock           *os.File // the file description holding the sidecar flock, released on the last Close
+	epoch          uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
+	refs           int      // open handles over this runtime; guarded by registryMu
+	closed         chan struct{}
 	// systemDefault is set when this runtime opened an EMPTY forest and took the default `system`
 	// user. Every handle over it then acts as system; on a forest with real users it is false and each
 	// handle acts as its own principal.
@@ -80,63 +81,48 @@ var (
 // is Adopted. The principal is bound here and for the life of the handle: an embedder acts as one
 // identity per handle, and holds as many handles as it acts as identities.
 func Open(config Config, principal string) (*Handle, error) {
-	// Pin DatabasePath ABSOLUTE into the config before anything reads it. The registry key and the
-	// flock are absolute, but internal.NewCore and every subsequent persist re-resolve the config's
-	// path LAZILY for the whole life of the runtime — so a host that chdir's after Open would
-	// otherwise resolve the same config to a different file, opening a second runtime and a second
-	// flock over one logical path, exactly what the refcount exists to prevent. A C host is precisely
-	// where that stops being Lumberjack's to guarantee.
 	config, err := canonicalConfig(config)
 	if err != nil {
 		return nil, err
 	}
-
 	key, err := canonicalPath(config)
 	if err != nil {
 		return nil, err
 	}
-
 	registryMu.Lock()
+	for domainOpenWait(registry[key]) != nil {
+		wait := domainOpenWait(registry[key])
+		registryMu.Unlock()
+		<-wait
+		registryMu.Lock()
+	}
 	defer registryMu.Unlock()
-
 	if rt, ok := registry[key]; ok {
 		rt.refs++
 		return rt.newHandle(principal), nil
 	}
+	return openRuntimeLocked(config, key, principal)
+}
 
-	// The lock FIRST: a second process must be refused before this one builds a forest it would then
-	// have to tear down.
+func openRuntimeLocked(config Config, key, principal string) (*Handle, error) {
+	// Canonical path/flock precede construction; legacy system bootstrap remains unchanged.
 	lock, err := acquireLock(key)
 	if err != nil {
 		return nil, err
 	}
-
 	server, err := internal.NewCore(config)
 	if err != nil {
 		releaseLock(lock)
 		return nil, err
 	}
-
-	// A fresh forest has no users, so no principal could write to it — the embedded path mints none.
-	// An empty forest gets the default unlocked `system` user, and every handle over this runtime acts
-	// as it; a forest that already has users is left as it was and normal auth applies. See
-	// newHandle, and internal.EnsureSystemUser for why this is one enforcement path, not a bypass.
 	systemDefault, err := server.EnsureSystemUser()
 	if err != nil {
 		_ = server.Shutdown(context.Background())
 		releaseLock(lock)
 		return nil, err
 	}
-
-	rt := &Runtime{
-		server:        server,
-		path:          key,
-		lock:          lock,
-		epoch:         newEpoch(),
-		refs:          1,
-		closed:        make(chan struct{}),
-		systemDefault: systemDefault,
-	}
+	rt := &Runtime{server: server, path: key, lock: lock, epoch: newEpoch(), refs: 1,
+		closed: make(chan struct{}), systemDefault: systemDefault}
 	registry[key] = rt
 	return rt.newHandle(principal), nil
 }
@@ -167,16 +153,22 @@ func (rt *Runtime) newHandle(principal string) *Handle {
 // releases the flock so another process may take the path.
 func (rt *Runtime) close() error {
 	registryMu.Lock()
-	defer registryMu.Unlock()
-
 	if rt.refs <= 0 {
+		registryMu.Unlock()
 		return nil
 	}
 	rt.refs--
 	if rt.refs > 0 {
+		registryMu.Unlock()
 		return nil
 	}
-
+	if rt.domainLifetime != nil {
+		wait := make(chan struct{})
+		rt.domainLifetime.closing = wait
+		registryMu.Unlock()
+		return rt.closeDomainRuntime(wait)
+	}
+	defer registryMu.Unlock()
 	delete(registry, rt.path)
 	close(rt.closed)
 	err := rt.server.Shutdown(context.Background())
