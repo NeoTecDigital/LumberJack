@@ -16,6 +16,9 @@ type ProcessInfo struct {
 	DashboardUp   bool   `json:"dashboard_up"`
 	LogPath       string `json:"log_path"`
 	DatabasePath  string `json:"database_path"`
+	// MaxObjectBytes caps one object in the object log beside the state file. Zero means the engine's
+	// default (internal.DefaultMaxObjectBytes, 64 MiB). It is a cap on the object, not on the request.
+	MaxObjectBytes int64 `json:"max_object_bytes,omitempty"`
 }
 
 type Config struct {

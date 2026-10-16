@@ -233,6 +233,54 @@ curl http://localhost:8080/health
 # {"status":"ok","version":"0.3.0-alpha"}
 ```
 
+### The object log
+
+Beside the state file is `<name>.objects/`, an **append-only, content-addressed** store for bytes
+that are history rather than working set: file contents, trees, commits. The state file holds the
+whole forest — rewritten on every mutation in snapshot mode, and on every cold snapshot in tiered
+mode — which is the right shape for the forest and the wrong shape for a record that only ever
+grows, and the object log is where that record goes. **Writing an object never rewrites `.dat`** or
+appends to its log, takes no forest lock, and announces nothing on `/stream`.
+
+An object is an immutable byte string. Its **id is the BLAKE3-256 of its bytes**, as lowercase hex —
+the same hash `ffi/canon` derives identities with — so the same content put twice is one object, an
+id names bytes and not a place, and a put of bytes already held is a no-op that answers the same id
+with `"existed": true`. **There is no delete.**
+
+The directory holds numbered segments, `00000001.seg`, `00000002.seg`, …, each beginning with the
+banner `LUMBERJACK-OBJECTS-1`. A record is the 32-byte id, a one-byte encoding flag, an 8-byte
+little-endian payload length, the payload, and a CRC-32C over all of it. A segment rolls over at
+256 MiB; a record is never split. **The index is derived, not stored**: every open rebuilds it by
+scanning the segments, so the segments are the truth and there is no index file to disagree with
+them.
+
+**A put is not acknowledged until the record is on the disk** — the segment is synced after every
+record, and a new segment and its directory entry are synced before the first record enters it,
+the same discipline the state writer keeps. Because of that, at most **one** record can ever be
+partial: the last one in the last segment. On open, a record the file does not have all of, or one
+whose CRC fails and after which there is nothing but the end of the file or zeros, is a **torn
+tail** — it was never acknowledged, and it is cut off. A record whose CRC fails and which is
+**followed by more records** is corruption of something that was acknowledged: it is **not** cut
+off, because the objects after it were acknowledged too. It is indexed as corrupt and `GET` answers
+`500` naming the object as corrupt rather than `404`. Every read **re-hashes** the bytes against the
+id, so a payload altered after the index was built is refused the same way.
+
+**The per-object cap is `max_object_bytes`** in the process configuration, **64 MiB** when unset,
+and deliberately far above the 10 MiB attachment limit. An oversized object is refused `413`
+naming the cap and nothing is stored.
+
+**Under an encrypted storage mode (`kms` or `local-test`), objects are sealed.** `<name>.objects/key`
+holds a store id and a master key wrapped by the same KMS or local-test wrapper that wraps the state
+file's keys; each object is sealed under its own random key with AES-GCM, that key sealed under the
+master, with the object id in the additional data — the shape `secure_storage.go` gives a resource.
+The plaintext is nowhere in the segment. **The id stays the BLAKE3 of the plaintext**, in the clear in
+the record header, because content addressing requires the same bytes to have the same id in every
+store; it follows that a sealed store discloses whether it holds a known file, which the sealed state
+file does not. Objects are not re-keyed per snapshot and carry no per-account grants: an appended
+record is never rewritten, and read access is the route's permission check. A plaintext object store
+under an encrypted mode, or a sealed one under none, is **refused** — there is no object migration in
+either direction, as there is none for the state file without the explicit opt-in.
+
 ## TODOS:
  - [ ] Improved Testing
     - [ ] Fix Testing Logging and Scoping to create Run directives
@@ -399,6 +447,45 @@ number of bytes actually stored, not the size the upload declared.
   "uploaded_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+### Objects
+
+Raw bytes in, raw bytes out, addressed by their BLAKE3-256 — see *The object log* above for what is
+on the disk. The permission is the **forest root's**: an object belongs to no node, so `POST` asks
+for Write on the root and `GET`/`HEAD` for Read on it. A session granted only deeper than the root
+is refused `403`. A malformed id is `400`; an unknown one `404`; an object whose stored bytes no
+longer hash to their id is `500` and the message says so.
+
+#### Put Object
+The body is the object. The receipt's `size` is what was stored, and `existed` says the bytes were
+already there — in which case nothing was written.
+```bash
+curl -X POST http://localhost:8080/objects \
+  -H "Authorization: Bearer <token>" \
+  --data-binary @/path/to/file
+# {"id":"af13…","size":1048576,"existed":false}
+```
+
+#### Get Object
+Answers `application/octet-stream` with `Content-Length`, verified against the id before a byte is
+sent.
+```bash
+curl http://localhost:8080/objects/{id} -H "Authorization: Bearer <token>" -o file
+```
+
+#### Head Object
+The same headers and no body; the size without the read.
+```bash
+curl -I http://localhost:8080/objects/{id} -H "Authorization: Bearer <token>"
+```
+
+**Through the in-process `call` path** (`ic_lj_application_call`, `embedded.ApplicationCall`) the
+request and response are JSON envelopes whose `body` is a `[]byte`, which Go encodes as **standard
+base64**: a binary object goes up as base64 in the request `body` and comes back as base64 in the
+response `body`. The path's 64 MiB cap applies to the **decoded** bytes in each direction, so the
+effective per-object limit through `call` is the smaller of `max_object_bytes` and 64 MiB, and the
+envelope a C caller hands over is bounded by `LJ_MAX_IN_LEN` (256 MiB), which the base64 of a 64 MiB
+object fits inside.
 
 ### Node Management
 
@@ -757,7 +844,7 @@ All endpoints return standard HTTP status codes:
 - 403: Forbidden
 - 404: Not Found
 - 409: Conflict (a plan for an event id that has already started)
-- 413: Request Entity Too Large (an upload over the attachment size limit)
+- 413: Request Entity Too Large (an upload over the attachment size limit, or an object over `max_object_bytes`)
 - 500: Internal Server Error
 
 Error responses include a message:
