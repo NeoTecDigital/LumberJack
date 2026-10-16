@@ -236,10 +236,11 @@ curl http://localhost:8080/health
 ### The object log
 
 Beside the state file is `<name>.objects/`, an **append-only, content-addressed** store for bytes
-that are history rather than working set: file contents, trees, commits. The state file is rewritten
-whole on every mutation, which is the right shape for the forest and the wrong shape for a record
-that only ever grows — and the object log is where that record goes. **Writing an object never
-rewrites `.dat`**, takes no forest lock, and announces nothing on `/stream`.
+that are history rather than working set: file contents, trees, commits. The state file holds the
+whole forest — rewritten on every mutation in snapshot mode, and on every cold snapshot in tiered
+mode — which is the right shape for the forest and the wrong shape for a record that only ever
+grows, and the object log is where that record goes. **Writing an object never rewrites `.dat`** or
+appends to its log, takes no forest lock, and announces nothing on `/stream`.
 
 An object is an immutable byte string. Its **id is the BLAKE3-256 of its bytes**, as lowercase hex —
 the same hash `ffi/canon` derives identities with — so the same content put twice is one object, an

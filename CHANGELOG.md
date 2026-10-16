@@ -71,6 +71,31 @@ journal; `GET /graph/commands/{id}` reads a receipt.
 - The engine keeps the graph decoded between commands and checks each command against what it
   touches, so a command costs what it changes.
 
+### Object log
+
+An append-only, content-addressed store for bytes that are history rather than working set: file
+contents, trees, commits. It lives beside the state file in `<name>.objects/`, and writing an
+object never rewrites `.dat`, takes no forest lock and announces nothing on `/stream`.
+
+- **Routes.** `POST /objects` stores the body and answers `{"id","size","existed"}`;
+  `GET /objects/{id}` answers the bytes as `application/octet-stream`; `HEAD /objects/{id}` answers
+  the same headers without the body. The permission is the forest root's: Write to put, Read to get.
+  The same routes run through the in-process `call` path (`ic_lj_application_call`,
+  `embedded.ApplicationCall`), with the body as standard base64.
+- **The id is the BLAKE3-256 of the bytes**, as lowercase hex. The same bytes put twice are one
+  object, and the second put writes nothing and answers `existed: true`. There is no delete.
+- **Segments, not an index file.** Numbered segments (`00000001.seg`, …) of records carrying the id,
+  an encoding flag, a length, the payload and a CRC-32C, rolled over at 256 MiB. Every open rebuilds
+  the index by scanning them.
+- **A put is acknowledged only once it is on the disk**: the segment is synced after every record.
+  A torn last record is cut on open. A bad record followed by others is kept and reported as
+  corrupt (`500`), not dropped. Every read re-hashes the bytes against the id.
+- **`max_object_bytes`** in the process configuration caps one object, 64 MiB when unset. An
+  oversized object is refused `413` and nothing is stored.
+- **Sealed under encrypted storage** (`kms`, `local-test`): each object is sealed under its own key,
+  wrapped under a store master key in `<name>.objects/key`. The id stays the BLAKE3 of the plaintext.
+  A plaintext object store under an encrypted mode, or a sealed one under none, is refused.
+
 ## 0.3.2
 
 The last release before the changelog. See the git history.
