@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -91,9 +92,20 @@ func accessTargets(g accessGraph, grant core.AccessGrant) []string {
 	sort.Strings(ids)
 	return ids
 }
-func (s *Server) refreshAccessGrantsLocked() {
+
+// refreshAccessGrantsLocked recomputes every node's grants from the policies and answers the
+// nodes whose grants changed, so a persistence that logs changes can log those.
+//
+// With no policies and no grants left to clear there is nothing to recompute, and the walk of the
+// forest it would take is skipped: that is every write on a store that has never used /access.
+func (s *Server) refreshAccessGrantsLocked() []*core.Node {
+	if len(s.forest.AccessPolicies) == 0 && !s.grantsHeld {
+		return nil
+	}
 	g := s.accessGraphLocked()
-	for _, node := range g.nodes {
+	before := make(map[string]map[string]core.AccessGrant, len(g.nodes))
+	for id, node := range g.nodes {
+		before[id] = node.AccessGrants
 		node.AccessGrants = nil
 	}
 	for id, grant := range s.forest.AccessPolicies {
@@ -111,6 +123,30 @@ func (s *Server) refreshAccessGrantsLocked() {
 			node.AccessGrants[id] = grant
 		}
 	}
+	changed, held := []*core.Node{}, false
+	for id, node := range g.nodes {
+		held = held || len(node.AccessGrants) > 0
+		if !sameGrants(before[id], node.AccessGrants) {
+			changed = append(changed, node)
+		}
+	}
+	s.grantsHeld = held
+	return changed
+}
+
+// sameGrants reports whether two grant maps hold the same grants. Nil and empty are the same: both
+// are omitted from the node's encoding.
+func sameGrants(a, b map[string]core.AccessGrant) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for id, grant := range a {
+		other, present := b[id]
+		if !present || !reflect.DeepEqual(grant, other) {
+			return false
+		}
+	}
+	return true
 }
 func accessSources(node *core.Node, userID, except string, extra *core.AccessGrant) []map[string]interface{} {
 	sources := []map[string]interface{}{}

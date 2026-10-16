@@ -170,13 +170,16 @@ func (server *Server) changeEdge(w http.ResponseWriter, r *http.Request, announc
 
 	changedAudience := []map[string]interface{}{}
 	err := server.changeForest(func() error {
-		parent, err := server.getNodeFromPath(parentPath)
+		// Neither end of an edge may be the graph's: linking a graph node elsewhere would give it a
+		// second name the engine does not know, and linking anything beneath it would put a node
+		// there that no command made.
+		parent, err := server.writeTargetLocked(parentPath, "parent: ")
 		if err != nil {
-			return apiErrorf(http.StatusNotFound, "parent: %v", err)
+			return err
 		}
-		child, err := server.getNodeFromPath(childPath)
+		child, err := server.writeTargetLocked(childPath, "child: ")
 		if err != nil {
-			return apiErrorf(http.StatusNotFound, "child: %v", err)
+			return err
 		}
 
 		if !parent.CheckPermission(userID, core.WritePermission) ||

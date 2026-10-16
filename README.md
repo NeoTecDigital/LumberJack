@@ -46,6 +46,33 @@ To delete configuration:
 ./lumberjack delete
 ```
 
+### Configuration: `config.yaml`
+
+The CLI keeps its databases in `/etc/lumberjack/config.yaml`. Two optional blocks say how a
+forest reaches the disk; left out, both are the defaults, which is exactly what every earlier
+build did:
+
+```yaml
+persistence:
+  mode: snapshot          # default: the whole state file per write. "tiered": hot log + cold snapshot
+  hot_sync: commit        # when the hot log is synced to disk: commit | interval | none
+  hot_sync_interval_ms: 20
+  cold_every_commits: 2000
+  cold_every_seconds: 60
+sync:
+  role: single            # single | primary | replica — only single runs in this build
+  listen: ""              # primary: address replicas connect to
+  primary: ""             # replica: the primary's address
+  ack: local              # when a commit is acknowledged: local | one | quorum
+```
+
+**The embedded runtime reads the same two blocks from `<database_path>/config.yaml`**, beside the
+state file, when the config it was opened with leaves them empty. A host that opens a forest
+through `embedded.Open` or the C ABI opts into tiered persistence by writing that file. `lumberjack
+serve --data-dir DIR` reads `DIR/config.yaml` the same way. A block that names something this
+build does not do — a misspelt mode, `role: replica` — refuses to open rather than running as
+something else.
+
 ## The state file
 
 Everything the engine holds lives in one file, `<name>.dat`, in the configured database path. It is
@@ -127,6 +154,77 @@ with a volatile write cache it does not honour, or a filesystem mounted `nobarri
 other moment loses only writes that were never acknowledged. A write that fails to reach the disk is
 answered **500**, and the change stays in memory: the process is then serving a forest newer than
 its file, and it must be restarted, which drops back to the last state that was acknowledged.
+
+### Tiered persistence: `mode: tiered`
+
+Rewriting the whole file per write costs the size of the store: measured through the graph
+engine, 101 ms per command at 2,000 records and 527 ms at 10,000, growing with every write ever
+made because receipts, journal and history accumulate. `mode: tiered` makes a write cost the size
+of the change.
+
+- **Hot layer.** Every commit appends one record to an append-only log beside the state file,
+  `<name>.dat.log.<sequence>`: a sequence number, the nodes it changed (each encoded as the state
+  codec encodes a node), the ids it deleted, a length and a checksum. **A 200 means the record is
+  as durable as `hot_sync` asks**: `commit` syncs it before answering; `interval` answers once it
+  is written and syncs in the background every `hot_sync_interval_ms`; `none` leaves the sync to
+  the operating system. Concurrent commits share one write and one fsync. A record that fails to
+  reach the disk is retried ahead of the next commit, and the engine refuses new graph commands
+  until it lands.
+- **Cold layer.** A background writer rewrites the full state file with the same atomic writer as
+  snapshot mode every `cold_every_commits` commits or `cold_every_seconds` seconds, and on a clean
+  shutdown. The document carries `log_sequence`, the last record it contains, so it is written
+  atomically with the forest. Segments are deleted only once a durable state file wholly covers
+  them. **The forest is held only for the encode**: a commit during a snapshot waits for one
+  encode of the forest, not for the hash, the gzip, the write or the fsyncs.
+- **Recovery.** Load the state file, replay the log past its sequence, in order. A torn tail in
+  the last segment — a record left short or unverifiable by a crash mid-write, with nothing
+  intact after it — is cut; it was never acknowledged. Anything else refuses to open with an error
+  naming the segment and the offset: a damaged record followed by an intact one, an intact record
+  out of sequence, or a log that begins past what the state file covers.
+- **The graph engine hands the log its changed nodes.** A command logs the nodes it wrote: the
+  record's node with its new history entry, the receipt, and the graph root with the one journal
+  entry it appended — not the whole journal, and not the root's child list when no entity moved.
+  Every other write route logs what a comparison of the whole forest against its last encoding
+  finds changed; correct, and the size of the forest.
+- **The change sequence survives a restart.** The mutation stream numbers from the log's last
+  record on open, so `/changes` and `/stream` cursors do not restart at one.
+- **An encrypted store refuses `mode: tiered`**, with an error that says why: the sealed state
+  file would have a plaintext log beside it.
+
+### Where the graph lives
+
+The command engine behind `/graph` (see **Graph** under API Endpoints) keeps **no file of its own**.
+Everything it holds is in the forest, under one child of the root named `graph`, written by the
+same lock and the same writer as every other change — so a `200` from `POST /graph/commands` is the
+same promise as every other `200` above, and a restart loses nothing it acknowledged.
+
+- **Each entity is a node** under `graph`. Containment is parentage: an entity with an occurrence
+  in a scope is a child of that scope's node, and one in no scope hangs from `graph` itself.
+- **Occurrences, edges, views, aliases and command receipts** are nodes under `graph/_occurrences`,
+  `graph/_edges`, `graph/_views`, `graph/_aliases` and `graph/_commands`.
+- A record is stored on its node as **JSON text** under `metadata["graph.record"]`, byte for byte,
+  so integer geometry and revisions never pass through a float.
+- **Every command appends one journal entry** to the `graph` node — revision, command id, actor,
+  time and the list of changes — which is what `GET /graph/events` pages, so the journal survives a
+  restart. **Every put appends one history entry** to the record's own node, holding the prior
+  value, the command id and the actor. **Receipts never expire**: a retry replays, years later.
+- **A delete keeps the node.** The record text is replaced by a **tombstone** under
+  `metadata["graph.tombstone"]` — the record's last revision, its kind and the value it held — and a
+  history entry records the delete, so nothing the node's history held is lost. A bucketed record's
+  tombstone stays in its bucket; a deleted entity leaves the containment tree for
+  `graph/_tombstones`. Re-creating the id takes the same node up again.
+- **Only the engine writes beneath `graph`.** Every generic write route — `POST /nodes`,
+  `PATCH /nodes/{path}/metadata`, `DELETE /nodes/{path}`, `/nodes/link`, `/entries`, `/events`,
+  `/time`, `/attachments`, `/workspace/commands` — answers **403** for a target that is `graph` or
+  anything under it, whoever asks. The generic *read* routes still show it.
+- **The `graph` node is created by the first command, for the principal that sent it and no one
+  else.** It does not inherit the forest root's users: holding Write on the forest root is not
+  holding anything on the graph. Its creator is its Admin and grants others through `/access`.
+- The engine keeps the graph **decoded in memory** between commands and checks each command against
+  what it touches, so a command costs what it changes rather than what the graph holds. The forest
+  is still the only store: the copy is rebuilt from it on open.
+- Node ids are namespaced by collection (`graph:entities:<id>`, `graph:occurrences:<id>`, …) because
+  the state file keys its node table by id and an entity and an occurrence may share one.
 
 The version the engine answers with is on `GET /health`, which needs no credentials:
 
@@ -517,6 +615,82 @@ curl -X POST http://localhost:8080/settings/update \
     "server_port": "8080",
     "dashboard_url": "http://localhost:3000"
   }'
+```
+
+### Graph
+
+The command engine: a graph of **entities**, **occurrences** (an entity placed in a scope, with
+fixed-point geometry), **edges**, **views** and **aliases**, changed only through **all-or-nothing
+commands** that name the revisions they replace. The routes sit on the main router behind the same
+session as everything else. A command needs **Write** on the `graph` node and the reads need
+**Read**; until the first command creates that node the check is on the forest root, and the
+principal whose command creates it becomes its only member. State lives in the forest — see *Where
+the graph lives* above.
+
+#### Read the graph
+```bash
+curl http://localhost:8080/graph -H "Authorization: Bearer <token>"
+# {"revision":3,"entities":{...},"occurrences":{...},"edges":{},"views":{},"aliases":{}}
+```
+
+#### Commit a command
+Every entity write names the revision it replaces (`0` to create); every membership or edge change
+names the `topology` revision of each scope it touches. An entity is `id` (64 lowercase hex) and a
+nonblank `kind`, both immutable after creation; `revision` and `topology_revision` are the engine's
+and a put that omits them does not erase them. A put's `value.id` may be left out; one that is
+present and differs from the operation's `id` is refused `400`, naming both. A batch is applied
+whole or not at all. The body takes exactly `id`, `fingerprint`, `actor`, `expected` and
+`operations` — any other field is `400`.
+```bash
+curl -X POST http://localhost:8080/graph/commands \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{
+    "id": "cmd-1", "fingerprint": "sha256-of-the-intent", "actor": "agent:planner",
+    "expected": {"entities": {"<scope>": 0, "<task>": 0}, "occurrences": {"<occ>": 0}, "topology": {"<scope>": 0}},
+    "operations": [
+      {"op": "put", "collection": "entities", "id": "<scope>", "value": {"id": "<scope>", "kind": "scope"}},
+      {"op": "put", "collection": "entities", "id": "<task>", "value": {"id": "<task>", "kind": "task"}},
+      {"op": "put", "collection": "occurrences", "id": "<occ>", "value": {"id": "<occ>", "entity_id": "<task>", "scope_id": "<scope>",
+        "geometry": {"x": 0, "y": 0, "width": 1000, "height": 1000, "scale": 1000000}}}
+    ]
+  }'
+# {"command_id":"cmd-1","revision":1,"changes":[{"collection":"entities","id":"<scope>","revision":1,"op":"put"},...],"replayed":false}
+```
+Resending the same `id` with the same payload **replays** the stored result with `"replayed": true`
+— after a restart too. The same `id` with a different payload is `409`. "The same payload" is the
+body as it was sent: an `actor` that was left out is compared as left out, whichever session
+retries, and it is recorded as that session's user. A stale revision is `409` and names what
+disagreed:
+```json
+{"error":{"code":"conflict","message":"occurrences \"<occ>\" expected 0, current 1","collection":"occurrences","id":"<occ>","expected":0,"actual":1}}
+```
+
+**Deleting and re-creating.** A deleted record is in no collection of `GET /graph`, but its id is
+not new again: it stays at the revision it was deleted at. Re-creating it names that revision as
+`expected` (naming `0` is the `409` above, whose `actual` is the revision to name), continues the
+count from there, and — for an entity — must keep the kind it had. A writer that last saw the
+record before it was deleted therefore cannot write over what replaced it.
+
+**A `5xx` means the outcome is unknown: retry the same command `id`.** The command may have been
+applied in memory and not reached the disk. Retrying the same `id` is always safe — a command that
+was applied is replayed and flushed again, and one that was not is simply a new command — and is
+how the caller finds out. While a failed write is outstanding every command first tries to write
+the forest again, so once the disk has recovered a new command succeeds and takes the earlier one
+to the disk with it — a caller that no longer knows the failed `id` needs nothing else. Only while
+that write still fails is every *other* command refused `503` (`"code":"unavailable"`), changing
+nothing.
+
+#### Page the journal
+```bash
+curl "http://localhost:8080/graph/events?since=0&limit=500" -H "Authorization: Bearer <token>"
+# {"events":[{"revision":1,"command_id":"cmd-1","actor":"agent:planner","at":"...","changes":[...]}],"next":500}
+```
+`limit` defaults to 500 and is capped at 5000; `next` is present when there is more, and is the
+`since` that fetches it.
+
+#### Read a receipt
+```bash
+curl http://localhost:8080/graph/commands/cmd-1 -H "Authorization: Bearer <token>"
 ```
 
 ## Response Formats

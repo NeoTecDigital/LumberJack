@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/internal/graph"
 )
 
 // The one lock over the forest, and the shapes every route uses to take it.
@@ -115,8 +116,27 @@ func (server *Server) readForest(read func()) {
 // is lost, which is exactly what a 500 promised. Nothing acknowledged is ever lost — that is the
 // contract, and TestChangeForestReportsAPersistThatCouldNotLand pins it. (The state writer clears its
 // durable-hash on a failed flush, so the next persist WRITES rather than taking the unchanged skip.)
+//
+// IN TIERED MODE the same hold covers the mutation and the encoding of the CHANGE, and what
+// becomes durable before the answer is the log record rather than a whole state file. See
+// persistence.go.
 func (server *Server) changeForest(change func() error) error {
-	snapshot, err := server.applyChangeLocked(change)
+	return server.commitChange(func() (*graph.Touched, error) { return nil, change() }, false)
+}
+
+// changeForestTracked is changeForest for a caller that can say which nodes it wrote — the graph
+// engine. The change answers the touched set, which persistence logs instead of the forest, and
+// the hub is told from it instead of from a walk of the whole forest.
+func (server *Server) changeForestTracked(change func() (*graph.Touched, error)) error {
+	return server.commitChange(change, true)
+}
+
+// commitChange routes a change to whichever persistence holds the forest.
+func (server *Server) commitChange(change func() (*graph.Touched, error), tracked bool) error {
+	if server.tier != nil {
+		return server.commitTiered(change, tracked)
+	}
+	snapshot, err := server.applyChangeLocked(change, tracked)
 	if err != nil {
 		return err
 	}
@@ -132,20 +152,12 @@ func (server *Server) changeForest(change func() error) error {
 // exclusive hold, and answers the snapshot the caller must make durable.
 //
 // The hold ends when this returns. Nothing below it may touch the disk.
-func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
+func (server *Server) applyChangeLocked(change func() (*graph.Touched, error), tracked bool) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
-	var before *correspondenceSnapshot
-	if server.applicationHubEnabled.Load() {
-		before = server.captureCorrespondence()
-	}
 
-	if err := change(); err != nil {
+	if _, err := server.runChangeLocked(change, tracked); err != nil {
 		return stateSnapshot{}, err
-	}
-	server.refreshAccessGrantsLocked()
-	if before != nil {
-		server.recordCompatibilityChanges(before)
 	}
 
 	snapshot, err := server.encodeStateLocked(server.statePath())
@@ -156,16 +168,98 @@ func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, err
 	return snapshot, nil
 }
 
+// runChangeLocked runs a change and everything that follows a change under the hold: the access
+// grants are refreshed, and the hub is told what changed. The caller holds the forest exclusively.
+//
+// A TRACKED change says which nodes it wrote, so the hub is told from that set and the two walks
+// of the whole forest that used to bracket every write do not run. An untracked change is
+// bracketed as before. Whatever the grant refresh and the hub themselves wrote is added to the
+// tracked set whole, so a persistence that logs the set logs those too.
+func (server *Server) runChangeLocked(change func() (*graph.Touched, error), tracked bool) (*graph.Touched, error) {
+	hub := server.applicationHubEnabled.Load()
+	var before *correspondenceSnapshot
+	if hub && !tracked {
+		before = server.captureCorrespondence()
+	}
+
+	touched, err := change()
+	if err != nil {
+		return nil, err
+	}
+	if tracked && touched == nil {
+		touched = graph.NewTouched()
+	}
+	for _, node := range server.refreshAccessGrantsLocked() {
+		if touched != nil {
+			touched.Rewrite(node)
+		}
+	}
+	switch {
+	case !hub:
+	case touched != nil:
+		if server.recordTrackedChanges(touched) {
+			touched.Rewrite(server.forest)
+		}
+	default:
+		server.recordCompatibilityChanges(before)
+	}
+	return touched, nil
+}
+
+// refuseGraphWrite is the ONE guard every generic write passes through: it refuses a target that
+// is the `graph` root or anything beneath it, whoever asks and whatever they hold on it.
+//
+// THE DEFECT THIS EXISTS TO CLOSE: the graph is a subtree of the forest, so every route that
+// writes a node by path could write the graph's. PATCH /nodes/graph/…/metadata rewrote an entity's
+// kind — the one field the engine holds immutable — and DELETE /nodes/graph/_commands?mode=cascade
+// removed every receipt, after which a retried command was applied a second time. Neither went
+// through a command, so neither was validated, journaled, or given a revision.
+//
+// Only POST /graph/commands writes there. The target is named two ways and BOTH are checked: by
+// PATH, which is all there is when the node does not exist yet, and by the NODE a path resolved
+// to, so a graph node reached under some other name is refused as well. Pass a nil node when
+// there is none to check. The caller holds the forest.
+func (server *Server) refuseGraphWrite(path string, node *core.Node) error {
+	segments := server.segmentsFrom(path)
+	named := len(segments) > 0 && segments[0] == graph.RootName
+	if !named && !graph.Owns(server.forest, node) {
+		return nil
+	}
+	return apiErrorf(http.StatusForbidden,
+		"%s belongs to the graph engine: it is changed only through POST /graph/commands", server.canonicalPath(path))
+}
+
+// writeTargetLocked resolves the node a generic write names, and is how every such write that
+// starts from a path finds its node: the graph is refused before the lookup, so the answer is the
+// same whether or not the node exists, and again on the node the lookup reached.
+//
+// what prefixes the 404 for a path that names nothing ("parent: "). The caller holds the forest.
+func (server *Server) writeTargetLocked(path, what string) (*core.Node, error) {
+	if err := server.refuseGraphWrite(path, nil); err != nil {
+		return nil, err
+	}
+	node, err := server.getNodeFromPath(path)
+	if err != nil {
+		return nil, apiErrorf(http.StatusNotFound, "%s%v", what, err)
+	}
+	if err := server.refuseGraphWrite(path, node); err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
 // changeNode is the shape every mutating route has: find the node a path names, confirm the caller
 // may change it, change it, and persist — all under one exclusive hold.
 //
 // The lookup is INSIDE the hold. It walks the Children map of every node on the path, which is a
-// read of the same maps a concurrent mutation writes.
+// read of the same maps a concurrent mutation writes. It goes through writeTargetLocked, so every
+// route built on this shape — entries, events, time, metadata, attachments — is closed to the
+// graph at once.
 func (server *Server) changeNode(path, userID string, permission core.Permission, change func(*core.Node) error) error {
 	return server.changeForest(func() error {
-		node, err := server.getNodeFromPath(path)
+		node, err := server.writeTargetLocked(path, "")
 		if err != nil {
-			return apiErrorf(http.StatusNotFound, "%v", err)
+			return err
 		}
 
 		if !node.CheckPermission(userID, permission) {
