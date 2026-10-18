@@ -5,9 +5,9 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/spf13/viper"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
+	"github.com/spf13/viper"
 )
 
 // compares two byte slices for equality
@@ -32,6 +32,9 @@ func compareHashes(a, b []byte) bool {
 func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	segments := server.segmentsFrom(path)
 	if len(segments) == 0 {
+		if isStagedNode(server.forest) {
+			return nil, errStagedProtected
+		}
 		return server.forest, nil
 	}
 
@@ -44,6 +47,9 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	node, found := walkNames(server.forest, segments)
 	if !found {
 		return nil, fmt.Errorf("node not found: %s", path)
+	}
+	if isStagedNode(node) {
+		return nil, errStagedProtected
 	}
 
 	// Update cache after fetch

@@ -86,6 +86,10 @@ type nodeRecord struct {
 
 // encodeState serializes the whole forest, once per node.
 func encodeState(forest *core.Node) ([]byte, error) {
+	return encodeStateResolved(forest, nil)
+}
+
+func encodeStateResolved(forest *core.Node, resolve func(*core.Node) *core.Node) ([]byte, error) {
 	if forest == nil {
 		return nil, fmt.Errorf("cannot serialize a forest that is not there")
 	}
@@ -100,22 +104,15 @@ func encodeState(forest *core.Node) ([]byte, error) {
 	for len(queue) > 0 {
 		node := queue[0]
 		queue = queue[1:]
+		if resolve != nil {
+			node = resolve(node)
+		}
 		if _, written := document.Nodes[node.ID]; written {
 			continue
 		}
 
-		children := make([]string, 0, len(node.Children))
-		for _, child := range node.Children {
-			if child == nil {
-				continue
-			}
-			children = append(children, child.ID)
-			queue = append(queue, child)
-		}
-		// Sorted so that one forest has one serialization: ranging a Go map does not, and an
-		// unstable encoding makes the "nothing changed" hash comparison answer differently every
-		// time it is asked.
-		sort.Strings(children)
+		var children []string
+		children, queue = encodeStateChildren(node, queue)
 
 		document.Nodes[node.ID] = &nodeRecord{Node: node, Children: children}
 	}
@@ -123,10 +120,27 @@ func encodeState(forest *core.Node) ([]byte, error) {
 	return json.Marshal(document)
 }
 
+func encodeStateChildren(node *core.Node, queue []*core.Node) ([]string, []*core.Node) {
+	children := make([]string, 0, len(node.Children))
+	for _, child := range node.Children {
+		if child == nil {
+			continue
+		}
+		children = append(children, child.ID)
+		queue = append(queue, child)
+	}
+	// Stable child order preserves unchanged-content hash comparisons.
+	sort.Strings(children)
+	return children, queue
+}
+
 // decodeState rebuilds the forest from a flat node table, restoring the edges the ids stand for.
 func decodeState(data []byte) (*core.Node, error) {
 	var document stateDocument
 	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	if err := restoreStagedNumbers(data, &document); err != nil {
 		return nil, err
 	}
 
@@ -148,17 +162,21 @@ func decodeState(data []byte) (*core.Node, error) {
 		if record == nil || record.Node == nil {
 			continue
 		}
-		for _, childID := range record.Children {
-			child, known := document.Nodes[childID]
-			if !known || child == nil || child.Node == nil {
-				// An edge to a node the file does not carry is not an edge. Dropping it is what
-				// keeps the graph traversable; keeping it would be a nil child in every walk.
-				return nil, fmt.Errorf("node %q names a child %q the state file does not carry",
-					record.Node.ID, childID)
-			}
-			record.Node.Children[childID] = child.Node
+		if err := decodeStateChildren(record, document.Nodes); err != nil {
+			return nil, err
 		}
 	}
 
 	return root.Node, nil
+}
+
+func decodeStateChildren(record *nodeRecord, nodes map[string]*nodeRecord) error {
+	for _, childID := range record.Children {
+		child, known := nodes[childID]
+		if !known || child == nil || child.Node == nil {
+			return fmt.Errorf("node %q names a child %q the state file does not carry", record.Node.ID, childID)
+		}
+		record.Node.Children[childID] = child.Node
+	}
+	return nil
 }

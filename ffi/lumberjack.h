@@ -208,6 +208,16 @@ lj_status_t ic_lj_application_configure(lj_handle_t h, lj_cstr req, int64_t req_
 lj_status_t ic_lj_application_call(lj_handle_t h, lj_cstr req, int64_t req_len,
                                   char **out, int64_t *out_len);
 void ic_lj_application_free(char *out);
+/* Additive private domain ports. Outputs are owned and freed ONLY with domain_free.
+ * Domain resolve never returns record bags or authority. Call returns a lease-only
+ * BEGIN; authenticated adopt precedes receive. Control is handle-independent so a
+ * delegated lease can finish after its original handle closes. No old ABI changes. */
+lj_status_t ic_lj_domain_configure(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
+lj_status_t ic_lj_domain_resolve(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
+lj_status_t ic_lj_domain_call(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
+lj_status_t ic_lj_domain_control(lj_cstr, int64_t, char **, int64_t *);
+void ic_lj_domain_free(char *);
+
 #ifdef __cplusplus
 }
 #endif
