@@ -87,7 +87,22 @@ func domainFixtureGoEnvironment(t *testing.T, parent string) []string {
 	if os.Getenv("GOPROXY") == "off" && os.Getenv("GOSUMDB") == "off" && os.Getenv("GOENV") == "off" {
 		cache = os.Getenv("GOCACHE") // Reuse only the caller's explicitly scrubbed public build cache.
 	}
-	return []string{"PATH=/usr/bin:/bin", "HOME=" + parent, "GOROOT=/usr/lib/go", "GOPATH=" + filepath.Join(parent, "gopath"), "GOCACHE=" + cache, "GOMODCACHE=/home/persist/go/pkg/mod", "TMPDIR=" + parent, "GOENV=off", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off"}
+	return []string{"PATH=/usr/bin:/bin", "HOME=" + parent, "GOROOT=/usr/lib/go", "GOPATH=" + filepath.Join(parent, "gopath"), "GOCACHE=" + cache, "GOMODCACHE=" + domainFixtureModuleCache(t), "TMPDIR=" + parent, "GOENV=off", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off"}
+}
+func domainFixtureModuleCache(t *testing.T) string {
+	t.Helper()
+	if configured := os.Getenv("GOMODCACHE"); configured != "" {
+		return configured
+	}
+	path := os.Getenv("GOPATH")
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		path = filepath.Join(home, "go")
+	}
+	return filepath.Join(filepath.SplitList(path)[0], "pkg", "mod")
 }
 func domainFixtureJSON(t *testing.T, value interface{}) []byte {
 	t.Helper()

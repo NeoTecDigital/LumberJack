@@ -158,24 +158,16 @@ func (s *Server) authorizeDomainHandoffLocked(d *domainEngine, entry *domainEntr
 	if entry.receiptKey == "" {
 		return nil
 	}
-	scope := s.stagedScopes[entry.owned.Binding.ScopeID]
-	index, err := stagedForestIndex(s.forest)
+	receipt, err := s.domainHandoffReceiptLocked(entry)
 	if err != nil {
 		return err
 	}
-	raw, present := index[entry.owned.Binding.RootID].CommandReceipts[entry.receiptKey]
-	if scope.pending != nil && scope.pending.key == entry.receiptKey {
-		raw, present = scope.pending.receipt, true
-	}
-	if !present {
-		return fmt.Errorf("paired command history unavailable")
-	}
-	var receipt stagedReceipt
-	if err = decodeStagedInternal(raw, &receipt); err != nil {
+	entry.actor = actor
+	evaluation, err := newDomainEvaluation(current, view)
+	if err != nil {
 		return err
 	}
-	entry.actor = actor
-	return authorizeStagedReplay(s.domainAuthorizer(d, entry), entry.owned.Binding, receipt)
+	return authorizeStagedReplay(s.domainEvaluationAuthorizer(d, entry, evaluation), entry.owned.Binding, receipt)
 }
 func (s *Server) finishDomain(d *domainEngine, entry *domainEntry, input DomainControl) (DomainControlResult, error) {
 	d.mu.Lock()

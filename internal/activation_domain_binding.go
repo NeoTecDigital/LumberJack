@@ -41,11 +41,19 @@ func (s *Server) resolveDomainLocked(d *domainEngine, input DomainInput) (Domain
 	if input.Mode == "read" && s.stagedScopes[owned.Binding.ScopeID].pending != nil {
 		return DomainIntent{}, owned, view, errStagedPending
 	}
-	intent, err := d.products[envelope.Scope.Product].Resolve(input, owned, view)
+	intent, err := resolveDomainView(d, input, owned, view)
+	return intent, owned, view, err
+}
+func resolveDomainView(d *domainEngine, input DomainInput, owned DomainOwnedScope, view DomainView) (DomainIntent, error) {
+	callbackView, err := cloneDomainResolveView(view, owned.Bounds)
+	if err != nil {
+		return DomainIntent{}, err
+	}
+	intent, err := d.products[owned.Binding.ProductID].Resolve(input, owned, callbackView)
 	if err == nil {
 		err = validateDomainIntent(d, intent, owned, input)
 	}
-	return intent, owned, view, err
+	return intent, err
 }
 func (s *Server) domainViewLocked(owned DomainOwnedScope) (DomainView, error) {
 	scope := s.stagedScopes[owned.Binding.ScopeID]
@@ -102,32 +110,14 @@ func (d *domainEngine) authorizeIntentLocked(actor DomainVerified, view DomainVi
 			return fmt.Errorf("current resource disappeared")
 		}
 		access := DomainAccess{Operation: operation, Kind: fields.Resource.Kind, Fields: fields.Fields, Reference: domainContains(fields.Fields, "reference")}
-		if err := d.policy.AuthorizeLocked(actor, access, record); err != nil {
+		if err := d.authorizeDomainRecord(actor, access, record); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 func (s *Server) domainAuthorizer(d *domainEngine, entry *domainEntry) stagedAuthorizer {
-	return func(access stagedAccess) error {
-		if entry.actor.ExpiresAt <= domainNow() || access.Binding != entry.owned.Binding {
-			return fmt.Errorf("current domain authority expired/rebound")
-		}
-		current, _, view, err := s.resolveDomainLocked(d, entry.input)
-		if err != nil {
-			return err
-		}
-		if !domainEqual(current, entry.intent) {
-			return fmt.Errorf("current intent resources changed")
-		}
-		if err = d.authorizeIntentLocked(entry.actor, view); err != nil {
-			return err
-		}
-		if access.NodeID == "" {
-			return nil
-		}
-		return d.authorizeNativeTarget(entry, view, access)
-	}
+	return s.domainEvaluationAuthorizer(d, entry, nil)
 }
 func (d *domainEngine) authorizeNativeTarget(entry *domainEntry, view DomainView, access stagedAccess) error {
 	create := entry.intent.Operation != nil && isDomainDefinition(*entry.intent.Operation) && access.NodeID != entry.owned.Binding.RootID
@@ -146,26 +136,26 @@ func (d *domainEngine) authorizeNativeTarget(entry *domainEntry, view DomainView
 	if !present {
 		return fmt.Errorf("current native target absent")
 	}
-	return d.policy.AuthorizeLocked(entry.actor, DomainAccess{Operation: access.Action, Kind: access.Kind, Fields: fields}, record)
+	return d.authorizeDomainRecord(entry.actor, DomainAccess{Operation: access.Action, Kind: access.Kind, Fields: fields}, record)
 }
 
 func (d *domainEngine) authorizeDefinitionTarget(entry *domainEntry, view DomainView, access stagedAccess, fields []string) error {
 	kind := domainSemanticKind(entry.owned.Layout, access.Kind)
 	root := view.Records[entry.owned.Binding.RootID]
 	required := DomainAccess{Operation: access.Action, Kind: kind, Fields: fields, Create: true}
-	if err := d.policy.AuthorizeLocked(entry.actor, required, root); err != nil {
+	if err := d.authorizeDomainRecord(entry.actor, required, root); err != nil {
 		return err
 	}
 	record, present := view.Records[access.NodeID]
 	if !present {
-		acl, err := d.policy.CreateACLLocked(entry.actor, access.Action, kind, root)
+		acl, err := d.createDomainRecordACL(entry.actor, access.Action, kind, root)
 		if err != nil {
 			return err
 		}
 		record = DomainRecord{ID: access.NodeID, Kind: access.Kind, Metadata: map[string]interface{}{d.config.ACLMetadataKey: acl}}
 	}
 	required.Create = false
-	return d.policy.AuthorizeLocked(entry.actor, required, record)
+	return d.authorizeDomainRecord(entry.actor, required, record)
 }
 
 func domainWithout(fields []string, excluded string) []string {
