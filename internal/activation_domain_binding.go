@@ -60,20 +60,11 @@ func (s *Server) domainViewLocked(owned DomainOwnedScope) (DomainView, error) {
 	if scope == nil || !scope.configured || !scope.reconciled || scope.descriptor.Binding != owned.Binding {
 		return DomainView{}, errStagedUnconfigured
 	}
-	index, err := stagedForestIndex(s.forest)
+	snapshot, err := s.domainScopeSnapshotLocked(owned, scope)
 	if err != nil {
 		return DomainView{}, err
 	}
-	root := index[owned.Binding.RootID]
-	nodes, err := stagedClosure(root, owned.Bounds)
-	if err != nil {
-		return DomainView{}, err
-	}
-	revision, err := stagedContentRevision(root)
-	if err != nil {
-		return DomainView{}, err
-	}
-	native, err := newStagedView(scope, nodes, revision, map[string]bool{})
+	native, err := newStagedView(scope, snapshot.nodes, snapshot.revision, map[string]bool{})
 	if err != nil {
 		return DomainView{}, err
 	}

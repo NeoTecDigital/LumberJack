@@ -70,7 +70,8 @@ type Server struct {
 	// forestMutex is the ONE lock over the whole forest. Held exclusively across a mutation and
 	// the persist that acknowledges it, shared by everything that reads the graph. See
 	// forest_lock.go for why a per-node mutex cannot stand in for it.
-	forestMutex           sync.RWMutex
+	forestMutex           forestViewRWMutex
+	domainSnapshots       domainSnapshotCache
 	applicationHubEnabled atomic.Bool
 	jwtConfig             JWTConfig
 	logger                types.Logger
