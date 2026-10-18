@@ -27,6 +27,9 @@ func cloneStagedValue(value interface{}, depth, limit int) (interface{}, error) 
 	if _, raw := value.(json.RawMessage); raw {
 		return nil, fmt.Errorf("raw JSON is not an owned structured value")
 	}
+	if copy, handled, err := cloneStagedStructured(value, depth, limit); handled {
+		return copy, err
+	}
 	cloned, err := cloneStagedReflect(reflect.ValueOf(value), depth, limit)
 	if err != nil {
 		return nil, err

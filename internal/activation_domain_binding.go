@@ -34,7 +34,7 @@ func (s *Server) resolveDomainLocked(d *domainEngine, input DomainInput) (Domain
 	if !present {
 		return DomainIntent{}, owned, DomainView{}, fmt.Errorf("native owner binding absent")
 	}
-	view, err := s.domainViewLocked(owned)
+	view, err := s.domainScopeViewLocked(owned, true)
 	if err != nil {
 		return DomainIntent{}, owned, view, err
 	}
@@ -56,6 +56,10 @@ func resolveDomainView(d *domainEngine, input DomainInput, owned DomainOwnedScop
 	return intent, err
 }
 func (s *Server) domainViewLocked(owned DomainOwnedScope) (DomainView, error) {
+	return s.domainScopeViewLocked(owned, false)
+}
+
+func (s *Server) domainScopeViewLocked(owned DomainOwnedScope, private bool) (DomainView, error) {
 	scope := s.stagedScopes[owned.Binding.ScopeID]
 	if scope == nil || !scope.configured || !scope.reconciled || scope.descriptor.Binding != owned.Binding {
 		return DomainView{}, errStagedUnconfigured
@@ -64,7 +68,7 @@ func (s *Server) domainViewLocked(owned DomainOwnedScope) (DomainView, error) {
 	if err != nil {
 		return DomainView{}, err
 	}
-	native, err := newStagedView(scope, snapshot.nodes, snapshot.revision, map[string]bool{})
+	native, err := domainScopeRecords(scope, snapshot, private)
 	if err != nil {
 		return DomainView{}, err
 	}

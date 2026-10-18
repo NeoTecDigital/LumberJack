@@ -60,6 +60,10 @@ func (s *Server) projectDomainRead(d *domainEngine, entry *domainEntry, requestI
 	if err = d.authorizeIntentLocked(entry.actor, view); err != nil {
 		return nil, err
 	}
+	view, err = cloneDomainResolveView(view, entry.owned.Bounds)
+	if err != nil {
+		return nil, err
+	}
 	return entry.product.Project(requestID, entry.intent, entry.owned, view)
 }
 func (s *Server) executeDomainCommand(d *domainEngine, entry *domainEntry, requestID string) ([]byte, error) {
