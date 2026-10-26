@@ -1,3 +1,4 @@
+{"$comment":"Written by Richard Christopher, Copyright 2026 NeoTec, LLC"}
 {"path": "embedded/domain.go", "sha256": "d5d306191a3ab89ef82849c9cb98978f709bbb38d5a81f198f0d4040040c2d66"}
 {"path": "embedded/domain_enrollment.go", "sha256": "df825dbb7cd06ae01885436a850955502a195a864e276bcb906bd2ccf53688c8"}
 {"path": "embedded/domain_fixture_environment_test.go", "sha256": "56cbe2bda71d2aaebcf9b4d0fa545ec03c8dca6751fd1d71c4cb66d061b1e033"}

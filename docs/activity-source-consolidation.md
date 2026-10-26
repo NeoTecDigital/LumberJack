@@ -22,7 +22,9 @@ defects were corrected without relaxing runtime checks:
 - Use an owner-only enrollment fixture directory, matching the existing recovery
   witness requirement (0700 directory, 0600 file), rather than weakening it.
 
-`make activity-shared` builds ABI2 from this source with `-buildvcs=false`;
+`make activity-shared` builds ABI2 with `-buildvcs=false -ldflags=-buildid=`;
+the build ID otherwise includes location-dependent action hashes even when the
+compiled content hash matches. The release records source and artifact hashes.
 `make ffi` builds the workspace archive. Source commit and artifact hash remain
 separate release pins. This integration alone does not unify browser auth, approve
 customer migration, or certify deployment/provider readiness.

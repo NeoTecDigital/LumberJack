@@ -40,7 +40,7 @@ ffi: | $(BUILD)
 # Activity uses the same maintained source as the workspace archive. Provenance
 # records the source commit separately; VCS worktree state must not change bytes.
 activity-shared: | $(BUILD)
-	@CGO_ENABLED=1 $(GO) build -buildmode=c-shared -trimpath -buildvcs=false -o $(BUILD)/libactivity.so ./ffi
+	@CGO_ENABLED=1 $(GO) build -trimpath -buildvcs=false -buildmode=c-shared -ldflags=-buildid= -o $(BUILD)/libactivity.so ./ffi
 
 # ffi/lumberjack.h is the specification; cgo's header is an artefact. Compiling a unit that
 # includes both is what makes a divergence a compile error instead of a diff nobody reads.
