@@ -122,7 +122,7 @@ func TestWorkspaceDefaultsArePrivateAndIdempotent(t *testing.T) {
 		t.Fatal("two devices created two private workspaces")
 	}
 	home := server.forest.Children[id]
-	if len(home.Children) != 4 || !home.CheckPermission("bob", core.AdminPermission) || home.CheckPermission("admin", core.ReadPermission) {
+	if len(home.Children) != 8 || !home.CheckPermission("bob", core.AdminPermission) || home.CheckPermission("admin", core.ReadPermission) {
 		t.Fatal("default workspace is incomplete or not private")
 	}
 	for _, child := range home.Children {

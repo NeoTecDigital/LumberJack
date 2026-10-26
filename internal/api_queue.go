@@ -80,6 +80,9 @@ func (server *Server) getFromCache(segments []string) (*core.Node, error) {
 	}
 
 	if node, found := walkNames(server.cache.Forest, segments); found {
+		if isStagedNode(node) {
+			return nil, errStagedProtected
+		}
 		return node, nil
 	}
 	return nil, fmt.Errorf("cache miss")

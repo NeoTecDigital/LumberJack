@@ -141,12 +141,19 @@ func (w *applicationWriter) Write(body []byte) (int, error) {
 // ApplicationCall authenticates using the credential on this request. The
 // principal on an embedded service handle is never used for application data.
 func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
+	if invalidActivationHeaders(input.Headers) {
+		return activationApplicationError(401, "unauthenticated")
+	}
 	if len(input.Body) > applicationLimit {
 		return applicationError(413, "Request too large")
 	}
 	target, err := url.ParseRequestURI(input.Target)
 	if err != nil || !strings.HasPrefix(input.Target, "/") || target.Host != "" || target.Scheme != "" {
 		return applicationError(400, "Invalid target")
+	}
+	activationHeaders := activationInputHeaders(input)
+	if isActivationRequest(activationHeaders) && (input.Method != "GET" || input.Target != "/principal" && input.Target != "/activation/probe") {
+		return activationApplicationError(403, "access_denied")
 	}
 	if target.Path == "/stream" {
 		return applicationError(400, "Use the Corresponder change dispatcher")
@@ -161,46 +168,15 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 			return applicationError(503, "Change delivery is behind. Try again shortly.")
 		}
 	}
-	req, err := http.NewRequest(input.Method, "http://embedded"+input.Target, bytes.NewReader(input.Body))
+	req, err := makeApplicationRequest(input)
 	if err != nil {
 		return applicationError(400, "Invalid request")
 	}
-	for key, value := range input.Headers {
-		req.Header.Set(key, value)
-	}
 	out := &applicationWriter{header: make(http.Header)}
-	if target.Path == "/session" && input.Method == "POST" {
-		s.handleApplicationSession(out, req)
-	} else if target.Path == "/session/mfa" && input.Method == "POST" {
-		// PUBLIC, and deliberately so: the caller holds an "mfa_pending" challenge, not a session, so
-		// wrapping this in authMiddleware would make the step that OBTAINS a session require one. The
-		// handler validates the challenge bearer itself — see handleApplicationSessionMFA.
-		s.handleApplicationSessionMFA(out, req)
-	} else if target.Path == "/session" && (input.Method == "GET" || input.Method == "DELETE") {
-		s.authMiddleware(s.handleApplicationSession)(out, req)
-	} else if target.Path == "/session/activity" && input.Method == "POST" {
-		s.authMiddleware(s.handleApplicationActivity)(out, req)
-	} else if target.Path == "/principal" && input.Method == "GET" {
-		s.authMiddleware(s.handleApplicationPrincipal)(out, req)
-	} else if target.Path == "/notifications" && (input.Method == "GET" || input.Method == "POST") {
-		s.authMiddleware(s.handleApplicationNotifications)(out, req)
-	} else if target.Path == "/changes" && input.Method == "POST" {
-		s.authMiddleware(s.handleApplicationChanges)(out, req)
-	} else {
-		s.routes().ServeHTTP(out, req)
-	}
-	if out.overflow {
-		return applicationError(413, "Response exceeds application limit")
-	}
-	if out.status == 0 {
-		out.status = 200
-	}
-	headers := map[string]string{}
-	for key, value := range out.header {
-		headers[key] = strings.Join(value, ", ")
-	}
-	return ApplicationResponse{Status: out.status, Headers: headers, Body: out.body.Bytes()}
+	s.dispatchApplication(req, out)
+	return applicationOutput(out)
 }
+
 func applicationError(status int, message string) ApplicationResponse {
 	return ApplicationResponse{Status: status, Headers: map[string]string{"Content-Type": "text/plain"}, Body: []byte(message)}
 }

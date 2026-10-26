@@ -1,6 +1,8 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package internal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -116,15 +118,27 @@ func (server *Server) readForest(read func()) {
 // contract, and TestChangeForestReportsAPersistThatCouldNotLand pins it. (The state writer clears its
 // durable-hash on a failed flush, so the next persist WRITES rather than taking the unchanged skip.)
 func (server *Server) changeForest(change func() error) error {
+	operationID, err := newDomainID()
+	if err != nil {
+		return sourceUnavailable()
+	}
+	permit, err := server.sourceFence().beginOrdinaryWrite(context.Background(), "ordinary-forest/"+operationID)
+	if err != nil {
+		return err
+	}
+	before := server.sourceForestRevision()
 	snapshot, err := server.applyChangeLocked(change)
 	if err != nil {
+		permit.noEffect(before != "" && before == server.sourceForestRevision())
 		return err
 	}
 
 	if err := server.commitState(snapshot); err != nil {
+		permit.finish(false, true)
 		server.logger.Failure("Failed to save state: %v", err)
 		return apiErrorf(http.StatusInternalServerError, "Failed to save state")
 	}
+	permit.finish(true, true)
 	return nil
 }
 
@@ -135,13 +149,21 @@ func (server *Server) changeForest(change func() error) error {
 func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
+	protected, err := server.captureStagedProtectionLocked()
+	if err != nil {
+		return stateSnapshot{}, err
+	}
 	var before *correspondenceSnapshot
 	if server.applicationHubEnabled.Load() {
 		before = server.captureCorrespondence()
 	}
 
-	if err := change(); err != nil {
-		return stateSnapshot{}, err
+	changeErr := change()
+	if err := server.verifyStagedProtectionLocked(protected); err != nil {
+		return stateSnapshot{}, apiErrorf(http.StatusForbidden, "%v", err)
+	}
+	if changeErr != nil {
+		return stateSnapshot{}, changeErr
 	}
 	server.refreshAccessGrantsLocked()
 	if before != nil {

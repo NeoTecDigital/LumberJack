@@ -112,17 +112,19 @@ type Entry struct {
 // which is only the leaf/branch view hint (see NodeType): Kind is "what this node is to the product",
 // Type is "how to draw it by default". Empty means untyped.
 type Node struct {
-	ID            string                `json:"id"`
-	Type          NodeType              `json:"type"`
-	Kind          string                `json:"kind,omitempty"`
-	Name          string                `json:"name"`
-	Parents       map[string]string     `json:"parents"`
-	Children      map[string]*Node      `json:"children"`
-	Events        map[string]Event      `json:"events"`
-	PlannedEvents map[string]Event      `json:"planned_events"`
-	Users         []User                `json:"users"`
-	Entries       []Entry               `json:"entries"`
-	Attachments   map[string]Attachment `json:"attachments,omitempty"`
+	// Private same-store canonical/native provenance. Explicit public DTOs exclude it.
+	PersonalBindings *PersonalBindingLedger `json:"personal_bindings,omitempty"`
+	ID               string                 `json:"id"`
+	Type             NodeType               `json:"type"`
+	Kind             string                 `json:"kind,omitempty"`
+	Name             string                 `json:"name"`
+	Parents          map[string]string      `json:"parents"`
+	Children         map[string]*Node       `json:"children"`
+	Events           map[string]Event       `json:"events"`
+	PlannedEvents    map[string]Event       `json:"planned_events"`
+	Users            []User                 `json:"users"`
+	Entries          []Entry                `json:"entries"`
+	Attachments      map[string]Attachment  `json:"attachments,omitempty"`
 	// Metadata is the node's own annotations, which is where a canvas layout lives under the
 	// reserved CanvasMetadataKey. It is on the NODE rather than in a parallel store so that a node
 	// and its placement cannot drift apart: deleting the node deletes the placement, and there is

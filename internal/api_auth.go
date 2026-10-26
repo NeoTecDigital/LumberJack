@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -347,60 +346,11 @@ type TokenClaims struct {
 // Update the auth middleware to handle user_id from token claims
 func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tokenString := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if strings.HasPrefix(tokenString, "ms_") {
-			server.serveApplicationSession(next, w, r, tokenString)
+		if isActivationRequest(r.Header) {
+			server.serveActivation(next, w, r)
 			return
 		}
-		if tokenString == "" {
-			http.Error(w, "No token provided", http.StatusUnauthorized)
-			return
-		}
-
-		token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return server.jwtConfig.SecretKey, nil
-		})
-
-		if err != nil || !token.Valid {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
-			return
-		}
-
-		claims, ok := token.Claims.(*TokenClaims)
-		if !ok || claims.TokenType != "session" {
-			http.Error(w, "Invalid session token", http.StatusUnauthorized)
-			return
-		}
-
-		// THE ONE FOREST READ ON THIS PATH, and the only way a JWT is ever withdrawn. Nothing stores
-		// this token, so there is nothing to delete when an administrator changes what it takes to be
-		// this account; the signature stays valid for its whole hour regardless. Comparing the epoch
-		// it was minted under against the one the account is on now is what makes an enrolment
-		// retroactive — and it refuses a token for an account that has since gone, which its own
-		// signature could otherwise outlive. The SAME sentence as every other refusal here, so the
-		// guard discloses nothing by having a new reason.
-		if !server.credentialIsCurrent(claims.UserID, claims.CredentialEpoch) {
-			http.Error(w, "Invalid session token", http.StatusUnauthorized)
-			return
-		}
-
-		held, live := server.registeredSession(claims.SessionID)
-		if !live || held.UserID != claims.UserID {
-			http.Error(w, "Session expired or signed out", 401)
-			return
-		}
-		claims.ExpiresAt = min(claims.ExpiresAt, applicationSessionDeadline(held))
-		// Add user info to context
-		ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
-		if claims.ExpiresAt > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, time.Unix(claims.ExpiresAt, 0))
-			defer cancel()
-		}
-		next.ServeHTTP(w, r.WithContext(ctx))
+		server.serveLegacyAuth(next, w, r)
 	}
 }
 
