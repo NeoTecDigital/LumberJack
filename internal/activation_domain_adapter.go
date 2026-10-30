@@ -65,6 +65,7 @@ func (s *Server) projectDomainRead(d *domainEngine, entry *domainEntry, requestI
 		return nil, err
 	}
 	view.VerifiedAuthority = &entry.actor
+	view.ACLMetadataKey = d.config.ACLMetadataKey
 	if projector, ok := entry.product.(DomainInputProjector); ok {
 		return projector.ProjectInput(requestID, entry.input, entry.intent, entry.owned, view)
 	}
@@ -140,6 +141,8 @@ func (s *Server) DomainCompletedLeases() []DomainCompletion {
 func (s *Server) domainBuilder(d *domainEngine, entry *domainEntry, operation string) stagedBuilder {
 	return func(native stagedView) (stagedDelta, error) {
 		view := domainView(native, d.config.ACLMetadataKey)
+		actor := entry.actor
+		view.VerifiedAuthority = &actor
 		view.CreateACL = func(kind string) (interface{}, error) {
 			return d.policy.CreateACLLocked(entry.actor, operation, kind, view.Records[entry.owned.Binding.RootID])
 		}

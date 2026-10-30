@@ -7,8 +7,14 @@ type DomainInputProjector interface {
 	ProjectInput(string, DomainInput, DomainIntent, DomainOwnedScope, DomainView) ([]byte, error)
 }
 
+// A compiled product may project its own already-paired receipt targets only.
+type DomainCommandResultProjector interface {
+	ProjectCommand(DomainInput, DomainOwnedScope, DomainRetainedReceipt) (interface{}, error)
+}
+
 func (s *Server) domainStoreResult(entry *domainEntry) (interface{}, error) {
-	if entry.intent.ContractRevision != "png-native-store/0.1" {
+	projector, projected := entry.product.(DomainCommandResultProjector)
+	if entry.intent.ContractRevision != "png-native-store/0.1" && !projected {
 		return nil, nil
 	}
 	if entry.receiptKey == "" {
@@ -31,6 +37,9 @@ func (s *Server) domainStoreResult(entry *domainEntry) (interface{}, error) {
 	var receipt stagedReceipt
 	if err = decodeStagedInternal(raw, &receipt); err != nil {
 		return nil, err
+	}
+	if projected {
+		return projector.ProjectCommand(entry.input, entry.owned, DomainRetainedReceipt{Key: entry.receiptKey, Receipt: receipt})
 	}
 	var result interface{}
 	if err = DecodeDomainJSON(receipt.ProductIntent, &result); err != nil {

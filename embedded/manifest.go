@@ -5,6 +5,7 @@ import (
 	"fmt"
 	engine "github.com/NeoTecDigital/LumberJack/internal"
 	"github.com/NeoTecDigital/LumberJack/products/manifest"
+	"github.com/NeoTecDigital/LumberJack/products/momentum"
 	"github.com/NeoTecDigital/LumberJack/products/pngstore"
 )
 
@@ -14,6 +15,12 @@ func manifestDomainRegistration(config DomainConfig) (map[string]engine.DomainPr
 		scopes = append(scopes, engine.DomainOwnedScope{Binding: engine.DomainNativeBinding{ProductID: "manifest"}, Bounds: profile.Bounds, Layout: profile.Layout})
 	}
 	for _, owned := range scopes {
+		if owned.Binding.ProductID == "momentum" {
+			if err := momentum.ValidateLayout(owned, config.ACLMetadataKey); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
 		if owned.Binding.ProductID != "manifest" {
 			return nil, nil, fmt.Errorf("compiled product adapter absent")
 		}
@@ -25,7 +32,7 @@ func manifestDomainRegistration(config DomainConfig) (map[string]engine.DomainPr
 		}
 	}
 	policy, err := engine.NewDomainOwnerPolicy(config.ACLMetadataKey)
-	return map[string]engine.DomainProduct{"manifest": manifest.New()}, policy, err
+	return map[string]engine.DomainProduct{"manifest": manifest.New(), "momentum": momentum.New()}, policy, err
 }
 func validateOptionalStore(owned engine.DomainOwnedScope, key string) error {
 	if owned.Layout.Kinds["png_record"] == "" {

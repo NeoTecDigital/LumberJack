@@ -194,7 +194,7 @@ func validateDomainCatalogConfig(d *domainEngine) error {
 	}
 	for _, owned := range layouts {
 		revision := owned.Layout.ContractRevision
-		if revision != "" && revision != "manifest-associates/0.1" && revision != "manifest-associates/0.2" {
+		if revision != "" && revision != "manifest-associates/0.1" && revision != "manifest-associates/0.2" && revision != "momentum-workspace/0.1" {
 			return fmt.Errorf("unsupported per-scope product revision")
 		}
 		if !domainV2(owned) && len(owned.Layout.CatalogRef) != 0 {
