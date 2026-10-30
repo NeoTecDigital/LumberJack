@@ -57,7 +57,9 @@ func (s *Server) registeredSessionLocked(key string, now int64) (core.Applicatio
 	if err != nil || profile.LockedUntil > now || applicationSessionDeadline(session) <= now || !epochIsCurrent(session.CredentialEpoch, profile.CredentialEpoch) {
 		return core.ApplicationSession{}, false
 	}
-	if requireAccountMFA() && (session.MFAAt <= 0 || len(securityMethods(s.forest.AccountSecurity[session.UserID], profile)) == 0) {
+	// A delegated session's factors were the account authority's to check, and the signature says
+	// they were. Nothing else skips this, and nothing but the admission route sets the flag.
+	if requireAccountMFA() && !session.Delegated && (session.MFAAt <= 0 || len(securityMethods(s.forest.AccountSecurity[session.UserID], profile)) == 0) {
 		return core.ApplicationSession{}, false
 	}
 	return session, true
@@ -97,28 +99,8 @@ func (s *Server) mintApplicationSessionAtEpoch(userID string, expected *int64) (
 		if err != nil || profile.LockedUntil > time.Now().Unix() || (expected != nil && !epochIsCurrent(*expected, profile.CredentialEpoch)) {
 			return apiErrorf(401, "Account unavailable")
 		}
-		if s.forest.ApplicationSessions == nil {
-			s.forest.ApplicationSessions = map[string]core.ApplicationSession{}
-		}
 		now := time.Now().Unix()
-		count := 0
-		oldestKey := ""
-		var oldest int64
-		for key, item := range s.forest.ApplicationSessions {
-			if applicationSessionDeadline(item) <= now {
-				delete(s.forest.ApplicationSessions, key)
-				continue
-			}
-			if item.UserID == userID {
-				count++
-				if oldestKey == "" || item.CreatedAt < oldest {
-					oldestKey, oldest = key, item.CreatedAt
-				}
-			}
-		}
-		if count >= 20 {
-			delete(s.forest.ApplicationSessions, oldestKey)
-		}
+		s.sweepApplicationSessionsLocked(userID, now)
 		expiresAt = now + applicationSessionTTL
 		// STAMPED UNDER THE SAME HOLD THAT READ IT. The epoch is taken from the profile above and
 		// written here without the lock being released in between, so an enrolment landing at the same
@@ -133,6 +115,31 @@ func (s *Server) mintApplicationSessionAtEpoch(userID string, expected *int64) (
 		return "", 0, err
 	}
 	return token, min(expiresAt, time.Now().Unix()+applicationSessionIdleTTL), nil
+}
+
+// sweepApplicationSessionsLocked drops what has expired and makes room for one more of userID's.
+func (s *Server) sweepApplicationSessionsLocked(userID string, now int64) {
+	if s.forest.ApplicationSessions == nil {
+		s.forest.ApplicationSessions = map[string]core.ApplicationSession{}
+	}
+	count := 0
+	oldestKey := ""
+	var oldest int64
+	for key, item := range s.forest.ApplicationSessions {
+		if applicationSessionDeadline(item) <= now {
+			delete(s.forest.ApplicationSessions, key)
+			continue
+		}
+		if item.UserID == userID {
+			count++
+			if oldestKey == "" || item.CreatedAt < oldest {
+				oldestKey, oldest = key, item.CreatedAt
+			}
+		}
+	}
+	if count >= 20 {
+		delete(s.forest.ApplicationSessions, oldestKey)
+	}
 }
 
 func (s *Server) handleApplicationSession(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +201,7 @@ func (s *Server) handleBrowserSession(w http.ResponseWriter, r *http.Request, ac
 		token = minted
 	}
 	if r.Method == "DELETE" {
-		if err := s.changeForest(func() error { delete(s.forest.ApplicationSessions, s.sessionKeyFromBearer(token)); return nil }); err != nil {
+		if err := s.changeForest(func() error { s.endApplicationSessionLocked(s.sessionKeyFromBearer(token)); return nil }); err != nil {
 			writeAPIError(w, err)
 			return
 		}

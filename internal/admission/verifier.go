@@ -79,6 +79,31 @@ func New(keys map[string]ed25519.PublicKey, issuer, audience string, maxLifetime
 // Verify binds every field except expiry to a trusted command/ACL expectation.
 // Calling this outside the replicated FSM commit boundary DOES NOT fence writes.
 func (v *Verifier) Verify(raw []byte, expected Claims, payload []byte, now int64, read ReadBarrier) (Claims, error) {
+	claims, err := v.authentic(raw)
+	if err != nil {
+		return Claims{}, err
+	}
+	if !v.current(claims, now, v.lifetime) {
+		return Claims{}, ErrDenied
+	}
+	expected.ExpiresAt = claims.ExpiresAt
+	if claims != expected {
+		return Claims{}, ErrDenied
+	}
+	digest := sha256.Sum256(payload)
+	if hex.EncodeToString(digest[:]) != claims.BodySHA256 || read == nil {
+		return Claims{}, ErrDenied
+	}
+	barrier, err := read(claims.Scope, claims.PrincipalID, claims.SessionID)
+	if err != nil || !barrier.Confirmed || barrier.Version != claims.BarrierVersion {
+		return Claims{}, ErrDenied
+	}
+	return claims, nil
+}
+
+// authentic opens an envelope: its exact shape, its signature under a configured key, and claims
+// in canonical form. It decides nothing about what those claims may do.
+func (v *Verifier) authentic(raw []byte) (Claims, error) {
 	var envelope Envelope
 	if len(raw) > 8192 || !uniqueObject(raw) || decode(raw, &envelope) != nil || !atom.MatchString(envelope.KeyID) {
 		return Claims{}, ErrDenied
@@ -95,22 +120,12 @@ func (v *Verifier) Verify(raw []byte, expected Claims, payload []byte, now int64
 	if decode(body, &claims) != nil || !valid(claims) || !canonical(body) {
 		return Claims{}, ErrDenied
 	}
-	if claims.Issuer != v.issuer || claims.Audience != v.audience || claims.ExpiresAt <= now || claims.ExpiresAt-now > v.lifetime {
-		return Claims{}, ErrDenied
-	}
-	expected.ExpiresAt = claims.ExpiresAt
-	if claims != expected {
-		return Claims{}, ErrDenied
-	}
-	digest := sha256.Sum256(payload)
-	if hex.EncodeToString(digest[:]) != claims.BodySHA256 || read == nil {
-		return Claims{}, ErrDenied
-	}
-	barrier, err := read(claims.Scope, claims.PrincipalID, claims.SessionID)
-	if err != nil || !barrier.Confirmed || barrier.Version != claims.BarrierVersion {
-		return Claims{}, ErrDenied
-	}
 	return claims, nil
+}
+
+// current is the trust and time half: this issuer, this audience, not expired, not over-long.
+func (v *Verifier) current(claims Claims, now, lifetime int64) bool {
+	return claims.Issuer == v.issuer && claims.Audience == v.audience && claims.ExpiresAt > now && claims.ExpiresAt-now <= lifetime
 }
 
 func valid(c Claims) bool {

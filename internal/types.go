@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/internal/admission"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -67,6 +68,7 @@ type Server struct {
 	sourceCoordinator atomic.Pointer[sourceCoordinator]
 	personalSource    atomic.Pointer[personalSource]
 	activation        atomic.Pointer[activationVerifier]
+	sessionAdmission  atomic.Pointer[admission.Verifier]
 	forest            *core.Node
 	cache             *Cache
 	apiQueue          *APIQueue

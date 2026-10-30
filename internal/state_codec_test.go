@@ -52,6 +52,7 @@ func populatedNode(t *testing.T) *core.Node {
 	node.AccountSecurity = map[string]core.AccountSecurity{"user-id": {VerifiedEmail: "fixture@example.invalid"}}
 	node.MFAChallenges = map[string]core.MFAChallenge{"challenge-id": {UserID: "user-id", CodeHash: "hash", ExpiresAt: 1}}
 	node.PersonalBindings = &core.PersonalBindingLedger{Revision: "fixture-revision"}
+	node.AdmittedCommands = map[string]int64{"command-id": 1}
 	node.CreatedBy = "user-id"
 	node.CreatedAt = stamp
 	node.ModifiedBy = "user-id"

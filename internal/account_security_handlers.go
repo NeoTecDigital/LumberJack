@@ -79,6 +79,12 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Session expired", 401)
 		return
 	}
+	// A delegated session's password and factors are the account authority's. There is nothing here
+	// for it to read, and enrolling a factor here would start a second sign-in.
+	if session.Delegated {
+		http.Error(w, "This account's security settings are in your Mindfull account", 403)
+		return
+	}
 	if r.Method == "GET" && r.URL.Path == "/account/security" {
 		s.accountSecurityView(w, userID, key)
 		return

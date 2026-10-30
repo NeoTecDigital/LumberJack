@@ -46,6 +46,20 @@ func (s *Server) conversationAccount(username string) string {
 	}
 	return ""
 }
+
+// conversationTitle reads a direct message's title from its people as they are named now: an account
+// can be renamed by its next admission, and the name it was created under must not stay on screen.
+func (s *Server) conversationTitle(c *core.Conversation) string {
+	if c.Kind != "dm" {
+		return c.Title
+	}
+	names := []string{}
+	for id := range c.Members {
+		names = append(names, s.conversationUsername(id))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
 func (s *Server) conversationView(c *core.Conversation, user string) map[string]interface{} {
 	own := c.Members[user]
 	unread := 0
@@ -66,7 +80,7 @@ func (s *Server) conversationView(c *core.Conversation, user string) map[string]
 	}
 	sort.Slice(people, func(i, j int) bool { return people[i]["id"].(string) < people[j]["id"].(string) })
 	// Project association conveys no entitlement to the project or its title.
-	return map[string]interface{}{"id": c.ID, "kind": c.Kind, "title": c.Title, "project_id": c.ProjectID, "revision": c.Revision, "members": people, "invited": own.Invited, "muted": own.Muted, "archived": own.Archived, "saved": own.Saved, "refused": own.Refused, "saved_message_count": savedMessageCount(c, own), "unread": unread, "last_message": preview, "read_through": own.ReadThrough, "history_from": own.From}
+	return map[string]interface{}{"id": c.ID, "kind": c.Kind, "title": s.conversationTitle(c), "project_id": c.ProjectID, "revision": c.Revision, "members": people, "invited": own.Invited, "muted": own.Muted, "archived": own.Archived, "saved": own.Saved, "refused": own.Refused, "saved_message_count": savedMessageCount(c, own), "unread": unread, "last_message": preview, "read_through": own.ReadThrough, "history_from": own.From}
 }
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	user, _ := userIDFrom(r)

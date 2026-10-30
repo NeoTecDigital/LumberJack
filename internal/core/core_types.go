@@ -147,11 +147,16 @@ type Node struct {
 	// holds only a keyed hash of each code — never the code — with an attempt count and an expiry, so
 	// a state file leak cannot be replayed into a login and a stalled challenge sweeps itself out.
 	MFAChallenges map[string]MFAChallenge `json:"mfa_challenges,omitempty"`
-	mutex         sync.RWMutex            `json:"-"`
-	CreatedBy     string                  `json:"created_by,omitempty"`
-	CreatedAt     time.Time               `json:"created_at,omitempty"`
-	ModifiedBy    string                  `json:"modified_by,omitempty"`
-	ModifiedAt    time.Time               `json:"modified_at,omitempty"`
+	// AdmittedCommands is the single-use ledger of signed session admissions: command id to the
+	// expiry past which its admission could not verify anyway. Backend state, like the two above; it
+	// is written in the same snapshot as the session each entry paid for, so a restart cannot reopen
+	// a replay window.
+	AdmittedCommands map[string]int64 `json:"admitted_commands,omitempty"`
+	mutex            sync.RWMutex     `json:"-"`
+	CreatedBy        string           `json:"created_by,omitempty"`
+	CreatedAt        time.Time        `json:"created_at,omitempty"`
+	ModifiedBy       string           `json:"modified_by,omitempty"`
+	ModifiedAt       time.Time        `json:"modified_at,omitempty"`
 }
 
 // Add to existing types

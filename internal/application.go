@@ -160,8 +160,9 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 	}
 	// /session/mfa joins the credential exchange in this exemption for the same reason /session is in
 	// it: a change-delivery backlog must not be able to strand a caller halfway through a login it has
-	// already started, holding a challenge that expires in five minutes.
-	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/session/mfa" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
+	// already started, holding a challenge that expires in five minutes. /session/admit is the same
+	// exchange, holding an admission that expires in one.
+	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/session/mfa" && target.Path != "/session/admit" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
 		full := false
 		s.readForest(func() { full = s.forest.Correspondence != nil && len(s.forest.Correspondence.Pending) >= 4096 })
 		if full {

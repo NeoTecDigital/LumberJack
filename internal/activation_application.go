@@ -34,6 +34,8 @@ func (s *Server) dispatchApplication(req *http.Request, out *applicationWriter) 
 		s.handleApplicationSession(out, req)
 	case path == "/session/mfa" && method == "POST":
 		s.handleApplicationSessionMFA(out, req)
+	case path == "/session/admit" && method == "POST":
+		s.handleSessionAdmit(out, req)
 	case path == "/session" && (method == "GET" || method == "DELETE"):
 		s.authMiddleware(s.handleApplicationSession)(out, req)
 	case path == "/session/activity" && method == "POST":

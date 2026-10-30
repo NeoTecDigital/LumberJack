@@ -72,6 +72,15 @@ func (server *Server) authenticateCredential(username, password, phoneLast4 stri
 		return nil, errInvalidCredentials()
 	}
 
+	// NOTHING TO GUESS. An account with no password exists only to be admitted to (see
+	// application_session_admit.go). The compare is still spent, so it answers as slowly as any other
+	// refusal, but no failure is counted: a stranger's guesses must not be able to lock out somebody
+	// whose access never depended on a password here.
+	if user.Password == "" {
+		spendAPasswordCompare(password)
+		return nil, errInvalidCredentials()
+	}
+
 	now := time.Now().Unix()
 	if user.LockedUntil > now {
 		// Locked accounts pay the same compare, so the lockout does not announce itself by answering
