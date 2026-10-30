@@ -216,6 +216,7 @@ lj_status_t ic_lj_domain_configure(lj_handle_t, lj_cstr, int64_t, char **, int64
 lj_status_t ic_lj_domain_resolve(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
 lj_status_t ic_lj_domain_call(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
 lj_status_t ic_lj_domain_enroll(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
+lj_status_t ic_lj_domain_provision_root(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
 lj_status_t ic_lj_domain_control(lj_cstr, int64_t, char **, int64_t *);
 void ic_lj_domain_free(char *);
 
