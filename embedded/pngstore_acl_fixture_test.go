@@ -122,9 +122,13 @@ func pngACLAdministration(t *testing.T, artifact pngACLArtifact) *engine.Enrollm
 	return &administration
 }
 
+// Lets a test that exists only on the current engine add configuration the baseline tree cannot name.
+var pngACLConfigure = func(*DomainConfig) {}
+
 func pngACLStart(t *testing.T, artifactPath, directory string) *pngACLRun {
 	t.Helper()
 	config := pngACLConfig(t, artifactPath)
+	pngACLConfigure(&config)
 	run := &pngACLRun{t: t, config: config, artifact: pngACLReadArtifact(t, artifactPath), directory: directory, scope: engine.DomainScope{AccountID: "labelled-account", Product: "manifest"}}
 	run.authority = pngACLVerifier(t, &run.config)
 	run.handle = openPNGFixture(t, directory, run.config)
