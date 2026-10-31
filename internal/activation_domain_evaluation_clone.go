@@ -39,8 +39,28 @@ func (d *domainEngine) domainPolicyRecord(actor DomainVerified, record DomainRec
 	return cloneDomainEvaluationRecord(record, owned.Bounds)
 }
 
-func (d *domainEngine) authorizeDomainRecord(actor DomainVerified, access DomainAccess, record DomainRecord) error {
+// The policy sees the full list either way: it decides exactly as it does for a stored copy.
+func (d *domainEngine) domainResolvedPolicyRecord(actor DomainVerified, view DomainView, record DomainRecord) (DomainRecord, error) {
 	copy, err := d.domainPolicyRecord(actor, record)
+	if err != nil {
+		return DomainRecord{}, err
+	}
+	owned := d.scopes[actor.Scope]
+	key := d.config.ACLMetadataKey
+	value, reference, err := domainRecordACLValue(key, owned, view.Records[owned.Binding.RootID], copy)
+	if err != nil || !reference {
+		return copy, err
+	}
+	template, err := cloneStagedValue(value, 0, owned.Bounds.MaxValueDepth)
+	if err != nil {
+		return DomainRecord{}, err
+	}
+	copy.Metadata[key] = template
+	return copy, nil
+}
+
+func (d *domainEngine) authorizeDomainRecord(actor DomainVerified, access DomainAccess, view DomainView, record DomainRecord) error {
+	copy, err := d.domainResolvedPolicyRecord(actor, view, record)
 	if err != nil {
 		return err
 	}

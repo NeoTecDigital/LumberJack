@@ -89,8 +89,9 @@ func buildEnrollmentACLDelta(d *domainEngine, entry *domainEntry, view stagedVie
 		return stagedDelta{}, err
 	}
 	delta := stagedDelta{EnrollmentRecord: raw}
+	writes := newEnrollmentACLWrites(d, entry, view.Records[entry.owned.Binding.RootID])
 	for _, native := range view.Records {
-		write, err := enrollmentACLWrite(d, entry, native)
+		write, err := writes.of(native)
 		if err != nil {
 			return stagedDelta{}, err
 		}
@@ -102,47 +103,6 @@ func buildEnrollmentACLDelta(d *domainEngine, entry *domainEntry, view stagedVie
 		return stagedDelta{}, fmt.Errorf("known native graph absent")
 	}
 	return delta, nil
-}
-func enrollmentACLWrite(d *domainEngine, entry *domainEntry, record DomainRecord) (*stagedWrite, error) {
-	kind := enrollmentSemanticKind(entry.owned.Layout, record.Kind)
-	if kind == "" {
-		return nil, nil
-	} // Unknown source bags/resources are never broadened.
-	policy := &domainOwnerPolicy{key: d.config.ACLMetadataKey}
-	acl, err := policy.acl(record)
-	if err != nil {
-		return nil, err
-	}
-	actor := entry.enrollment.actor
-	target := *actor.Request.TargetPrincipalID
-	if _, owner := acl.Principals[target][EnrollmentProvision]; owner {
-		return nil, fmt.Errorf("owner ACL cannot be changed by member read control")
-	}
-	if actor.Request.Operation == EnrollmentReadGrant {
-		fields := entry.owned.Layout.Profiles["read"][kind]
-		if len(fields) == 0 {
-			return nil, fmt.Errorf("known graph current read profile absent")
-		}
-		if acl.Principals[target] == nil {
-			acl.Principals[target] = map[string]domainGrant{}
-		}
-		acl.Principals[target]["read"] = domainGrant{Fields: append([]string(nil), fields...), Reference: true, TargetGrantRevision: *actor.PrincipalReference.TargetGrantRevision}
-		grantPNGEnrollmentRead(entry, &acl, kind, target)
-	} else {
-		delete(acl.Principals[target], "read")
-		delete(acl.Principals[target], "png.store.read")
-		if len(acl.Principals[target]) == 0 {
-			delete(acl.Principals, target)
-		}
-	}
-	if kind == "root" {
-		updateEnrollmentReadTemplates(entry, &acl, target)
-	}
-	value, err := enrollmentACLValue(acl)
-	if err != nil {
-		return nil, err
-	}
-	return &stagedWrite{NodeID: record.ID, Key: d.config.ACLMetadataKey, Value: value}, nil
 }
 func enrollmentSemanticKind(layout DomainLayout, native string) string {
 	for kind, value := range layout.Kinds {
@@ -190,12 +150,12 @@ func (s *Server) validateEnrollmentReadPinLocked(d *domainEngine, entry *domainE
 		return err
 	}
 	target := entry.enrollment.actor.PrincipalReference
-	policy := &domainOwnerPolicy{key: d.config.ACLMetadataKey}
+	reader := newDomainACLReader(d.config.ACLMetadataKey, entry.owned, DomainRecord{ID: root.ID, Kind: root.Kind, Metadata: root.Metadata})
 	for _, node := range nodes {
 		if enrollmentSemanticKind(entry.owned.Layout, node.Kind) == "" {
 			continue
 		}
-		acl, err := policy.acl(DomainRecord{ID: node.ID, Kind: node.Kind, Metadata: node.Metadata})
+		acl, err := reader.acl(DomainRecord{ID: node.ID, Kind: node.Kind, Metadata: node.Metadata})
 		if err != nil {
 			return err
 		}

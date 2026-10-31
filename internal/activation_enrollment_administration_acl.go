@@ -50,21 +50,21 @@ func (s *Server) authorizeEnrollmentAdministrationLocked(d *domainEngine, entry 
 	if err != nil {
 		return err
 	}
-	policy := &domainOwnerPolicy{key: d.config.ACLMetadataKey}
+	reader := newDomainACLReader(d.config.ACLMetadataKey, entry.owned, DomainRecord{ID: root.ID, Kind: root.Kind, Metadata: root.Metadata})
 	for _, node := range nodes {
-		if err = enrollmentAdministrationNodePins(policy, p, actor, node); err != nil {
+		if err = enrollmentAdministrationNodePins(reader, p, actor, node); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func enrollmentAdministrationNodePins(policy *domainOwnerPolicy, p *DomainProvisioningProfile, actor EnrollmentVerified, node *core.Node) error {
+func enrollmentAdministrationNodePins(reader *domainACLReader, p *DomainProvisioningProfile, actor EnrollmentVerified, node *core.Node) error {
 	kind := enrollmentSemanticKind(p.Layout, node.Kind)
 	if kind == "" {
 		return nil // Unknown bags/resources are not delegated by enrollment.
 	}
-	acl, err := policy.acl(DomainRecord{ID: node.ID, Kind: node.Kind, Metadata: node.Metadata})
+	acl, err := reader.acl(DomainRecord{ID: node.ID, Kind: node.Kind, Metadata: node.Metadata})
 	if err != nil {
 		return err
 	}

@@ -39,7 +39,7 @@ func projectNode(id string, intent engine.DomainIntent, owned engine.DomainOwned
 	if !projected(id, kind, intent) {
 		return nil, fmt.Errorf("workspace projection lacks field authority")
 	}
-	permission, err := writablePermission(record, view)
+	permission, err := writablePermission(record, owned, view)
 	if err != nil {
 		return nil, err
 	}
@@ -57,14 +57,18 @@ func projectNode(id string, intent engine.DomainIntent, owned engine.DomainOwned
 	return result, nil
 }
 
-func writablePermission(record engine.DomainRecord, view engine.DomainView) (int, error) {
+func writablePermission(record engine.DomainRecord, owned engine.DomainOwnedScope, view engine.DomainView) (int, error) {
 	var acl struct {
 		Principals map[string]map[string]struct {
 			Fields   []string `json:"fields"`
 			Revision string   `json:"targetGrantRevision,omitempty"`
 		} `json:"principals"`
 	}
-	raw, err := engine.CanonicalDomainJSON(record.Metadata[view.ACLMetadataKey])
+	value, err := engine.DomainRecordACL(owned, view, record)
+	if err != nil {
+		return 0, err
+	}
+	raw, err := engine.CanonicalDomainJSON(value)
 	if err != nil {
 		return 0, err
 	}

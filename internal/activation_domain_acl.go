@@ -1,11 +1,7 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package internal
 
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-)
+import "fmt"
 
 type domainACL struct {
 	ContractRevision string                            `json:"contractRevision"`
@@ -39,7 +35,7 @@ func (p *domainOwnerPolicy) acl(record DomainRecord) (domainACL, error) {
 		return domainACL{}, err
 	}
 	var acl domainACL
-	if DecodeDomainJSON(data, &acl) != nil || acl.ContractRevision != "lj.domain.acl/1" || acl.Principals == nil {
+	if DecodeDomainJSON(data, &acl) != nil || acl.ContractRevision != domainACLRevision || acl.Principals == nil {
 		return domainACL{}, fmt.Errorf("invalid current native ACL")
 	}
 	return acl, nil
@@ -82,18 +78,10 @@ func (p *domainOwnerPolicy) CreateACLLocked(actor DomainVerified, operation, kin
 		return nil, fmt.Errorf("owner did not delegate this creation")
 	}
 	template, present := acl.CreateACLs[kind]
-	if !present || template.ContractRevision != "lj.domain.acl/1" || template.Principals == nil {
+	if !present || template.ContractRevision != domainACLRevision || template.Principals == nil {
 		return nil, fmt.Errorf("explicit owner new-record ACL template absent")
 	}
-	raw, err := CanonicalDomainJSON(template)
-	if err != nil {
-		return nil, err
-	}
-	var value interface{}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	err = decoder.Decode(&value)
-	return value, err
+	return domainACLReferenceValue(root.ID, kind), nil
 }
 func domainContains(values []string, wanted string) bool {
 	for _, value := range values {

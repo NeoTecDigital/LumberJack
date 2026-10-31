@@ -113,7 +113,7 @@ func (d *domainEngine) authorizeIntentLocked(actor DomainVerified, view DomainVi
 			return fmt.Errorf("current resource disappeared")
 		}
 		access := DomainAccess{Operation: operation, Kind: fields.Resource.Kind, Fields: fields.Fields, Reference: domainContains(fields.Fields, "reference")}
-		if err := d.authorizeDomainRecord(actor, access, record); err != nil {
+		if err := d.authorizeDomainRecord(actor, access, view, record); err != nil {
 			return err
 		}
 	}
@@ -139,14 +139,14 @@ func (d *domainEngine) authorizeNativeTarget(entry *domainEntry, view DomainView
 	if !present {
 		return fmt.Errorf("current native target absent")
 	}
-	return d.authorizeDomainRecord(entry.actor, DomainAccess{Operation: access.Action, Kind: access.Kind, Fields: fields}, record)
+	return d.authorizeDomainRecord(entry.actor, DomainAccess{Operation: access.Action, Kind: access.Kind, Fields: fields}, view, record)
 }
 
 func (d *domainEngine) authorizeDefinitionTarget(entry *domainEntry, view DomainView, access stagedAccess, fields []string) error {
 	kind := domainSemanticKind(entry.owned.Layout, access.Kind)
 	root := view.Records[entry.owned.Binding.RootID]
 	required := DomainAccess{Operation: access.Action, Kind: kind, Fields: fields, Create: true}
-	if err := d.authorizeDomainRecord(entry.actor, required, root); err != nil {
+	if err := d.authorizeDomainRecord(entry.actor, required, view, root); err != nil {
 		return err
 	}
 	record, present := view.Records[access.NodeID]
@@ -158,7 +158,7 @@ func (d *domainEngine) authorizeDefinitionTarget(entry *domainEntry, view Domain
 		record = DomainRecord{ID: access.NodeID, Kind: access.Kind, Metadata: map[string]interface{}{d.config.ACLMetadataKey: acl}}
 	}
 	required.Create = false
-	return d.authorizeDomainRecord(entry.actor, required, record)
+	return d.authorizeDomainRecord(entry.actor, required, view, record)
 }
 
 func domainWithout(fields []string, excluded string) []string {
