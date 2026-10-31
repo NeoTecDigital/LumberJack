@@ -17,6 +17,18 @@ import (
 
 const encryptedStateMagic = "LUMBERJACK-ENCRYPTED-STATE-3\n"
 
+// The envelope version does for an encrypted file what stateMagicReferences does for a plain one: a
+// build from before references refuses any version but 3 and so cannot open a forest holding one.
+const encryptedStateVersion = 3
+const encryptedStateVersionReferences = 4
+
+func encryptedStateVersionFor(data []byte) int {
+	if stateHoldsACLReferences(data) {
+		return encryptedStateVersionReferences
+	}
+	return encryptedStateVersion
+}
+
 type storageAccountKey struct {
 	key     []byte
 	wrapped wrappedStorageKey
@@ -244,7 +256,7 @@ func (s *secureStorage) encode(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(encryptedStateEnvelope{Version: 3, ID: s.id, Key: wrapped, Payload: payload})
+	return json.Marshal(encryptedStateEnvelope{Version: encryptedStateVersionFor(data), ID: s.id, Key: wrapped, Payload: payload})
 }
 
 func (s *secureStorage) decode(data []byte) ([]byte, error) {
@@ -252,7 +264,7 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, errors.New("invalid encrypted state envelope")
 	}
-	if envelope.Version != 3 || len(envelope.ID) != 64 {
+	if (envelope.Version != encryptedStateVersion && envelope.Version != encryptedStateVersionReferences) || len(envelope.ID) != 64 {
 		return nil, errors.New("unsupported encrypted state format")
 	}
 	s.id = envelope.ID

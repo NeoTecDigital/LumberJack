@@ -96,6 +96,21 @@ cp /path/to/database/<name>.dat.pre-v0.3.0 /path/to/database/<name>.dat
 
 Any work recorded after the migration is in the new file only, and an older build cannot read it.
 
+### Rolling back past shared access lists
+
+A record created from its type's template stores a small reference to that template on its root
+instead of a copy of the list. A build from before references reads one as an invalid list, so it
+could not revoke a member: the revoke aborts at the first reference and the member keeps read on
+every stored copy. So once a forest holds any reference, that build must not open it at all.
+
+A forest holding a reference is written with the banner `LUMBERJACK-STATE-3`, the same flat node
+table in every other way, and an older build fails at the reader as above. An encrypted forest says
+the same with envelope version 4, which an older build refuses as `unsupported encrypted state
+format`. A forest holding no reference keeps `LUMBERJACK-STATE-2` or envelope version 3, and an older
+build opens it as before.
+
+**Rollback past the first reference is restoring a backup taken before it was written.**
+
 ### Migrating an existing database
 
 Files written by any earlier build have **no banner**, and they are still read: the loader

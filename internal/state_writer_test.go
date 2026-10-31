@@ -66,7 +66,7 @@ func forestFromStateBytes(t *testing.T, raw []byte) *core.Node {
 	t.Helper()
 
 	header := len(stateMagic) + sha256.Size
-	if len(raw) <= header || string(raw[:len(stateMagic)]) != stateMagic {
+	if len(raw) <= header || !isStateBanner(raw[:len(stateMagic)]) {
 		t.Fatalf("The captured state file is not a node table: %d bytes", len(raw))
 	}
 

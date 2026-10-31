@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -53,6 +54,34 @@ import (
 // as long as that byte is not gzip's first identification byte the rollback fails at the reader
 // rather than inside the data.
 const stateMagic = "LUMBERJACK-STATE-2\nthis file is a flat node table\n"
+
+// stateMagicReferences is the same table when any record in it holds an ACL reference. A build from
+// before references would read such a file and then could not change access: it reads a reference
+// as an invalid ACL, so a member revoke aborts at the first one and the member keeps read on every
+// stored copy. So that build must not open the file at all, and this banner is how: it fails at the
+// reader exactly as stateMagic does for the build before it. Same length and same 33rd byte. A file
+// holding no reference keeps stateMagic, so a rollback stays possible until the first one is written.
+const stateMagicReferences = "LUMBERJACK-STATE-3\nthis file is a flat node table\n"
+
+// A reference always marshals to this byte sequence: its keys sort contractRevision first, and text
+// inside a JSON string cannot match because its quotes are escaped. A record whose own structured
+// data carried this exact pair would also select the new banner, which errs toward refusing a rollback.
+var stateACLReferenceMark = []byte(`"contractRevision":"` + domainACLReferenceRevision + `"`)
+
+func stateHoldsACLReferences(data []byte) bool {
+	return bytes.Contains(data, stateACLReferenceMark)
+}
+
+func stateBannerFor(data []byte) string {
+	if stateHoldsACLReferences(data) {
+		return stateMagicReferences
+	}
+	return stateMagic
+}
+
+func isStateBanner(banner []byte) bool {
+	return string(banner) == stateMagic || string(banner) == stateMagicReferences
+}
 
 // stateVersion is recorded inside the document as well, for a human reading a decompressed file and
 // for a future format to branch on once it is past the banner. It gates NOTHING on its own.

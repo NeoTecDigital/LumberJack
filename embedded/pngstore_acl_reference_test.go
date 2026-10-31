@@ -61,6 +61,9 @@ func TestPNGCreatedRecordStoresAReferenceAndKeepsItsDecisions(t *testing.T) {
 	if stored["contractRevision"] != "lj.domain.acl.ref/1" || stored["principals"] != nil {
 		t.Fatalf("record stored its own list: %v", stored)
 	}
+	if raw, _ := pngACLStateFile(t, directory); !bytes.HasPrefix(raw, []byte(pngACLStateMagicReferences)) {
+		t.Fatal("a forest holding a reference must carry the banner an older build refuses")
+	}
 	handle = openPNGFixture(t, directory, config)
 	defer closePNGFixture(t, handle)
 	reopened := pngFixtureRead(t, handle, config, authority, record.Family, record.Key, []string{"id", "account_id", "name"})

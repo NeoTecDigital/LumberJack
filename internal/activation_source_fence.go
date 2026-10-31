@@ -341,7 +341,7 @@ func (s *Server) sourceWitnessPayload(file *os.File, limit int) ([]byte, error) 
 	}
 	banner := make([]byte, len(stateMagic))
 	hash := make([]byte, sha256.Size)
-	if _, err = io.ReadFull(file, banner); err != nil || string(banner) != stateMagic {
+	if _, err = io.ReadFull(file, banner); err != nil || !isStateBanner(banner) {
 		return nil, sourceUnavailable()
 	}
 	if _, err = io.ReadFull(file, hash); err != nil {

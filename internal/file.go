@@ -133,7 +133,7 @@ func hasStateMagic(file *os.File) (bool, error) {
 	banner := make([]byte, len(stateMagic))
 	_, err := io.ReadFull(file, banner)
 	switch {
-	case err == nil && string(banner) == stateMagic:
+	case err == nil && isStateBanner(banner):
 		return true, nil
 	case err == nil, err == io.EOF, err == io.ErrUnexpectedEOF:
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -375,7 +375,7 @@ func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) err
 	// format cannot ignore it: that build reads the first 32 bytes as the hash and opens a gzip
 	// stream at offset 32, so it fails on the gzip header rather than reading a document it does
 	// not understand and rewriting the file without the parts it dropped. See state_codec.go.
-	if _, err := file.WriteString(stateMagic); err != nil {
+	if _, err := file.WriteString(stateBannerFor(jsonData)); err != nil {
 		server.logger.Failure("Failed to write the state banner to temporary file: %v", err)
 		return err
 	}

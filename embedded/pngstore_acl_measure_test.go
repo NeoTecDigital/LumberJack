@@ -21,6 +21,7 @@ var pngACLMeasure = flag.String("png-acl-measure", "", "Comma-separated labelled
 var pngACLMeasureOut = flag.String("png-acl-measure-out", "", "Append measured lines to this file")
 
 const pngACLStateMagic = "LUMBERJACK-STATE-2\nthis file is a flat node table\n"
+const pngACLStateMagicReferences = "LUMBERJACK-STATE-3\nthis file is a flat node table\n"
 
 type pngACLPoint struct {
 	Records     int     `json:"records"`
@@ -152,7 +153,7 @@ func pngACLStateFile(t *testing.T, directory string) ([]byte, int64) {
 			continue
 		}
 		raw, err := os.ReadFile(path)
-		if err == nil && bytes.HasPrefix(raw, []byte(pngACLStateMagic)) {
+		if err == nil && (bytes.HasPrefix(raw, []byte(pngACLStateMagic)) || bytes.HasPrefix(raw, []byte(pngACLStateMagicReferences))) {
 			return raw, info.Size()
 		}
 	}
