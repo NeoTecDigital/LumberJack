@@ -102,6 +102,7 @@ func buildEnrollmentACLDelta(d *domainEngine, entry *domainEntry, view stagedVie
 	if len(delta.Writes) == 0 {
 		return stagedDelta{}, fmt.Errorf("known native graph absent")
 	}
+	delta.Followers = writes.followers
 	return delta, nil
 }
 func enrollmentSemanticKind(layout DomainLayout, native string) string {

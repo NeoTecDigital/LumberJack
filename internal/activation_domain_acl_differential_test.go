@@ -359,6 +359,31 @@ func TestDomainACLReferenceHistoryRewritesOnlyWhatDiffers(t *testing.T) {
 	}
 }
 
+// Records that took a full list are written, so Targets names them; only followers are counted.
+func TestEnrollmentFollowerCountsLeaveOutRecordsThatTookAList(t *testing.T) {
+	h := newACLHistory(t)
+	h.createAll("png_record", "png_record", "associate", "silent")
+	references := h.forests[2]
+	entry := aclEnrollmentEntry(references.owned, EnrollmentReadRevoke, aclAdmin, aclGrantRev1)
+	writes := newEnrollmentACLWrites(references.d, entry, references.root())
+	written := []string{}
+	for id, record := range references.records {
+		write, err := writes.of(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if write != nil {
+			written = append(written, id)
+		}
+	}
+	if !domainEqual(writes.followers, map[string]int{"png_record": 2, "associate": 1}) {
+		t.Fatalf("followers %v", writes.followers)
+	}
+	if len(written) != 2 {
+		t.Fatalf("expected the root and the silent record written, got %v", written)
+	}
+}
+
 // A grant change on one record: the record holds its own list from then on and stays correct
 // through later changes, in all three forests.
 func TestDomainACLRecordOverrideStaysCorrectAndIndependent(t *testing.T) {

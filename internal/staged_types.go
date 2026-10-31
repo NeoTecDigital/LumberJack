@@ -106,6 +106,7 @@ type stagedDelta struct {
 	ProductIntent    json.RawMessage
 	EnrollmentRecord json.RawMessage
 	MappingRecord    json.RawMessage
+	Followers        map[string]int
 	Writes           []stagedWrite
 	Creates          []stagedCreate
 }
@@ -117,11 +118,14 @@ type stagedTarget struct {
 }
 
 type stagedReceipt struct {
-	Version          int             `json:"version"`
-	Command          stagedCommand   `json:"command"`
-	Fingerprint      string          `json:"fingerprint"`
-	AfterRevision    string          `json:"afterRevision"`
-	Targets          []stagedTarget  `json:"targets"`
+	Version       int            `json:"version"`
+	Command       stagedCommand  `json:"command"`
+	Fingerprint   string         `json:"fingerprint"`
+	AfterRevision string         `json:"afterRevision"`
+	Targets       []stagedTarget `json:"targets"`
+	// Followers says, per kind, how many records an enrollment change reached through their kind's
+	// template at that moment. They took no write, so Targets cannot name them.
+	Followers        map[string]int  `json:"followers,omitempty"`
 	ProductIntent    json.RawMessage `json:"productIntent,omitempty"`
 	EnrollmentRecord json.RawMessage `json:"enrollmentRecord,omitempty"`
 	MappingRecord    json.RawMessage `json:"mappingRecord,omitempty"`

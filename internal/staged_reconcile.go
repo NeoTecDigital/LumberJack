@@ -161,7 +161,7 @@ func buildOwnedPending(scope *stagedScope, root *core.Node, occupied map[string]
 		targets = []stagedTarget{}
 	}
 	receipt := stagedReceipt{Version: 1, Command: command,
-		Fingerprint: stagedCommandFingerprint(scope.descriptor.Binding, command), AfterRevision: revision, Targets: targets, ProductIntent: append([]byte(nil), delta.ProductIntent...), EnrollmentRecord: append([]byte(nil), delta.EnrollmentRecord...), MappingRecord: append([]byte(nil), delta.MappingRecord...)}
+		Fingerprint: stagedCommandFingerprint(scope.descriptor.Binding, command), AfterRevision: revision, Targets: targets, Followers: delta.Followers, ProductIntent: append([]byte(nil), delta.ProductIntent...), EnrollmentRecord: append([]byte(nil), delta.EnrollmentRecord...), MappingRecord: append([]byte(nil), delta.MappingRecord...)}
 	if err = validateEnrollmentReceipt(scope.descriptor.Binding, receipt, scope.descriptor.Bounds.MaxScopeBytes); err != nil {
 		return nil, err
 	}

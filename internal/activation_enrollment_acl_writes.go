@@ -12,6 +12,7 @@ type enrollmentACLWrites struct {
 	entry     *domainEntry
 	root      DomainRecord
 	following map[string]*enrollmentFollowing
+	followers map[string]int // Counted on the walk the change already makes; nil until there is one.
 }
 
 // value is nil when records of the kind keep following the template.
@@ -34,16 +35,29 @@ func (w *enrollmentACLWrites) of(record DomainRecord) (*stagedWrite, error) {
 	if err != nil {
 		return nil, err
 	}
-	var after interface{}
 	if reference {
-		after, err = w.followingValue(kind)
-	} else {
-		after, err = w.changedList(record, kind)
+		return w.followerWrite(record, kind)
 	}
-	if err != nil || after == nil {
+	after, err := w.changedList(record, kind)
+	if err != nil {
 		return nil, err
 	}
 	return &stagedWrite{NodeID: record.ID, Key: key, Value: after}, nil
+}
+
+func (w *enrollmentACLWrites) followerWrite(record DomainRecord, kind string) (*stagedWrite, error) {
+	after, err := w.followingValue(kind)
+	if err != nil {
+		return nil, err
+	}
+	if after != nil {
+		return &stagedWrite{NodeID: record.ID, Key: w.d.config.ACLMetadataKey, Value: after}, nil
+	}
+	if w.followers == nil {
+		w.followers = map[string]int{}
+	}
+	w.followers[kind]++
+	return nil, nil
 }
 
 func (w *enrollmentACLWrites) changedList(record DomainRecord, kind string) (interface{}, error) {

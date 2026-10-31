@@ -77,7 +77,25 @@ func validateEnrollmentHistoricalTarget(record enrollmentRecordValue, maximum in
 	return fmt.Errorf("unaccepted target provenance cannot grant access")
 }
 
+func validateEnrollmentFollowers(receipt stagedReceipt, maximum int) error {
+	if len(receipt.Followers) == 0 {
+		return nil
+	}
+	if len(receipt.EnrollmentRecord) == 0 || receipt.Command.Action == EnrollmentProvision {
+		return fmt.Errorf("only a member read change states the records following a template")
+	}
+	for kind, count := range receipt.Followers {
+		if count <= 0 || enrollmentIdentifiers(maximum, kind) != nil {
+			return fmt.Errorf("invalid enrollment follower count")
+		}
+	}
+	return nil
+}
+
 func validateEnrollmentReceipt(binding stagedBinding, receipt stagedReceipt, maximum int) error {
+	if err := validateEnrollmentFollowers(receipt, maximum); err != nil {
+		return err
+	}
 	enrollment := isEnrollmentOperation(receipt.Command.Action)
 	if len(receipt.EnrollmentRecord) == 0 {
 		if enrollment {
