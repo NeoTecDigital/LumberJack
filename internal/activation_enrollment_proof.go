@@ -98,7 +98,7 @@ func (d *domainEngine) validEnrollmentActor(actor EnrollmentVerified, check Enro
 	if !domainFinite(actor.ExpiresAt) || actor.ExpiresAt <= now || actor.ExpiresAt > now+float64(d.config.Trust.MaxLifetimeSeconds) {
 		return false
 	}
-	if !validEnrollmentPhaseLease(actor, check, p.Bounds.MaxIdentifierBytes) {
+	if !validEnrollmentPhaseLease(actor, check, p.Bounds.MaxIdentifierBytes) || !d.validEnrollmentWorkloadForms(actor) {
 		return false
 	}
 	return validEnrollmentTarget(actor, p.Bounds.MaxIdentifierBytes, now, float64(d.config.Trust.MaxLifetimeSeconds))
@@ -138,7 +138,7 @@ func validEnrollmentTarget(actor EnrollmentVerified, maximum int, now, lifetime 
 	if ref.TargetEligibility == "active" {
 		return ref.TargetGrantRevision != nil && enrollmentIdentifiers(maximum, *ref.TargetGrantRevision) == nil
 	}
-	return actor.Request.Operation == EnrollmentReadRevoke && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil
+	return isEnrollmentRevokeOperation(actor.Request.Operation) && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil
 }
 
 // Only freshness/proof/phase may refresh within one admitted lease.

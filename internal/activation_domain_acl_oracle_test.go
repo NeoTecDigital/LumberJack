@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // The code that shipped before references, frozen verbatim as the differential's oracle: a record
@@ -112,4 +113,65 @@ func legacyUpdateTemplate(entry *domainEntry, template *domainACL, kind, target 
 	revision := *entry.enrollment.actor.PrincipalReference.TargetGrantRevision
 	template.Principals[target]["read"] = domainGrant{Fields: append([]string(nil), fields...), Reference: domainContains(fields, "reference"), TargetGrantRevision: revision}
 	legacyGrantPNGRead(entry, template, kind, target)
+}
+
+// The two decisions the workload change touched, as they were before it, frozen the same way.
+func legacyAuthorizeLocked(p *domainOwnerPolicy, actor DomainVerified, access DomainAccess, record DomainRecord) error {
+	if p.sessionFenced != nil && p.sessionFenced(actor) {
+		return fmt.Errorf("current actor session fenced")
+	}
+	if actor.Kind != "human" && (actor.Kind != "integration_actor" || actor.IntegrationActor == nil) || actor.ExpiresAt <= domainNow() {
+		return fmt.Errorf("current human authority expired")
+	}
+	acl, err := p.acl(record)
+	if err != nil {
+		return err
+	}
+	grant, present := acl.Principals[actor.PrincipalID][access.Operation]
+	if !present || len(access.Fields) == 0 || grant.TargetGrantRevision != "" && grant.TargetGrantRevision != actor.GrantRevision {
+		return fmt.Errorf("current native action/fields denied")
+	}
+	for _, field := range access.Fields {
+		if !domainContains(grant.Fields, field) {
+			return fmt.Errorf("current native field denied: %s", field)
+		}
+	}
+	if access.Create && !domainContains(grant.CreateKinds, access.Kind) {
+		return fmt.Errorf("current native create denied")
+	}
+	if access.Reference && !grant.Reference {
+		return fmt.Errorf("current native reference denied")
+	}
+	return nil
+}
+
+func legacyValidDomainActorKind(d *domainEngine, actor DomainVerified) bool {
+	if actor.Kind == "human" {
+		return actor.Issuer == d.config.Trust.Issuer && actor.IntegrationActor == nil
+	}
+	if actor.Kind != "integration_actor" || actor.IntegrationActor == nil || d.config.IntegrationIssuer == "" {
+		return false
+	}
+	if actor.Issuer != d.config.IntegrationIssuer || !strings.HasPrefix(actor.SessionID, "channel-message:") {
+		return false
+	}
+	profile := actor.IntegrationActor
+	values := []string{profile.IntegrationID, profile.ConnectorID, profile.MessageID, profile.MessageHash, profile.CredentialRevision, profile.PolicyRevision, profile.RosterRevision, profile.SenderPhone}
+	for _, value := range values {
+		if value == "" {
+			return false
+		}
+	}
+	for _, char := range profile.SenderPhone {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	if !domainValidHash(profile.MessageHash) || actor.AuthorityResourceRevision != profile.PolicyRevision {
+		return false
+	}
+	if profile.EffectiveAssociateID == nil {
+		return actor.PrincipalID == "office-intake:"+profile.IntegrationID
+	}
+	return *profile.EffectiveAssociateID != "" && actor.PrincipalID == "associate:"+*profile.EffectiveAssociateID
 }

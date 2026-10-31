@@ -30,6 +30,9 @@ func (w *enrollmentACLWrites) of(record DomainRecord) (*stagedWrite, error) {
 	if kind == "" {
 		return nil, nil // Unknown source bags/resources are never broadened.
 	}
+	if isEnrollmentWorkloadOperation(w.entry.enrollment.actor.Request.Operation) {
+		return w.workloadWrite(record, kind)
+	}
 	key := w.d.config.ACLMetadataKey
 	_, reference, err := domainRecordACLValue(key, w.entry.owned, w.root, record)
 	if err != nil {
@@ -53,11 +56,15 @@ func (w *enrollmentACLWrites) followerWrite(record DomainRecord, kind string) (*
 	if after != nil {
 		return &stagedWrite{NodeID: record.ID, Key: w.d.config.ACLMetadataKey, Value: after}, nil
 	}
+	w.countFollower(kind)
+	return nil, nil
+}
+
+func (w *enrollmentACLWrites) countFollower(kind string) {
 	if w.followers == nil {
 		w.followers = map[string]int{}
 	}
 	w.followers[kind]++
-	return nil, nil
 }
 
 func (w *enrollmentACLWrites) changedList(record DomainRecord, kind string) (interface{}, error) {

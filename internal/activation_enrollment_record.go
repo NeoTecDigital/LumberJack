@@ -71,7 +71,7 @@ func validateEnrollmentHistoricalTarget(record enrollmentRecordValue, maximum in
 	if ref.TargetEligibility == "active" && ref.TargetGrantRevision != nil {
 		return enrollmentIdentifiers(maximum, *ref.TargetGrantRevision)
 	}
-	if record.Request.Operation == EnrollmentReadRevoke && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil {
+	if isEnrollmentRevokeOperation(record.Request.Operation) && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil {
 		return nil
 	}
 	return fmt.Errorf("unaccepted target provenance cannot grant access")
@@ -82,7 +82,7 @@ func validateEnrollmentFollowers(receipt stagedReceipt, maximum int) error {
 		return nil
 	}
 	if len(receipt.EnrollmentRecord) == 0 || receipt.Command.Action == EnrollmentProvision {
-		return fmt.Errorf("only a member read change states the records following a template")
+		return fmt.Errorf("only an access change states the records following a template")
 	}
 	for kind, count := range receipt.Followers {
 		if count <= 0 || enrollmentIdentifiers(maximum, kind) != nil {
@@ -145,7 +145,7 @@ func validateEnrollmentTargets(binding stagedBinding, receipt stagedReceipt, max
 }
 
 func isEnrollmentOperation(operation string) bool {
-	return operation == EnrollmentProvision || operation == EnrollmentReadGrant || operation == EnrollmentReadRevoke
+	return operation == EnrollmentProvision || operation == EnrollmentReadGrant || operation == EnrollmentReadRevoke || isEnrollmentWorkloadOperation(operation)
 }
 
 // Historical sessions/request ids are provenance, not replay authority.

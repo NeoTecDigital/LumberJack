@@ -70,7 +70,7 @@ func newDomainEngine(config DomainConfig, products map[string]DomainProduct, pol
 	d := &domainEngine{config: config, verifier: verifier, policy: policy, products: products, epoch: epoch, scopes: map[DomainScope]DomainOwnedScope{}, entries: map[string]*domainEntry{}, closed: map[DomainGateKey]bool{}, sessionFences: map[enrollmentSessionKey]bool{}}
 	if config.ProvisioningProfile != nil {
 		owner := policy.(*domainOwnerPolicy)
-		d.policy = &domainOwnerPolicy{key: owner.key, sessionFenced: d.actorSessionFenced}
+		d.policy = &domainOwnerPolicy{key: owner.key, sessionFenced: d.actorSessionFenced, workload: config.WorkloadPolicy}
 	}
 	if err = validateDomainRootMode(config); err != nil {
 		return nil, err
@@ -233,6 +233,9 @@ func validateDomainEnginePolicy(config DomainConfig, policy DomainPolicy) error 
 		}
 	}
 	if err := validateDomainProvisioningProfile(config); err != nil {
+		return err
+	}
+	if err := validateDomainWorkloadPolicy(config); err != nil {
 		return err
 	}
 	if config.ProvisioningProfile != nil {

@@ -187,7 +187,7 @@ func validateEnrollmentReplay(scope *stagedScope, receipt stagedReceipt, actor E
 	if err := validateEnrollmentReplayActor(record, actor); err != nil {
 		return err
 	}
-	if actor.Request.Operation == EnrollmentReadGrant && (actor.PrincipalReference == nil || !domainEqual(record.TargetGrantRevision, actor.PrincipalReference.TargetGrantRevision)) {
+	if isEnrollmentGrantOperation(actor.Request.Operation) && (actor.PrincipalReference == nil || !domainEqual(record.TargetGrantRevision, actor.PrincipalReference.TargetGrantRevision)) {
 		return fmt.Errorf("original target BASE revision revoked/replaced")
 	}
 	return nil

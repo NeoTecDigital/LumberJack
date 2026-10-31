@@ -368,7 +368,7 @@ func TestEnrollmentFollowerStatementsAreBound(t *testing.T) {
 // The check has to sit on the path every stored receipt passes, not only exist.
 func TestEnrollmentFollowerStatementIsCheckedOnEveryReceipt(t *testing.T) {
 	product := stagedReceipt{Command: stagedCommand{Action: nativeStoreCommand}, Followers: map[string]int{"role": 1}}
-	if err := validateEnrollmentReceipt(stagedTestBinding(), product, 200); err == nil || !strings.Contains(err.Error(), "member read change") {
+	if err := validateEnrollmentReceipt(stagedTestBinding(), product, 200); err == nil || !strings.Contains(err.Error(), "access change") {
 		t.Fatal("a product receipt stated followers", err)
 	}
 	product.Followers = nil

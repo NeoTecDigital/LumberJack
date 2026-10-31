@@ -191,7 +191,7 @@ func validateSourceActorGrant(actor SourceActor, grant SourcePersonalGrant, requ
 	if err := validateSourceSubject(actor.Evidence, requestID, bounds); err != nil {
 		return err
 	}
-	if actor.Kind != "human" || actor.SessionID != actor.Evidence.SessionID || grant.State != "active" || actor.PrincipalID != grant.PrincipalID {
+	if actor.Kind != "human" || domainWorkloadIdentity(actor.PrincipalID, actor.SessionID) || actor.SessionID != actor.Evidence.SessionID || grant.State != "active" || actor.PrincipalID != grant.PrincipalID {
 		return sourceDenied()
 	}
 	if grant.Scope.Product != "momentum" || grant.Scope.AccountID != grant.Account.AccountID || grant.Account.AccountType != "personal" || grant.Account.SubjectRef.Kind != "user" || grant.Account.SubjectRef.SubjectID == "" || grant.Account.SubjectRef.SubjectID == actor.PrincipalID || grant.Account.AccountID == actor.PrincipalID || grant.Account.SubjectRef.SubjectID == grant.Account.AccountID {

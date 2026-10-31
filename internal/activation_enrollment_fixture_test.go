@@ -25,6 +25,11 @@ type enrollmentFixture struct {
 
 func newEnrollmentFixture(t *testing.T) *enrollmentFixture {
 	t.Helper()
+	return newEnrollmentFixtureWith(t, enrollmentFixtureConfig(t))
+}
+
+func newEnrollmentFixtureWith(t *testing.T, config DomainConfig) *enrollmentFixture {
+	t.Helper()
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0700); err != nil {
 		t.Fatal(err)
@@ -33,7 +38,7 @@ func newEnrollmentFixture(t *testing.T) *enrollmentFixture {
 	if err := f.server.configureStagedScope(stagedTestBinding(), stagedTestBounds()); err != nil {
 		t.Fatal(err)
 	}
-	f.config = enrollmentFixtureConfig(t)
+	f.config = config
 	callback := httptest.NewServer(http.HandlerFunc(f.callback))
 	t.Cleanup(callback.Close)
 	f.config.Trust.VerifierEndpoint = callback.URL + "/unit-enrollment-verify"
@@ -171,6 +176,19 @@ func (f *enrollmentFixture) corruptActor(value map[string]interface{}) {
 		value["purpose"] = "identity.read"
 	case "target":
 		value["principalReference"].(map[string]interface{})["accountId"] = "another-account"
+	case "workload-kind":
+		value["kind"] = domainWorkloadKind
+	case "workload-issuer":
+		value["kind"], value["issuer"] = domainWorkloadKind, wlIssuer
+	case "workload-principal":
+		value["principalId"] = wlPrincipal
+		value["principalReference"].(map[string]interface{})["actorPrincipalId"] = wlPrincipal
+	case "workload-session":
+		value["sessionId"] = wlSession
+		value["principalReference"].(map[string]interface{})["actorSessionId"] = wlSession
+	case "another-person":
+		value["principalId"] = "unit-another-person"
+		value["principalReference"].(map[string]interface{})["actorPrincipalId"] = "unit-another-person"
 	}
 }
 

@@ -68,9 +68,12 @@ func (s *Server) authorizeEnrollmentRootLocked(d *domainEngine, entry *domainEnt
 		if scope != nil && scope.pending != nil && scope.pending.provisionAccount != nil {
 			account = scope.pending.provisionAccount
 		}
+		if !enrollmentAdministratorMayDelegate(actor, acl) {
+			return fmt.Errorf("administrator cannot delegate a store write it does not hold")
+		}
 		return s.authorizeEnrollmentAdministrationLocked(d, entry, account, root, acl)
 	}
-	grant, present := acl.Principals[actor.PrincipalID][actor.Request.Operation]
+	grant, present := acl.Principals[actor.PrincipalID][enrollmentControlOperation(actor.Request.Operation)]
 	if !present || !domainContains(grant.Fields, "acl") || grant.TargetGrantRevision != "" {
 		return fmt.Errorf("current native owner enrollment action denied")
 	}
@@ -131,15 +134,18 @@ func (s *Server) validateEnrollmentCurrentLocked(d *domainEngine, entry *domainE
 	if err = validateEnrollmentReplay(scope, receipt, entry.enrollment.actor); err != nil {
 		return err
 	}
-	if entry.enrollment.actor.Request.Operation == EnrollmentReadGrant {
+	switch entry.enrollment.actor.Request.Operation {
+	case EnrollmentReadGrant:
 		return s.validateEnrollmentReadPinLocked(d, entry)
+	case EnrollmentWorkloadGrant:
+		return s.validateEnrollmentWorkloadPinLocked(d, entry)
 	}
 	return nil
 }
-func (s *Server) validateEnrollmentReadPinLocked(d *domainEngine, entry *domainEntry) error {
+func (s *Server) enrollmentPinRecordsLocked(entry *domainEntry) (DomainRecord, []DomainRecord, error) {
 	index, err := stagedForestIndex(s.forest)
 	if err != nil {
-		return err
+		return DomainRecord{}, nil, err
 	}
 	scope := s.stagedScopes[entry.owned.Binding.ScopeID]
 	root := index[entry.owned.Binding.RootID]
@@ -148,19 +154,30 @@ func (s *Server) validateEnrollmentReadPinLocked(d *domainEngine, entry *domainE
 	}
 	nodes, err := stagedClosure(root, entry.owned.Bounds)
 	if err != nil {
+		return DomainRecord{}, nil, err
+	}
+	records := make([]DomainRecord, 0, len(nodes))
+	for _, node := range nodes {
+		records = append(records, DomainRecord{ID: node.ID, Kind: node.Kind, Metadata: node.Metadata})
+	}
+	return DomainRecord{ID: root.ID, Kind: root.Kind, Metadata: root.Metadata}, records, nil
+}
+func (s *Server) validateEnrollmentReadPinLocked(d *domainEngine, entry *domainEntry) error {
+	root, records, err := s.enrollmentPinRecordsLocked(entry)
+	if err != nil {
 		return err
 	}
 	target := entry.enrollment.actor.PrincipalReference
-	reader := newDomainACLReader(d.config.ACLMetadataKey, entry.owned, DomainRecord{ID: root.ID, Kind: root.Kind, Metadata: root.Metadata})
-	for _, node := range nodes {
-		if enrollmentSemanticKind(entry.owned.Layout, node.Kind) == "" {
+	reader := newDomainACLReader(d.config.ACLMetadataKey, entry.owned, root)
+	for _, record := range records {
+		if enrollmentSemanticKind(entry.owned.Layout, record.Kind) == "" {
 			continue
 		}
-		acl, err := reader.acl(DomainRecord{ID: node.ID, Kind: node.Kind, Metadata: node.Metadata})
+		acl, err := reader.acl(record)
 		if err != nil {
 			return err
 		}
-		if !currentEnrollmentReadPins(entry, acl, enrollmentSemanticKind(entry.owned.Layout, node.Kind), target) || !currentEnrollmentTemplatePins(entry, acl, target) {
+		if !currentEnrollmentReadPins(entry, acl, enrollmentSemanticKind(entry.owned.Layout, record.Kind), target) || !currentEnrollmentTemplatePins(entry, acl, target) {
 			return fmt.Errorf("native read grant was removed/replaced after command")
 		}
 	}

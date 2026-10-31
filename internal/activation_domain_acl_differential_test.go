@@ -94,6 +94,9 @@ func newACLForest(t *testing.T, mode aclMode, owned DomainOwnedScope) *aclForest
 	t.Helper()
 	root := DomainRecord{ID: owned.Binding.RootID, Kind: aclKinds["root"], Metadata: map[string]interface{}{aclKey: aclRootValue(t, owned)}}
 	d := &domainEngine{config: DomainConfig{ACLMetadataKey: aclKey}, policy: &domainOwnerPolicy{key: aclKey}, scopes: map[DomainScope]DomainOwnedScope{aclScope(owned): owned}}
+	if mode != aclOracle {
+		d.config.WorkloadPolicy = wlPolicy()
+	}
 	return &aclForest{mode: mode, d: d, owned: owned, records: map[string]DomainRecord{root.ID: root}}
 }
 
@@ -215,7 +218,20 @@ func (f *aclForest) decideCreates(result map[string]string, id string, record Do
 
 func (f *aclForest) decideOne(result map[string]string, id string, record DomainRecord, who aclActor, access DomainAccess) {
 	label := fmt.Sprintf("%s|%s|%s|%v|%s", id, who.label, access.Operation, access.Fields, access.Kind)
-	result[label] = aclDecisionText(f.d.authorizeDomainRecord(who.actor, access, f.view(), record))
+	result[label] = aclDecisionText(f.decide(who.actor, access, record))
+}
+
+// The oracle decides with the frozen policy. The other forests decide with the current code, with a
+// workload policy configured and no workload granted, so that combination is what must not differ.
+func (f *aclForest) decide(actor DomainVerified, access DomainAccess, record DomainRecord) error {
+	if f.mode != aclOracle {
+		return f.d.authorizeDomainRecord(actor, access, f.view(), record)
+	}
+	copy, err := f.d.domainPolicyRecord(actor, record)
+	if err != nil {
+		return err
+	}
+	return legacyAuthorizeLocked(&domainOwnerPolicy{key: aclKey}, actor, access, copy)
 }
 
 func aclDecisionText(err error) string {

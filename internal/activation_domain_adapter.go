@@ -146,7 +146,11 @@ func (s *Server) domainBuilder(d *domainEngine, entry *domainEntry, operation st
 		view.CreateACL = func(kind string) (interface{}, error) {
 			return d.policy.CreateACLLocked(entry.actor, operation, kind, view.Records[entry.owned.Binding.RootID])
 		}
-		return entry.product.Build(entry.input, entry.owned, view)
+		delta, err := entry.product.Build(entry.input, entry.owned, view)
+		if err != nil {
+			return delta, err
+		}
+		return delta, d.validateWorkloadDelta(entry, native, delta)
 	}
 }
 func (s *Server) captureDomainPending(d *domainEngine, entry *domainEntry, command stagedCommand, result stagedResult) bool {

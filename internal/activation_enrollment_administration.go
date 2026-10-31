@@ -78,8 +78,8 @@ func validateEnrollmentAdministrationRequest(r EnrollmentRequest, maximum int) e
 		}
 		return nil
 	}
-	if a == nil || r.Operation != EnrollmentProvision {
-		return fmt.Errorf("administrator enrollment requires explicit provision authorization")
+	if a == nil || r.Operation != EnrollmentProvision && !isEnrollmentWorkloadOperation(r.Operation) {
+		return fmt.Errorf("administrator enrollment requires explicit provision or workload authorization")
 	}
 	if enrollmentIdentifiers(maximum, a.OwnerPrincipalID) != nil || enrollmentIdentifiers(256, a.Name) != nil {
 		return fmt.Errorf("bounded explicit native owner/name required")

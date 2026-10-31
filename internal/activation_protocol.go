@@ -92,7 +92,7 @@ func (v *activationVerifier) check(r *http.Request, input activationCheck) (acti
 
 func (v *activationVerifier) validActor(actor activationActor, input activationCheck) bool {
 	now := float64(time.Now().UnixNano()) / 1e9
-	if actor.PrincipalID == "" || actor.Kind != "human" || actor.SessionID == "" || actor.Scope.AccountID == "" || actor.Scope.Product != "manifest" ||
+	if actor.PrincipalID == "" || actor.Kind != "human" || domainWorkloadIdentity(actor.PrincipalID, actor.SessionID) || actor.SessionID == "" || actor.Scope.AccountID == "" || actor.Scope.Product != "manifest" ||
 		actor.GrantRevision == "" || actor.ResourceRevision == "" || actor.Audience != v.config.Audience || actor.Issuer != v.config.Issuer ||
 		actor.ExpiresAt <= now || actor.ExpiresAt > now+float64(v.config.MaxLifetimeSeconds) || actor.Method != "GET" || actor.Target != "/activation/probe" ||
 		actor.BodySHA256 != activationEmptyDigest || actor.Resource.Kind != "principal" || actor.Resource.ResourceID != actor.PrincipalID ||

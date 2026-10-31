@@ -110,7 +110,7 @@ func validateEnrollmentRequest(r EnrollmentRequest, maximum int) error {
 		}
 		return nil
 	}
-	if r.Operation != EnrollmentReadGrant && r.Operation != EnrollmentReadRevoke {
+	if r.Operation != EnrollmentReadGrant && r.Operation != EnrollmentReadRevoke && !isEnrollmentWorkloadOperation(r.Operation) {
 		return fmt.Errorf("unsupported enrollment operation")
 	}
 	if !validEnrollmentOwnedRevision(r.ExpectedRevision) || r.TargetPrincipalID == nil {

@@ -84,7 +84,7 @@ func validProvisionPhase(phase string, lease *ProvisionLeaseRef) bool {
 }
 func (p *personalSource) validProvisionProof(actor sourceProvisionVerified, check sourceProvisionCheck) bool {
 	now := domainNow()
-	if actor.ContractRevision != PersonalProvisionRevision || actor.Kind != "human" || actor.PrincipalID != check.Intent.PrincipalID || actor.SessionID == "" || actor.Scope != check.Intent.Scope || !domainEqual(actor.Account, check.Intent.Account) {
+	if actor.ContractRevision != PersonalProvisionRevision || actor.Kind != "human" || domainWorkloadIdentity(actor.PrincipalID, actor.SessionID) || actor.PrincipalID != check.Intent.PrincipalID || actor.SessionID == "" || actor.Scope != check.Intent.Scope || !domainEqual(actor.Account, check.Intent.Account) {
 		return false
 	}
 	if actor.Issuer != p.config.CoreCallback.Issuer || actor.Audience != check.Audience || actor.Phase != check.Phase || actor.ProofBinding != stagedHash([]byte(check.Proof)) {

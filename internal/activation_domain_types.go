@@ -132,6 +132,7 @@ type DomainOwnedScope struct {
 type DomainConfig struct {
 	EmptyHost           bool                       `json:"emptyHost,omitempty"`
 	IntegrationIssuer   string                     `json:"integrationIssuer,omitempty"`
+	WorkloadPolicy      *DomainWorkloadPolicy      `json:"workloadPolicy,omitempty"`
 	ProvisioningProfile *DomainProvisioningProfile `json:"provisioningProfile,omitempty"`
 	RoleCatalog         []byte                     `json:"roleCatalog,omitempty"`
 	OwnerControlToken   string                     `json:"ownerControlToken"`

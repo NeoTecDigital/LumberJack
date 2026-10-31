@@ -11,7 +11,11 @@ import (
 
 func newAdministrationFixture(t *testing.T) *enrollmentFixture {
 	t.Helper()
-	f := newEnrollmentFixture(t)
+	return administrationFixtureOver(t, newEnrollmentFixture(t))
+}
+
+func administrationFixtureOver(t *testing.T, f *enrollmentFixture) *enrollmentFixture {
+	t.Helper()
 	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var check EnrollmentCheck
 		if json.NewDecoder(r.Body).Decode(&check) != nil || check.ContractRevision != EnrollmentAdminProofRevision {

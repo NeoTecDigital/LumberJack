@@ -17,6 +17,7 @@ type domainGrant struct {
 type domainOwnerPolicy struct {
 	key           string
 	sessionFenced func(DomainVerified) bool
+	workload      *DomainWorkloadPolicy
 }
 
 func NewDomainOwnerPolicy(metadataKey string) (DomainPolicy, error) {
@@ -44,8 +45,13 @@ func (p *domainOwnerPolicy) AuthorizeLocked(actor DomainVerified, access DomainA
 	if p.sessionFenced != nil && p.sessionFenced(actor) {
 		return fmt.Errorf("current actor session fenced")
 	}
-	if actor.Kind != "human" && (actor.Kind != "integration_actor" || actor.IntegrationActor == nil) || actor.ExpiresAt <= domainNow() {
+	if actor.Kind != "human" && actor.Kind != domainWorkloadKind && (actor.Kind != "integration_actor" || actor.IntegrationActor == nil) || actor.ExpiresAt <= domainNow() {
 		return fmt.Errorf("current human authority expired")
+	}
+	if actor.Kind == domainWorkloadKind {
+		if err := authorizeDomainWorkloadAccess(p.workload, actor, access); err != nil {
+			return err
+		}
 	}
 	acl, err := p.acl(record)
 	if err != nil {
