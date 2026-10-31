@@ -178,3 +178,31 @@ func TestDomainACLReaderDecodesEachTemplateOnceAndChecksEveryRecord(t *testing.T
 		t.Fatal("reader changed a full list", err)
 	}
 }
+
+// The cache spares decoding per record; it must never answer one kind with another's list.
+func TestDomainACLReaderKeepsKindsApart(t *testing.T) {
+	owned := aclOwned("acl-account", "acl-root")
+	forest := newACLForest(t, aclReferences, owned)
+	forest.create(t, "png-first", "png_record")
+	forest.create(t, "associate-record", "associate")
+	forest.create(t, "png-second", "png_record")
+	reader := newDomainACLReader(aclKey, owned, forest.root())
+	for _, id := range []string{"png-first", "associate-record", "png-second", "associate-record"} {
+		record := forest.records[id]
+		kind := "png_record"
+		if record.Kind == aclKinds["associate"] {
+			kind = "associate"
+		}
+		acl, err := reader.acl(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := owned.Layout.Profiles[aclStoreRead][kind]
+		if got := acl.Principals[aclAdmin][aclStoreRead].Fields; !domainEqual(got, want) {
+			t.Fatalf("%s was answered with %v, want its own kind's %v", id, got, want)
+		}
+	}
+	if len(reader.templates) != 2 {
+		t.Fatalf("expected one cached list per kind, got %d", len(reader.templates))
+	}
+}
