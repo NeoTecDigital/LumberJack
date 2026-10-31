@@ -389,6 +389,7 @@ func TestWorkloadHeldToItsListWhateverAnAccessListSays(t *testing.T) {
 		{Operation: domainStoreReadOperation, Fields: []string{"family." + wlOtherFamily}},
 		{Operation: nativeStoreCommand, Fields: []string{"data.salary"}},
 		{Operation: nativeStoreCommand, Fields: []string{"id", "reference"}, Reference: true},
+		{Operation: nativeStoreCommand, Fields: []string{"id"}, Reference: true},
 		{Operation: nativeStoreCommand, Fields: []string{"id"}, Create: true, Kind: "associate"},
 		{Operation: nativeStoreCommand, Fields: []string{"id"}, Create: true, Kind: "role"},
 	}

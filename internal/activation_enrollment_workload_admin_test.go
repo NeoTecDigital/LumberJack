@@ -51,14 +51,17 @@ func TestAdministratorMayGrantAndRevokeAWorkload(t *testing.T) {
 func TestAdministratorControlStopsAtWorkloads(t *testing.T) {
 	f, input, rootID := wlAdministrationFixture(t)
 	control := wlAdministrationControl(f, input, EnrollmentReadGrant, enrollmentCurrentRevision(t, f, rootID), "member")
-	if _, err := f.server.DomainEnroll(contextBackground(), control); err == nil {
-		t.Fatal("an administrator changed a member's read")
+	member := "unit-member"
+	control.Request.TargetPrincipalID = &member
+	_, err := f.server.DomainEnroll(contextBackground(), control)
+	if err == nil || !strings.Contains(err.Error(), "administrator enrollment requires") {
+		t.Fatal("an administrator changed a member's read", err)
 	}
 	replaced := wlAdministrationControl(f, input, EnrollmentWorkloadGrant, enrollmentCurrentRevision(t, f, rootID), "replaced")
 	administration := *replaced.Request.Administration
 	administration.Grants = map[string]map[string]domainGrant{"root": {"read": {Fields: []string{"id"}}}}
 	replaced.Request.Administration = &administration
-	if _, err := f.server.DomainEnroll(contextBackground(), replaced); err == nil {
+	if _, err = f.server.DomainEnroll(contextBackground(), replaced); err == nil {
 		t.Fatal("an administrator acted on grants it does not hold")
 	}
 }
@@ -73,5 +76,40 @@ func TestAdministratorWithoutTheStoreWriteCannotDelegateIt(t *testing.T) {
 	control := wlAdministrationControl(f, input, EnrollmentWorkloadGrant, enrollmentCurrentRevision(t, f, rootID), "no-store")
 	if _, err := f.server.DomainEnroll(contextBackground(), control); err == nil {
 		t.Fatal("an administrator delegated a store write it does not hold")
+	}
+}
+
+// With no record following the template, only the direct check can see it lost the grant.
+func TestWorkloadPinChecksTheTemplateWithNoFollowers(t *testing.T) {
+	f := newWorkloadFixture(t)
+	rootID := aclFixtureProvision(t, f, wlAccount)
+	begin := wlEnroll(t, f, EnrollmentWorkloadGrant, wlAccount, rootID, wlPrincipal, "grant")
+	entry := f.server.domain.entries[begin.Lease.LeaseID]
+	check := func() error {
+		f.server.forestMutex.RLock()
+		defer f.server.forestMutex.RUnlock()
+		return f.server.validateEnrollmentCurrentLocked(f.server.domain, entry)
+	}
+	if err := check(); err != nil {
+		t.Fatal("current pins refused", err)
+	}
+	wlForest{f, rootID}.damage(t, "template")
+	if err := check(); err == nil {
+		t.Fatal("pin survived the template losing the grant")
+	}
+}
+
+// A bad policy stops the engine at configuration, not at the first workload.
+func TestWorkloadPolicyRefusedAtConfiguration(t *testing.T) {
+	config := wlFixtureConfig(t)
+	config.WorkloadPolicy = &DomainWorkloadPolicy{Issuer: wlIssuer, Families: map[string][]string{wlOtherFamily: {"id", "account_id"}}}
+	server := stagedTestServer(t, t.TempDir())
+	policy, err := NewDomainOwnerPolicy(config.ACLMetadataKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.ConfigureDomain(config, map[string]DomainProduct{"manifest": domainTestProduct{}}, policy)
+	if err == nil || !strings.Contains(err.Error(), "outside the engine's list") {
+		t.Fatal("a policy naming another family was configured", err)
 	}
 }
