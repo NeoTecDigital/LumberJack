@@ -113,3 +113,22 @@ func TestWorkloadPolicyRefusedAtConfiguration(t *testing.T) {
 		t.Fatal("a policy naming another family was configured", err)
 	}
 }
+
+// Taking the policy away leaves the forest readable by everyone else and admits no workload.
+func TestWorkloadForestOpensWithoutThePolicyAndAdmitsNoWorkload(t *testing.T) {
+	w := newWLForest(t)
+	before := w.otherDecisions(t)
+	wlEnroll(t, w.f, EnrollmentWorkloadGrant, wlAccount, w.rootID, wlPrincipal, "grant")
+	w.f.config.WorkloadPolicy = nil
+	aclFixtureRestart(t, w.f)
+	if !domainEqual(before, w.otherDecisions(t)) {
+		t.Fatal("removing the policy changed a person's decision")
+	}
+	actor := wlActor(w.f, wlAccount, wlRevision)
+	if w.f.server.domain.validDomainActorKind(actor) {
+		t.Fatal("a workload was admitted with no policy")
+	}
+	if err := wlDecide(t, w.f, actor, wlStoreAccess(domainStoreReadOperation, wlMessages), "copy-message"); err == nil {
+		t.Fatal("the policy guard passed with no policy")
+	}
+}
