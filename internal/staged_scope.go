@@ -222,6 +222,10 @@ func (s *Server) configureStagedWithPermit(binding stagedBinding, bounds stagedB
 		s.forestMutex.Unlock()
 		return err
 	}
+	if reopened, err := s.reopenReconciledScopeLocked(scope); reopened || err != nil {
+		s.forestMutex.Unlock()
+		return err
+	}
 	snapshot, err := s.encodeSnapshotLocked(s.statePath(), false)
 	if err == nil && len(snapshot.data) > bounds.MaxSnapshotBytes {
 		err = fmt.Errorf("owned setup snapshot exceeds its explicit byte bound")
