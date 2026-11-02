@@ -218,6 +218,9 @@ lj_status_t ic_lj_domain_call(lj_handle_t, lj_cstr, int64_t, char **, int64_t *)
 lj_status_t ic_lj_domain_enroll(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
 lj_status_t ic_lj_domain_provision_root(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
 lj_status_t ic_lj_domain_control(lj_cstr, int64_t, char **, int64_t *);
+/* Optional ABI2 cleanup: only after the host has recorded a completed finish.
+ * Retires transient lease metadata, never durable receipts or revocation fences. */
+lj_status_t ic_lj_domain_ack_completion(lj_cstr, int64_t, char **, int64_t *);
 void ic_lj_domain_free(char *);
 
 /* PRIVATE source/control projections on SAME handle/forest/runtime. No login,
