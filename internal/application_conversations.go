@@ -14,18 +14,21 @@ import (
 )
 
 type conversationInput struct {
-	Kind           string   `json:"kind,omitempty"`
-	Title          string   `json:"title,omitempty"`
-	ProjectPath    string   `json:"project_path,omitempty"`
-	Usernames      []string `json:"usernames,omitempty"`
-	ClientID       string   `json:"client_id,omitempty"`
-	Content        string   `json:"content,omitempty"`
-	Action         string   `json:"action,omitempty"`
-	Username       string   `json:"username,omitempty"`
-	IncludeHistory bool     `json:"include_history,omitempty"`
-	ReadThrough    *uint64  `json:"read_through,omitempty"`
-	Muted          *bool    `json:"muted,omitempty"`
-	Archived       *bool    `json:"archived,omitempty"`
+	Kind           string            `json:"kind,omitempty"`
+	Title          string            `json:"title,omitempty"`
+	ProjectPath    string            `json:"project_path,omitempty"`
+	Usernames      []string          `json:"usernames,omitempty"`
+	ClientID       string            `json:"client_id,omitempty"`
+	Content        string            `json:"content,omitempty"`
+	Action         string            `json:"action,omitempty"`
+	Username       string            `json:"username,omitempty"`
+	IncludeHistory bool              `json:"include_history,omitempty"`
+	ReadThrough    *uint64           `json:"read_through,omitempty"`
+	Muted          *bool             `json:"muted,omitempty"`
+	Archived       *bool             `json:"archived,omitempty"`
+	Saved          *bool             `json:"saved,omitempty"`
+	Refused        *bool             `json:"refused,omitempty"`
+	MessageSave    *messageSaveInput `json:"message_save,omitempty"`
 }
 
 func (s *Server) conversationUsername(id string) string {
@@ -43,6 +46,20 @@ func (s *Server) conversationAccount(username string) string {
 	}
 	return ""
 }
+
+// conversationTitle reads a direct message's title from its people as they are named now: an account
+// can be renamed by its next admission, and the name it was created under must not stay on screen.
+func (s *Server) conversationTitle(c *core.Conversation) string {
+	if c.Kind != "dm" {
+		return c.Title
+	}
+	names := []string{}
+	for id := range c.Members {
+		names = append(names, s.conversationUsername(id))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
 func (s *Server) conversationView(c *core.Conversation, user string) map[string]interface{} {
 	own := c.Members[user]
 	unread := 0
@@ -50,7 +67,7 @@ func (s *Server) conversationView(c *core.Conversation, user string) map[string]
 	if !own.Invited {
 		for _, m := range c.Messages {
 			if m.Sequence > own.From {
-				preview = m
+				preview = messageForMember(m, own)
 				if m.Sequence > own.ReadThrough && m.AuthorID != user {
 					unread++
 				}
@@ -63,7 +80,7 @@ func (s *Server) conversationView(c *core.Conversation, user string) map[string]
 	}
 	sort.Slice(people, func(i, j int) bool { return people[i]["id"].(string) < people[j]["id"].(string) })
 	// Project association conveys no entitlement to the project or its title.
-	return map[string]interface{}{"id": c.ID, "kind": c.Kind, "title": c.Title, "project_id": c.ProjectID, "revision": c.Revision, "members": people, "invited": own.Invited, "muted": own.Muted, "archived": own.Archived, "unread": unread, "last_message": preview, "read_through": own.ReadThrough, "history_from": own.From}
+	return map[string]interface{}{"id": c.ID, "kind": c.Kind, "title": s.conversationTitle(c), "project_id": c.ProjectID, "revision": c.Revision, "members": people, "invited": own.Invited, "muted": own.Muted, "archived": own.Archived, "saved": own.Saved, "refused": own.Refused, "saved_message_count": savedMessageCount(c, own), "unread": unread, "last_message": preview, "read_through": own.ReadThrough, "history_from": own.From}
 }
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	user, _ := userIDFrom(r)
@@ -145,7 +162,7 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 				for i := len(c.Messages) - 1; i >= 0 && len(items) < 50; i-- {
 					m := c.Messages[i]
 					if m.Sequence < before && m.Sequence > member.From {
-						items = append(items, m)
+						items = append(items, messageForMember(m, member))
 					}
 				}
 				sort.Slice(items, func(i, j int) bool { return items[i].Sequence < items[j].Sequence })
@@ -189,24 +206,8 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			if r.Method != "PATCH" {
 				return apiErrorf(405, "Method not allowed")
 			}
-			if in.ReadThrough != nil {
-				if member.Invited {
-					return apiErrorf(403, "Accept the invitation before changing a message read position")
-				}
-				if *in.ReadThrough > uint64(len(c.Messages)) {
-					return apiErrorf(400, "Read position exceeds conversation")
-				}
-				member.ReadThrough = *in.ReadThrough
-			}
-			if in.Muted != nil {
-				member.Muted = *in.Muted
-			}
-			if in.Archived != nil {
-				member.Archived = *in.Archived
-			}
-			c.Members[user] = member
-			result = s.conversationView(c, user)
-			return nil
+			result, err = s.conversationPreferences(c, user, in)
+			return err
 		default:
 			return apiErrorf(404, "Conversation not found")
 		}

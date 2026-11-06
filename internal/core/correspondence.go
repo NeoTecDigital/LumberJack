@@ -17,6 +17,7 @@ type CorrespondenceNotification struct {
 	ReadAt string               `json:"read_at,omitempty"`
 }
 type CorrespondenceState struct {
+	Feed         *FeedState                              `json:"feed,omitempty"`
 	Pending      map[string]CorrespondenceChange         `json:"pending"`
 	Inbox        map[string][]CorrespondenceNotification `json:"inbox"`
 	Delivered    uint64                                  `json:"delivered"`

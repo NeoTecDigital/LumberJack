@@ -144,6 +144,9 @@ func validateConversationInput(path []string, method string, in conversationInpu
 			reject = reject || in.ClientID != "" || in.Content != "" || in.Action != "" || in.Username != "" || in.IncludeHistory
 		}
 	}
+	if in.Saved != nil || in.Refused != nil || in.MessageSave != nil {
+		reject = reject || len(path) != 3 || path[2] != "preferences" || method != "PATCH"
+	}
 	if reject {
 		return apiErrorf(400, "Request fields do not match this conversation operation")
 	}

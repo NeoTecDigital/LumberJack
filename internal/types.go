@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/internal/admission"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -63,13 +64,18 @@ type APIResponse struct {
 }
 
 type Server struct {
-	forest   *core.Node
-	cache    *Cache
-	apiQueue *APIQueue
+	nativeControl     atomic.Pointer[nativeControlRuntime]
+	sourceCoordinator atomic.Pointer[sourceCoordinator]
+	personalSource    atomic.Pointer[personalSource]
+	activation        atomic.Pointer[activationVerifier]
+	sessionAdmission  atomic.Pointer[admission.Verifier]
+	forest            *core.Node
+	cache             *Cache
+	apiQueue          *APIQueue
 	// forestMutex is the ONE lock over the whole forest. Held exclusively across a mutation and
-	// the persist that acknowledges it, shared by everything that reads the graph. See
-	// forest_lock.go for why a per-node mutex cannot stand in for it.
-	forestMutex           sync.RWMutex
+	// the persist that acknowledges it; graph readers share it. See forest_lock.go.
+	forestMutex           forestViewRWMutex
+	domainSnapshots       domainSnapshotCache
 	applicationHubEnabled atomic.Bool
 	jwtConfig             JWTConfig
 	logger                types.Logger
@@ -86,11 +92,15 @@ type Server struct {
 	// after a newer one.
 	stateSeq uint64
 	// stateWriter makes snapshots durable with the forest UNHELD. See state_writer.go.
-	stateWriter    *stateWriter
-	storageOnce    sync.Once
-	storage        *secureStorage
-	storageErr     error
-	storageRewrite bool
+	stateWriter *stateWriter
+	// Internal-only owned namespaces. Public/Activation admission is not configured here.
+	domainConfiguring bool
+	domain            *domainEngine
+	stagedScopes      map[string]*stagedScope
+	storageOnce       sync.Once
+	storage           *secureStorage
+	storageErr        error
+	storageRewrite    bool
 	// mutations is the fan-out behind GET /stream. Published to AFTER a change is persisted and
 	// acknowledged, never before: announcing something that has not been written is the same lie
 	// as a 200 for it.

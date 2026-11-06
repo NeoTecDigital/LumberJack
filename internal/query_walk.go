@@ -56,25 +56,31 @@ func (server *Server) walkScope(scope string, depth *int, visitor func(visit)) e
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
+		if isStagedNode(current.node) {
+			continue
+		}
 		visitor(current)
 
 		if depth != nil && current.depth >= *depth {
 			continue
 		}
 
-		for _, child := range childrenByName(current.node) {
-			if visited[child.ID] {
-				continue
-			}
-			visited[child.ID] = true
-			queue = append(queue, visit{
-				node:  child,
-				path:  current.path + "/" + child.Name,
-				depth: current.depth + 1,
-			})
-		}
+		queue = appendVisitChildren(queue, current, visited)
 	}
 	return nil
+}
+
+func appendVisitChildren(queue []visit, current visit, visited map[string]bool) []visit {
+	for _, child := range childrenByName(current.node) {
+		if visited[child.ID] {
+			continue
+		}
+		visited[child.ID] = true
+		queue = append(queue, visit{
+			node: child, path: current.path + "/" + child.Name, depth: current.depth + 1,
+		})
+	}
+	return queue
 }
 
 // childrenByName is a node's children in a fixed order.
@@ -84,6 +90,9 @@ func (server *Server) walkScope(scope string, depth *int, visitor func(visit)) e
 func childrenByName(node *core.Node) []*core.Node {
 	children := make([]*core.Node, 0, len(node.Children))
 	for _, child := range node.Children {
+		if isStagedNode(child) {
+			continue
+		}
 		children = append(children, child)
 	}
 

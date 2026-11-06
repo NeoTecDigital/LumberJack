@@ -18,7 +18,7 @@ func (server *Server) workInitialize(userID string) (interface{}, error) {
 			if node.Metadata["personal_owner"] != userID || !node.CheckPermission(userID, core.AdminPermission) {
 				return nil, apiErrorf(409, "Your workspace needs an owner's attention")
 			}
-			return map[string]interface{}{"id": node.ID}, nil
+			return server.workDefaultCategories(node, userID)
 		}
 	}
 	node, err := server.forest.AddChildNode(name, core.BranchNode, userID)
@@ -38,7 +38,7 @@ func (server *Server) workInitialize(userID string) (interface{}, error) {
 			node.Metadata["preferences"].(map[string]interface{})["selected_id"] = child.ID
 		}
 	}
-	return map[string]interface{}{"id": node.ID}, nil
+	return server.workDefaultCategories(node, userID)
 }
 
 func workPreferences(node *core.Node, userID string, patch map[string]interface{}) error {

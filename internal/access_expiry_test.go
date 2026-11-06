@@ -57,6 +57,10 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	// Explicit conversation membership is a separate authority. Expiring project
 	// access must not silently remove a member from an independently shared chat.
 	s.forest.Conversations = map[string]*core.Conversation{"independent": {ID: "independent", Members: map[string]core.ConversationMember{owner: {From: 0}, "reader": {From: 0}}, Messages: []core.ConversationMessage{{ID: "message", Sequence: 1, Content: "Explicitly shared chat"}}}}
+	// This fixture mutation must be durable before testing command acknowledgements.
+	if err := s.persistState(s.statePath()); err != nil {
+		t.Fatal(err)
+	}
 	codec := &secureStorage{wrapper: &localStorageWrapper{key: bytes.Repeat([]byte{7}, 32)}, id: string(bytes.Repeat([]byte{'a'}, 64)), accounts: map[string]storageAccountKey{}}
 	before := encryptedDocumentForTest(t, codec, s.forest)
 	if len(before.Nodes[node.ID].AccountKeys["reader"]) == 0 {

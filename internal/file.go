@@ -51,6 +51,9 @@ func (server *Server) loadFromFile(filename string) error {
 	}
 
 	server.forest = forest
+	if err := server.restoreStagedScopes(filename); err != nil {
+		return err
+	}
 	if server.storageRewrite {
 		// The opt-in migration/re-wrap is atomic and completes before serving.
 		// A failed KMS request leaves the original file untouched and aborts startup.
@@ -130,7 +133,7 @@ func hasStateMagic(file *os.File) (bool, error) {
 	banner := make([]byte, len(stateMagic))
 	_, err := io.ReadFull(file, banner)
 	switch {
-	case err == nil && string(banner) == stateMagic:
+	case err == nil && isStateBanner(banner):
 		return true, nil
 	case err == nil, err == io.EOF, err == io.ErrUnexpectedEOF:
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -203,23 +206,7 @@ func (server *Server) snapshotForest(filename string) (stateSnapshot, error) {
 // sequence number is assigned here, inside the same critical section as the encode, so that
 // sequence order is the order the forest actually passed through these states.
 func (server *Server) encodeStateLocked(filename string) (stateSnapshot, error) {
-	jsonData, err := encodeState(server.forest)
-	if err != nil {
-		server.logger.Failure("Failed to marshal forest: %v", err)
-		return stateSnapshot{}, err
-	}
-
-	hash := sha256.New()
-	hash.Write(jsonData)
-	newHash := hash.Sum(nil)
-
-	server.stateSeq++
-	// lastHash is the cache's invalidation token: the hash of the newest state the forest has
-	// been in, not of the file. The read cache is a view of the forest in memory, so the token
-	// that invalidates it has to move when the forest does, not when the disk catches up.
-	server.lastHash = newHash
-
-	return stateSnapshot{seq: server.stateSeq, hash: newHash, data: jsonData, path: filename}, nil
+	return server.encodeSnapshotLocked(filename, true)
 }
 
 // commitState makes a snapshot durable and MUST be called with no hold on the forest.
@@ -388,7 +375,7 @@ func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) err
 	// format cannot ignore it: that build reads the first 32 bytes as the hash and opens a gzip
 	// stream at offset 32, so it fails on the gzip header rather than reading a document it does
 	// not understand and rewriting the file without the parts it dropped. See state_codec.go.
-	if _, err := file.WriteString(stateMagic); err != nil {
+	if _, err := file.WriteString(stateBannerFor(jsonData)); err != nil {
 		server.logger.Failure("Failed to write the state banner to temporary file: %v", err)
 		return err
 	}

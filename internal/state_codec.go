@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -54,6 +55,34 @@ import (
 // rather than inside the data.
 const stateMagic = "LUMBERJACK-STATE-2\nthis file is a flat node table\n"
 
+// stateMagicReferences is the same table when any record in it holds an ACL reference. A build from
+// before references would read such a file and then could not change access: it reads a reference
+// as an invalid ACL, so a member revoke aborts at the first one and the member keeps read on every
+// stored copy. So that build must not open the file at all, and this banner is how: it fails at the
+// reader exactly as stateMagic does for the build before it. Same length and same 33rd byte. A file
+// holding no reference keeps stateMagic, so a rollback stays possible until the first one is written.
+const stateMagicReferences = "LUMBERJACK-STATE-3\nthis file is a flat node table\n"
+
+// A reference always marshals to this byte sequence: its keys sort contractRevision first, and text
+// inside a JSON string cannot match because its quotes are escaped. A record whose own structured
+// data carried this exact pair would also select the new banner, which errs toward refusing a rollback.
+var stateACLReferenceMark = []byte(`"contractRevision":"` + domainACLReferenceRevision + `"`)
+
+func stateHoldsACLReferences(data []byte) bool {
+	return bytes.Contains(data, stateACLReferenceMark)
+}
+
+func stateBannerFor(data []byte) string {
+	if stateHoldsACLReferences(data) {
+		return stateMagicReferences
+	}
+	return stateMagic
+}
+
+func isStateBanner(banner []byte) bool {
+	return string(banner) == stateMagic || string(banner) == stateMagicReferences
+}
+
 // stateVersion is recorded inside the document as well, for a human reading a decompressed file and
 // for a future format to branch on once it is past the banner. It gates NOTHING on its own.
 const stateVersion = 2
@@ -86,6 +115,10 @@ type nodeRecord struct {
 
 // encodeState serializes the whole forest, once per node.
 func encodeState(forest *core.Node) ([]byte, error) {
+	return encodeStateResolved(forest, nil)
+}
+
+func encodeStateResolved(forest *core.Node, resolve func(*core.Node) *core.Node) ([]byte, error) {
 	if forest == nil {
 		return nil, fmt.Errorf("cannot serialize a forest that is not there")
 	}
@@ -100,22 +133,15 @@ func encodeState(forest *core.Node) ([]byte, error) {
 	for len(queue) > 0 {
 		node := queue[0]
 		queue = queue[1:]
+		if resolve != nil {
+			node = resolve(node)
+		}
 		if _, written := document.Nodes[node.ID]; written {
 			continue
 		}
 
-		children := make([]string, 0, len(node.Children))
-		for _, child := range node.Children {
-			if child == nil {
-				continue
-			}
-			children = append(children, child.ID)
-			queue = append(queue, child)
-		}
-		// Sorted so that one forest has one serialization: ranging a Go map does not, and an
-		// unstable encoding makes the "nothing changed" hash comparison answer differently every
-		// time it is asked.
-		sort.Strings(children)
+		var children []string
+		children, queue = encodeStateChildren(node, queue)
 
 		document.Nodes[node.ID] = &nodeRecord{Node: node, Children: children}
 	}
@@ -123,10 +149,27 @@ func encodeState(forest *core.Node) ([]byte, error) {
 	return json.Marshal(document)
 }
 
+func encodeStateChildren(node *core.Node, queue []*core.Node) ([]string, []*core.Node) {
+	children := make([]string, 0, len(node.Children))
+	for _, child := range node.Children {
+		if child == nil {
+			continue
+		}
+		children = append(children, child.ID)
+		queue = append(queue, child)
+	}
+	// Stable child order preserves unchanged-content hash comparisons.
+	sort.Strings(children)
+	return children, queue
+}
+
 // decodeState rebuilds the forest from a flat node table, restoring the edges the ids stand for.
 func decodeState(data []byte) (*core.Node, error) {
 	var document stateDocument
 	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	if err := restoreStagedNumbers(data, &document); err != nil {
 		return nil, err
 	}
 
@@ -148,17 +191,21 @@ func decodeState(data []byte) (*core.Node, error) {
 		if record == nil || record.Node == nil {
 			continue
 		}
-		for _, childID := range record.Children {
-			child, known := document.Nodes[childID]
-			if !known || child == nil || child.Node == nil {
-				// An edge to a node the file does not carry is not an edge. Dropping it is what
-				// keeps the graph traversable; keeping it would be a nil child in every walk.
-				return nil, fmt.Errorf("node %q names a child %q the state file does not carry",
-					record.Node.ID, childID)
-			}
-			record.Node.Children[childID] = child.Node
+		if err := decodeStateChildren(record, document.Nodes); err != nil {
+			return nil, err
 		}
 	}
 
 	return root.Node, nil
+}
+
+func decodeStateChildren(record *nodeRecord, nodes map[string]*nodeRecord) error {
+	for _, childID := range record.Children {
+		child, known := nodes[childID]
+		if !known || child == nil || child.Node == nil {
+			return fmt.Errorf("node %q names a child %q the state file does not carry", record.Node.ID, childID)
+		}
+		record.Node.Children[childID] = child.Node
+	}
+	return nil
 }

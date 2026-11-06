@@ -1,0 +1,74 @@
+{
+  "$comment": "Written by Richard Christopher, Copyright 2026 NeoTec, LLC. Test-only seed: signs this vector and nothing else.",
+  "seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "keyId": "personal-vector",
+  "public": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "issuer": "activity-personal:00000000-0000-4000-8000-000000000001",
+  "audience": "momentum-personal:00000000-0000-4000-8000-000000000001",
+  "canonical": "{\"audience\":\"momentum-personal:00000000-0000-4000-8000-000000000001\",\"barrierVersion\":1,\"bodySha256\":\"5c285ba557c1bd83182cfc5616a6b8cc10e42f5fde1b060db53a21439d050ae8\",\"commandId\":\"33333333-3333-4333-8333-333333333333\",\"expiresAt\":1790000045,\"grantRevision\":\"sha256:dbc58223109a69561a29cda1feb67bd8a7b5b9d139bfd0e61cbd91da5099a649\",\"issuer\":\"activity-personal:00000000-0000-4000-8000-000000000001\",\"operation\":\"personal.session.admit\",\"principalId\":\"bootstrap-owner-0123456789abcdef0123456789abcdef\",\"resourceId\":\"bootstrap-owner-0123456789abcdef0123456789abcdef\",\"resourceRevision\":\"personal-session/0.1\",\"scope\":{\"accountId\":\"22222222-2222-5222-8222-222222222222\",\"product\":\"momentum\"},\"sessionId\":\"11111111-1111-4111-8111-111111111111\",\"version\":1}",
+  "signature": "Tl6309LwbYlycpsOgIxsO7tvM4P7-7_ipgXWh_2ngXAC0llc16BCdL0pdk087IZns2sQ0xwAUMSEbfKPcz2_Cg",
+  "now": 1790000000,
+  "claims": {
+    "version": 1,
+    "issuer": "activity-personal:00000000-0000-4000-8000-000000000001",
+    "audience": "momentum-personal:00000000-0000-4000-8000-000000000001",
+    "principalId": "bootstrap-owner-0123456789abcdef0123456789abcdef",
+    "sessionId": "11111111-1111-4111-8111-111111111111",
+    "scope": {
+      "accountId": "22222222-2222-5222-8222-222222222222",
+      "product": "momentum"
+    },
+    "grantRevision": "sha256:dbc58223109a69561a29cda1feb67bd8a7b5b9d139bfd0e61cbd91da5099a649",
+    "resourceRevision": "personal-session/0.1",
+    "resourceId": "bootstrap-owner-0123456789abcdef0123456789abcdef",
+    "operation": "personal.session.admit",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "bodySha256": "5c285ba557c1bd83182cfc5616a6b8cc10e42f5fde1b060db53a21439d050ae8",
+    "expiresAt": 1790000045,
+    "barrierVersion": 1
+  },
+  "profile": {
+    "username": "Ren\u00e9e \"the \ud83e\udded\" <Ortiz>",
+    "email": "ren\u00e9e@example.test"
+  },
+  "profileCanonical": "{\"email\":\"ren\\u00e9e@example.test\",\"username\":\"Ren\\u00e9e \\\"the \\ud83e\\udded\\\" <Ortiz>\"}",
+  "admission": "{\"envelope\":{\"keyId\":\"personal-vector\",\"payload\":\"eyJhdWRpZW5jZSI6Im1vbWVudHVtLXBlcnNvbmFsOjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImJhcnJpZXJWZXJzaW9uIjoxLCJib2R5U2hhMjU2IjoiNWMyODViYTU1N2MxYmQ4MzE4MmNmYzU2MTZhNmI4Y2MxMGU0MmY1ZmRlMWIwNjBkYjUzYTIxNDM5ZDA1MGFlOCIsImNvbW1hbmRJZCI6IjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyIsImV4cGlyZXNBdCI6MTc5MDAwMDA0NSwiZ3JhbnRSZXZpc2lvbiI6InNoYTI1NjpkYmM1ODIyMzEwOWE2OTU2MWEyOWNkYTFmZWI2N2JkOGE3YjViOWQxMzliZmQwZTYxY2JkOTFkYTUwOTlhNjQ5IiwiaXNzdWVyIjoiYWN0aXZpdHktcGVyc29uYWw6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwib3BlcmF0aW9uIjoicGVyc29uYWwuc2Vzc2lvbi5hZG1pdCIsInByaW5jaXBhbElkIjoiYm9vdHN0cmFwLW93bmVyLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwicmVzb3VyY2VJZCI6ImJvb3RzdHJhcC1vd25lci0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlc291cmNlUmV2aXNpb24iOiJwZXJzb25hbC1zZXNzaW9uLzAuMSIsInNjb3BlIjp7ImFjY291bnRJZCI6IjIyMjIyMjIyLTIyMjItNTIyMi04MjIyLTIyMjIyMjIyMjIyMiIsInByb2R1Y3QiOiJtb21lbnR1bSJ9LCJzZXNzaW9uSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJ2ZXJzaW9uIjoxfQ\",\"signature\":\"Tl6309LwbYlycpsOgIxsO7tvM4P7-7_ipgXWh_2ngXAC0llc16BCdL0pdk087IZns2sQ0xwAUMSEbfKPcz2_Cg\"},\"profile\":{\"email\":\"ren\\u00e9e@example.test\",\"username\":\"Ren\\u00e9e \\\"the \\ud83e\\udded\\\" <Ortiz>\"}}",
+  "refusedAdmissions": {
+    "tampered": "{\"envelope\":{\"keyId\":\"personal-vector\",\"payload\":\"eyJhdWRpZW5jZSI6Im1vbWVudHVtLXBlcnNvbmFsOjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImJhcnJpZXJWZXJzaW9uIjoxLCJib2R5U2hhMjU2IjoiNWMyODViYTU1N2MxYmQ4MzE4MmNmYzU2MTZhNmI4Y2MxMGU0MmY1ZmRlMWIwNjBkYjUzYTIxNDM5ZDA1MGFlOCIsImNvbW1hbmRJZCI6IjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyIsImV4cGlyZXNBdCI6MTc5MDAwMDA0NSwiZ3JhbnRSZXZpc2lvbiI6InNoYTI1NjpkYmM1ODIyMzEwOWE2OTU2MWEyOWNkYTFmZWI2N2JkOGE3YjViOWQxMzliZmQwZTYxY2JkOTFkYTUwOTlhNjQ5IiwiaXNzdWVyIjoiYWN0aXZpdHktcGVyc29uYWw6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwib3BlcmF0aW9uIjoicGVyc29uYWwuc2Vzc2lvbi5hZG1pdCIsInByaW5jaXBhbElkIjoiYm9vdHN0cmFwLW93bmVyLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwicmVzb3VyY2VJZCI6ImJvb3RzdHJhcC1vd25lci0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlc291cmNlUmV2aXNpb24iOiJwZXJzb25hbC1zZXNzaW9uLzAuMSIsInNjb3BlIjp7ImFjY291bnRJZCI6IjIyMjIyMjIyLTIyMjItNTIyMi04MjIyLTIyMjIyMjIyMjIyMiIsInByb2R1Y3QiOiJtb21lbnR1bSJ9LCJzZXNzaW9uSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJ2ZXJzaW9uIjoxfQ\",\"signature\":\"Tl6309LwbYlycpsOgIxsO7tvM4P7-7_ipgXWh_2ngXAC0llc16BCdL0pdk087IZns2sQ0xwAUMSEbfKPcz2_Cg\"},\"profile\":{\"email\":\"ren\\u00e9e@example.test\",\"username\":\"Mallory\"}}",
+    "respaced": "{\"envelope\":{\"keyId\":\"personal-vector\",\"payload\":\"eyJhdWRpZW5jZSI6Im1vbWVudHVtLXBlcnNvbmFsOjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImJhcnJpZXJWZXJzaW9uIjoxLCJib2R5U2hhMjU2IjoiNWMyODViYTU1N2MxYmQ4MzE4MmNmYzU2MTZhNmI4Y2MxMGU0MmY1ZmRlMWIwNjBkYjUzYTIxNDM5ZDA1MGFlOCIsImNvbW1hbmRJZCI6IjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyIsImV4cGlyZXNBdCI6MTc5MDAwMDA0NSwiZ3JhbnRSZXZpc2lvbiI6InNoYTI1NjpkYmM1ODIyMzEwOWE2OTU2MWEyOWNkYTFmZWI2N2JkOGE3YjViOWQxMzliZmQwZTYxY2JkOTFkYTUwOTlhNjQ5IiwiaXNzdWVyIjoiYWN0aXZpdHktcGVyc29uYWw6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwib3BlcmF0aW9uIjoicGVyc29uYWwuc2Vzc2lvbi5hZG1pdCIsInByaW5jaXBhbElkIjoiYm9vdHN0cmFwLW93bmVyLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwicmVzb3VyY2VJZCI6ImJvb3RzdHJhcC1vd25lci0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlc291cmNlUmV2aXNpb24iOiJwZXJzb25hbC1zZXNzaW9uLzAuMSIsInNjb3BlIjp7ImFjY291bnRJZCI6IjIyMjIyMjIyLTIyMjItNTIyMi04MjIyLTIyMjIyMjIyMjIyMiIsInByb2R1Y3QiOiJtb21lbnR1bSJ9LCJzZXNzaW9uSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJ2ZXJzaW9uIjoxfQ\",\"signature\":\"Tl6309LwbYlycpsOgIxsO7tvM4P7-7_ipgXWh_2ngXAC0llc16BCdL0pdk087IZns2sQ0xwAUMSEbfKPcz2_Cg\"},\"profile\":{\"email\": \"ren\\u00e9e@example.test\",\"username\":\"Ren\\u00e9e \\\"the \\ud83e\\udded\\\" <Ortiz>\"}}",
+    "reordered": "{\"envelope\":{\"keyId\":\"personal-vector\",\"payload\":\"eyJhdWRpZW5jZSI6Im1vbWVudHVtLXBlcnNvbmFsOjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImJhcnJpZXJWZXJzaW9uIjoxLCJib2R5U2hhMjU2IjoiNWMyODViYTU1N2MxYmQ4MzE4MmNmYzU2MTZhNmI4Y2MxMGU0MmY1ZmRlMWIwNjBkYjUzYTIxNDM5ZDA1MGFlOCIsImNvbW1hbmRJZCI6IjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyIsImV4cGlyZXNBdCI6MTc5MDAwMDA0NSwiZ3JhbnRSZXZpc2lvbiI6InNoYTI1NjpkYmM1ODIyMzEwOWE2OTU2MWEyOWNkYTFmZWI2N2JkOGE3YjViOWQxMzliZmQwZTYxY2JkOTFkYTUwOTlhNjQ5IiwiaXNzdWVyIjoiYWN0aXZpdHktcGVyc29uYWw6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwib3BlcmF0aW9uIjoicGVyc29uYWwuc2Vzc2lvbi5hZG1pdCIsInByaW5jaXBhbElkIjoiYm9vdHN0cmFwLW93bmVyLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwicmVzb3VyY2VJZCI6ImJvb3RzdHJhcC1vd25lci0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlc291cmNlUmV2aXNpb24iOiJwZXJzb25hbC1zZXNzaW9uLzAuMSIsInNjb3BlIjp7ImFjY291bnRJZCI6IjIyMjIyMjIyLTIyMjItNTIyMi04MjIyLTIyMjIyMjIyMjIyMiIsInByb2R1Y3QiOiJtb21lbnR1bSJ9LCJzZXNzaW9uSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJ2ZXJzaW9uIjoxfQ\",\"signature\":\"Tl6309LwbYlycpsOgIxsO7tvM4P7-7_ipgXWh_2ngXAC0llc16BCdL0pdk087IZns2sQ0xwAUMSEbfKPcz2_Cg\"},\"profile\":{\"username\":\"Ren\\u00e9e \\\"the \\ud83e\\udded\\\" <Ortiz>\",\"email\":\"ren\\u00e9e@example.test\"}}"
+  },
+  "usernames": {
+    "accepted": [
+      "a",
+      "Ren\u00e9e Ortiz",
+      "someone@example.test",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0398f1cc55d349c3"
+    ],
+    "refused": [
+      "",
+      " ",
+      "  padded",
+      "padded  ",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "tab\tinside",
+      "new\nline",
+      "nul\u0000",
+      "bootstrap-owner-0123456789abcdef0123456789abcdef",
+      "BOOTSTRAP-OWNER-0123456789ABCDEF0123456789ABCDEF"
+    ]
+  },
+  "derivedUsernames": [
+    {
+      "email": "  Someone@Example.TEST ",
+      "username": "someone@example.test"
+    },
+    {
+      "email": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.test",
+      "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0398f1cc55d349c3"
+    }
+  ]
+}

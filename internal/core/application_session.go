@@ -17,4 +17,9 @@ type ApplicationSession struct {
 	// to be caught by. Stamping costs nothing to check, because applicationSession already reads the
 	// account's profile on every request to confirm it still exists.
 	CredentialEpoch int64 `json:"credential_epoch,omitempty"`
+	// Delegated marks a session minted from a signed admission (POST /session/admit), not from this
+	// engine's own password and factors, which it does not owe. SourceSession is the account
+	// authority's session that admission was issued from; sign-out ends every lease it holds.
+	Delegated     bool   `json:"delegated,omitempty"`
+	SourceSession string `json:"source_session,omitempty"`
 }
