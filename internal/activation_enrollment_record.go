@@ -24,6 +24,7 @@ func decodeEnrollmentRecord(raw []byte, maximum int) (enrollmentRecordValue, err
 		return record, fmt.Errorf("bounded actual enrollment provenance required")
 	}
 	keys := []string{"contractRevision", "request", "requestId", "principalId", "sessionId", "requestFingerprint", "grantRevision", "authorityPolicyRevision", "authorityResourceRevision", "principalReference", "targetGrantRevision"}
+	keys = coownerKeys(raw, keys, []string{"coownerAuthority", "aclEffectDigest"})
 	shape, err := enrollmentShape(raw, keys, nil, []string{"principalReference", "targetGrantRevision"})
 	if err != nil {
 		return record, err
@@ -47,6 +48,9 @@ func validateEnrollmentRecord(record enrollmentRecordValue, maximum int) error {
 	if err = enrollmentIdentifiers(maximum, record.PrincipalID, record.SessionID, record.RequestID, record.GrantRevision, record.AuthorityPolicyRevision, record.AuthorityResourceRevision); err != nil {
 		return err
 	}
+	if err := validateCoownerRecord(record); err != nil {
+		return err
+	}
 	ref := record.PrincipalReference
 	if record.Request.Operation == EnrollmentProvision {
 		if ref != nil || record.TargetGrantRevision != nil {
@@ -57,7 +61,7 @@ func validateEnrollmentRecord(record enrollmentRecordValue, maximum int) error {
 	if ref == nil || record.Request.TargetPrincipalID == nil || !domainEqual(record.TargetGrantRevision, ref.TargetGrantRevision) {
 		return fmt.Errorf("exact historical target revision required")
 	}
-	if ref.ActorPrincipalID != record.PrincipalID || ref.ActorSessionID != record.SessionID || ref.ActorGrantRevision != record.GrantRevision || ref.AccountID != record.Request.Scope.AccountID || ref.PrincipalID != *record.Request.TargetPrincipalID || ref.PrincipalID == record.PrincipalID || ref.Purpose != record.Request.Operation || ref.RequestID != record.RequestID || ref.AuthorityPolicyRevision != record.AuthorityPolicyRevision {
+	if ref.ActorPrincipalID != record.PrincipalID || ref.ActorSessionID != record.SessionID || ref.ActorGrantRevision != record.GrantRevision || ref.AccountID != record.Request.Scope.AccountID || ref.PrincipalID != *record.Request.TargetPrincipalID || ref.PrincipalID == record.PrincipalID && record.Request.Operation != EnrollmentCoownerRevoke || ref.Purpose != record.Request.Operation || ref.RequestID != record.RequestID || ref.AuthorityPolicyRevision != record.AuthorityPolicyRevision {
 		return fmt.Errorf("enrollment provenance actor/target correlation mismatch")
 	}
 	return validateEnrollmentHistoricalTarget(record, maximum)
@@ -71,7 +75,7 @@ func validateEnrollmentHistoricalTarget(record enrollmentRecordValue, maximum in
 	if ref.TargetEligibility == "active" && ref.TargetGrantRevision != nil {
 		return enrollmentIdentifiers(maximum, *ref.TargetGrantRevision)
 	}
-	if isEnrollmentRevokeOperation(record.Request.Operation) && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil {
+	if (isEnrollmentRevokeOperation(record.Request.Operation) || record.Request.Operation == EnrollmentCoownerRevoke) && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil {
 		return nil
 	}
 	return fmt.Errorf("unaccepted target provenance cannot grant access")
@@ -145,11 +149,14 @@ func validateEnrollmentTargets(binding stagedBinding, receipt stagedReceipt, max
 }
 
 func isEnrollmentOperation(operation string) bool {
-	return operation == EnrollmentProvision || operation == EnrollmentReadGrant || operation == EnrollmentReadRevoke || isEnrollmentWorkloadOperation(operation)
+	return isEnrollmentCoownerOperation(operation) || operation == EnrollmentProvision || operation == EnrollmentReadGrant || operation == EnrollmentReadRevoke || isEnrollmentWorkloadOperation(operation)
 }
 
 // Historical sessions/request ids are provenance, not replay authority.
 func validateEnrollmentReplayActor(record enrollmentRecordValue, actor EnrollmentVerified) error {
+	if enrollmentCoownerRequest(actor.Request) && !domainEqual(record.CoownerAuthority, actor.CoownerAuthority) {
+		return fmt.Errorf("co-owner command authority changed")
+	}
 	if record.PrincipalID != actor.PrincipalID || !domainEqual(record.Request, actor.Request) || record.RequestFingerprint != actor.RequestFingerprint || record.GrantRevision != actor.GrantRevision || record.AuthorityPolicyRevision != actor.AuthorityPolicyRevision || record.AuthorityResourceRevision != actor.AuthorityResourceRevision {
 		return fmt.Errorf("original enrollment owner claim/policy/request revoked or replaced")
 	}

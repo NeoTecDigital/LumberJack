@@ -10,7 +10,7 @@ import (
 )
 
 func (d *domainEngine) verifyEnrollment(ctx context.Context, input EnrollmentInput, phase string, lease *DomainLease) (EnrollmentVerified, error) {
-	if phase != "admission" && phase != "handoff" || (phase == "admission") != (lease == nil) {
+	if !enrollmentProofPhase(input, phase, lease) {
 		return EnrollmentVerified{}, fmt.Errorf("exact enrollment admission/handoff phase required")
 	}
 	if len(input.Proof) == 0 || len(input.Proof) > d.config.Trust.MaxProofBytes || !domainOpaqueProof.MatchString(input.Proof) {
@@ -20,7 +20,8 @@ func (d *domainEngine) verifyEnrollment(ctx context.Context, input EnrollmentInp
 	if err != nil {
 		return EnrollmentVerified{}, err
 	}
-	check := EnrollmentCheck{enrollmentProofRevision(input.Request), input.Proof, phase, d.config.Trust.Audience, input.RequestID, input.Request, stagedHash(raw), lease}
+	check := EnrollmentCheck{ContractRevision: enrollmentProofRevision(input.Request), Proof: input.Proof, Phase: phase, Audience: d.config.Trust.Audience, RequestID: input.RequestID, Request: input.Request, RequestFingerprint: stagedHash(raw), LeaseBinding: lease}
+	check.EnrollmentCoownerWire = d.coownerCheckWire(input, check.RequestFingerprint)
 	body, err := CanonicalDomainJSON(check)
 	if err != nil || int64(len(body)) > d.config.Trust.MaxBodyBytes {
 		return EnrollmentVerified{}, fmt.Errorf("bounded enrollment authority check exceeded")
@@ -58,8 +59,8 @@ func (d *domainEngine) enrollmentCallback(ctx context.Context, body []byte) ([]b
 func decodeEnrollmentVerified(raw []byte) (EnrollmentVerified, error) {
 	var actor EnrollmentVerified
 	keys := []string{"contractRevision", "principalId", "kind", "sessionId", "scope", "requestId", "request", "requestFingerprint", "grantRevision", "authorityPolicyRevision", "authorityResourceRevision", "expiresAt", "issuer", "audience", "phase", "leaseBinding", "proofBinding", "ownerAuthorized", "principalReference", "purpose"}
-	keys = enrollmentAdministrationKeys(raw, keys, "administratorAuthorized")
-	shape, err := enrollmentShape(raw, keys, nil, []string{"leaseBinding", "principalReference"})
+	keys = coownerProofKeys(raw, enrollmentAdministrationKeys(raw, keys, "administratorAuthorized"))
+	shape, err := enrollmentShape(raw, keys, nil, []string{"leaseBinding", "principalReference", "receiptActorPrincipalId", "receiptBinding"})
 	if err != nil {
 		return actor, err
 	}
@@ -81,6 +82,9 @@ func decodeEnrollmentVerified(raw []byte) (EnrollmentVerified, error) {
 }
 
 func (d *domainEngine) validEnrollmentActor(actor EnrollmentVerified, check EnrollmentCheck) bool {
+	if enrollmentCoownerRequest(check.Request) {
+		return d.validCoownerActor(actor, check)
+	}
 	now := domainNow()
 	p, err := d.enrollmentProfile(actor.Request)
 	if err != nil || enrollmentIdentifiers(p.Bounds.MaxIdentifierBytes, actor.PrincipalID, actor.SessionID, actor.RequestID, actor.GrantRevision, actor.AuthorityPolicyRevision, actor.AuthorityResourceRevision) != nil {
@@ -123,7 +127,7 @@ func validEnrollmentTarget(actor EnrollmentVerified, maximum int, now, lifetime 
 	if actor.Request.Operation == EnrollmentProvision {
 		return ref == nil && actor.Request.TargetPrincipalID == nil
 	}
-	if ref == nil || actor.Request.TargetPrincipalID == nil || ref.PrincipalID == actor.PrincipalID {
+	if ref == nil || actor.Request.TargetPrincipalID == nil || ref.PrincipalID == actor.PrincipalID && !coownerSelfRevoke(actor) {
 		return false
 	}
 	if ref.ActorPrincipalID != actor.PrincipalID || ref.ActorSessionID != actor.SessionID || ref.ActorGrantRevision != actor.GrantRevision || ref.AccountID != actor.Scope.AccountID || ref.PrincipalID != *actor.Request.TargetPrincipalID || ref.Purpose != actor.Purpose || ref.RequestID != actor.RequestID || ref.AuthorityPolicyRevision != actor.AuthorityPolicyRevision {
@@ -138,7 +142,7 @@ func validEnrollmentTarget(actor EnrollmentVerified, maximum int, now, lifetime 
 	if ref.TargetEligibility == "active" {
 		return ref.TargetGrantRevision != nil && enrollmentIdentifiers(maximum, *ref.TargetGrantRevision) == nil
 	}
-	return isEnrollmentRevokeOperation(actor.Request.Operation) && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil
+	return (isEnrollmentRevokeOperation(actor.Request.Operation) || actor.Request.Operation == EnrollmentCoownerRevoke) && ref.TargetEligibility == "revoked" && ref.TargetGrantRevision == nil
 }
 
 // Only freshness/proof/phase may refresh within one admitted lease.

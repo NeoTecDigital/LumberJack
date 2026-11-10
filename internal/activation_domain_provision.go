@@ -31,6 +31,9 @@ func (s *Server) DomainEnroll(ctx context.Context, input EnrollmentInput) (Domai
 	if err != nil {
 		return DomainBegin{}, err
 	}
+	if input.Mode == "inspect" {
+		return s.inspectCoowner(ctx, d, entry)
+	}
 	body, err := s.executeEnrollment(d, entry)
 	return d.completeEnrollment(entry, body, err)
 }
@@ -53,6 +56,10 @@ func (s *Server) executeEnrollmentWithPermit(d *domainEngine, entry *domainEntry
 	}
 	if err != nil {
 		permit.noEffect(true)
+		return nil, err
+	}
+	if err = s.precommitCoowner(d, entry, prepared, permit); err != nil {
+		permit.noEffect(s.discardUnwrittenCoowner(d, entry, prepared, permit))
 		return nil, err
 	}
 	stamp, err := s.stateWriter.commitPaired(prepared.snapshot, prepared.pair)
@@ -81,6 +88,9 @@ func enrollmentResponse(entry *domainEntry, stamp stagedDurableStamp, status str
 	return enrollmentResponseFields(entry, stamp.Pair.AfterRevision, status)
 }
 func enrollmentResponseFields(entry *domainEntry, revision, status string) ([]byte, error) {
+	if enrollmentCoownerRequest(entry.enrollment.input.Request) {
+		return coownerPublicResponse(entry, revision, status)
+	}
 	r := entry.enrollment.input.Request
 	receipt := map[string]interface{}{"commandId": r.CommandID, "operation": r.Operation, "expectedRevision": r.ExpectedRevision, "requestFingerprint": entry.lease.IntentFingerprint, "status": status, "revision": revision, "binding": entry.lease.Binding, "profileRef": r.ProfileRef}
 	if r.Administration != nil {

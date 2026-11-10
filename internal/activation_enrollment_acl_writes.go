@@ -121,6 +121,9 @@ func (w *enrollmentACLWrites) followingChange(kind string) (interface{}, error) 
 func applyEnrollmentRecordChange(entry *domainEntry, acl *domainACL, kind string) error {
 	actor := entry.enrollment.actor
 	target := *actor.Request.TargetPrincipalID
+	if acl.Coowners[target].State == "installed" {
+		return fmt.Errorf("co-owner ACL cannot be changed by member read control")
+	}
 	if _, owner := acl.Principals[target][EnrollmentProvision]; owner {
 		return fmt.Errorf("owner ACL cannot be changed by member read control")
 	}

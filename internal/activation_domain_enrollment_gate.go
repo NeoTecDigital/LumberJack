@@ -27,7 +27,11 @@ func (d *domainEngine) reserveEnrollment(actor EnrollmentVerified, input Enrollm
 	if err != nil {
 		return nil, err
 	}
-	lease := DomainLease{Epoch: d.epoch, LeaseID: id, PrincipalID: actor.PrincipalID, SessionID: actor.SessionID, Scope: actor.Scope, Binding: DomainBinding{Scope: actor.Scope}, IntentFingerprint: stagedHash(raw)}
+	fingerprint := stagedHash(raw)
+	if input.Mode == "inspect" {
+		fingerprint = coownerInspectionFingerprint(input.Request, *input.ReceiptActorPrincipalID)
+	}
+	lease := DomainLease{Epoch: d.epoch, LeaseID: id, PrincipalID: actor.PrincipalID, SessionID: actor.SessionID, Scope: actor.Scope, Binding: DomainBinding{Scope: actor.Scope}, IntentFingerprint: fingerprint}
 	entry := &domainEntry{lease: lease, executing: true, enrollment: &enrollmentEntry{input: input, actor: actor, privateRequest: raw}}
 	d.entries[id] = entry
 	d.rootGeneration++
@@ -73,9 +77,7 @@ func (s *Server) validateEnrollmentLease(d *domainEngine, entry *domainEntry, in
 	if !active || input.LeaseBinding == nil || !domainEqual(*input.LeaseBinding, entry.lease) || input.PrincipalID != entry.lease.PrincipalID || input.SessionID != entry.lease.SessionID || input.RequestFingerprint != entry.lease.IntentFingerprint || !domainFinite(until) || until <= domainNow() {
 		return DomainControlResult{}, fmt.Errorf("exact current enrollment lease/private request denied")
 	}
-	s.forestMutex.RLock()
-	err := s.validateEnrollmentCurrentLocked(d, entry)
-	s.forestMutex.RUnlock()
+	err := s.validateCoownerOrEnrollmentLease(d, entry)
 	if err != nil {
 		return DomainControlResult{}, err
 	}
@@ -86,7 +88,31 @@ func (s *Server) validateEnrollmentLease(d *domainEngine, entry *domainEntry, in
 	}
 	return DomainControlResult{Value: map[string]interface{}{"leaseBinding": entry.lease, "requestFingerprint": entry.lease.IntentFingerprint, "validUntil": until}}, nil
 }
+
+func (s *Server) validateCoownerOrEnrollmentLease(d *domainEngine, entry *domainEntry) error {
+	if entry.enrollment.input.Mode == "inspect" || coownerSelfRevoke(entry.enrollment.actor) {
+		permit, err := s.sourceFence().beginRead(nil)
+		if err != nil {
+			return err
+		}
+		defer permit.release()
+		if err = d.enrollmentLive(entry); err != nil {
+			return err
+		}
+		if err = s.coownerReceiptCurrent(context.Background(), d, entry); err != nil {
+			return err
+		}
+		return permit.recheck()
+	}
+	s.forestMutex.RLock()
+	defer s.forestMutex.RUnlock()
+	return s.validateEnrollmentCurrentLocked(d, entry)
+}
+
 func (s *Server) handoffEnrollment(ctx context.Context, d *domainEngine, entry *domainEntry, input DomainControl) (DomainControlResult, error) {
+	if entry.enrollment.input.Mode == "inspect" || coownerSelfRevoke(entry.enrollment.actor) {
+		return s.handoffCoownerReceipt(ctx, d, entry, input)
+	}
 	d.mu.Lock()
 	active := d.activeLocked(entry) && entry.pair != nil && entry.pendingKey == ""
 	checkInput := entry.enrollment.input

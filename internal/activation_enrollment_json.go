@@ -42,7 +42,7 @@ func enrollmentIdentifiers(maximum int, values ...string) error {
 
 func (r *EnrollmentRequest) UnmarshalJSON(raw []byte) error {
 	keys := []string{"contractRevision", "scope", "commandId", "expectedRevision", "operation", "targetPrincipalId", "profileRef"}
-	keys = enrollmentAdministrationKeys(raw, keys, "administration")
+	keys = coownerKeys(raw, enrollmentAdministrationKeys(raw, keys, "administration"), []string{"coownerChange"})
 	shape, err := enrollmentShape(raw, keys, nil, []string{"targetPrincipalId"})
 	if err != nil {
 		return err
@@ -63,6 +63,7 @@ func DecodeEnrollmentInput(raw []byte, maximum int) (EnrollmentInput, error) {
 		return input, fmt.Errorf("bounded enrollment input required")
 	}
 	keys := []string{"contractRevision", "requestId", "proof", "request"}
+	keys = coownerInputKeys(raw, keys)
 	if _, err := enrollmentShape(raw, keys, nil, nil); err != nil {
 		return input, err
 	}
@@ -73,6 +74,9 @@ func DecodeEnrollmentInput(raw []byte, maximum int) (EnrollmentInput, error) {
 		return input, fmt.Errorf("replacement enrollment revision/opaque proof required")
 	}
 	if err := enrollmentIdentifiers(maximum, input.RequestID, input.Proof); err != nil {
+		return input, err
+	}
+	if err := validateCoownerInput(input, maximum); err != nil {
 		return input, err
 	}
 	_, err := canonicalEnrollmentRequest(input.Request, maximum)
@@ -95,11 +99,17 @@ func canonicalEnrollmentRequest(request EnrollmentRequest, maximum int) ([]byte,
 }
 
 func validateEnrollmentRequest(r EnrollmentRequest, maximum int) error {
-	if (r.ContractRevision != EnrollmentRevision && r.ContractRevision != EnrollmentAdminRevision) || r.Scope.Product != "manifest" || !domainValidHash(r.ProfileRef.ProfileDigest) {
+	if (r.ContractRevision != EnrollmentRevision && r.ContractRevision != EnrollmentAdminRevision && !enrollmentCoownerRequest(r)) || r.Scope.Product != "manifest" || !domainValidHash(r.ProfileRef.ProfileDigest) {
 		return fmt.Errorf("exact enrollment revision/scope/profile required")
 	}
 	if err := enrollmentIdentifiers(maximum, r.Scope.AccountID, r.CommandID, r.Operation, r.ProfileRef.ProfileID, r.ProfileRef.ProfileRevision); err != nil {
 		return err
+	}
+	if enrollmentCoownerRequest(r) {
+		return validateCoownerRequest(r, maximum)
+	}
+	if r.CoownerChange != nil {
+		return fmt.Errorf("legacy enrollment cannot carry co-owner change")
 	}
 	if err := validateEnrollmentAdministrationRequest(r, maximum); err != nil {
 		return err

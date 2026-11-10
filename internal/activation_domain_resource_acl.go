@@ -27,6 +27,13 @@ func (s *Server) prepareEnrollmentACL(d *domainEngine, entry *domainEntry) (stag
 	if historyErr != nil {
 		return stagedPreparation{}, historyErr
 	}
+	if enrollmentCoownerRequest(actor.Request) {
+		record, decodeErr := decodeEnrollmentRecord(receipt.EnrollmentRecord, scope.descriptor.Bounds.MaxScopeBytes)
+		if decodeErr != nil {
+			return stagedPreparation{}, decodeErr
+		}
+		entry.enrollment.effectDigest = record.ACLEffectDigest
+	}
 	d.bindEnrollmentEntry(entry, scope.descriptor, prepared.pair.Key)
 	return prepared, nil
 }
@@ -63,6 +70,13 @@ func (s *Server) authorizeEnrollmentRootLocked(d *domainEngine, entry *domainEnt
 		return err
 	}
 	actor := entry.enrollment.actor
+	if enrollmentCoownerRequest(actor.Request) {
+		account := index[entry.owned.Binding.AccountRootID]
+		if account == nil || account.CreatedBy != root.CreatedBy {
+			return fmt.Errorf("original co-owner account/root provenance changed")
+		}
+		return authorizeCoownerControl(actor, acl, root.CreatedBy)
+	}
 	if actor.Request.Administration != nil {
 		account := index[entry.owned.Binding.AccountRootID]
 		if scope != nil && scope.pending != nil && scope.pending.provisionAccount != nil {
@@ -75,11 +89,14 @@ func (s *Server) authorizeEnrollmentRootLocked(d *domainEngine, entry *domainEnt
 	}
 	grant, present := acl.Principals[actor.PrincipalID][enrollmentControlOperation(actor.Request.Operation)]
 	if !present || !domainContains(grant.Fields, "acl") || grant.TargetGrantRevision != "" {
-		return fmt.Errorf("current native owner enrollment action denied")
+		return authorizeCoownerControl(actor, acl, root.CreatedBy)
 	}
 	return nil
 }
 func buildEnrollmentACLDelta(d *domainEngine, entry *domainEntry, view stagedView) (stagedDelta, error) {
+	if enrollmentCoownerRequest(entry.enrollment.actor.Request) {
+		return buildCoownerDelta(d, entry, view)
+	}
 	if err := validateEnrollmentResponseBound(d, entry, view.Revision); err != nil {
 		return stagedDelta{}, err
 	}
@@ -133,6 +150,9 @@ func (s *Server) validateEnrollmentCurrentLocked(d *domainEngine, entry *domainE
 	}
 	if err = validateEnrollmentReplay(scope, receipt, entry.enrollment.actor); err != nil {
 		return err
+	}
+	if enrollmentCoownerRequest(entry.enrollment.actor.Request) {
+		return s.validateCoownerPinsLocked(d, entry)
 	}
 	switch entry.enrollment.actor.Request.Operation {
 	case EnrollmentReadGrant:

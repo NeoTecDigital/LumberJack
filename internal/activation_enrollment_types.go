@@ -39,16 +39,21 @@ type EnrollmentRequest struct {
 	TargetPrincipalID *string                   `json:"targetPrincipalId"`
 	ProfileRef        EnrollmentProfileRef      `json:"profileRef"`
 	Administration    *EnrollmentAdministration `json:"administration,omitempty"`
+	CoownerChange     *EnrollmentCoownerChange  `json:"coownerChange,omitempty"`
 }
 
 type EnrollmentInput struct {
-	ContractRevision string            `json:"contractRevision"`
-	RequestID        string            `json:"requestId"`
-	Proof            string            `json:"proof"`
-	Request          EnrollmentRequest `json:"request"`
+	ContractRevision        string                           `json:"contractRevision"`
+	RequestID               string                           `json:"requestId"`
+	Proof                   string                           `json:"proof"`
+	Request                 EnrollmentRequest                `json:"request"`
+	Mode                    string                           `json:"mode,omitempty"`
+	ReceiptBinding          *EnrollmentCoownerReceiptBinding `json:"-"`
+	ReceiptActorPrincipalID *string                          `json:"receiptActorPrincipalId,omitempty"`
 }
 
 type EnrollmentCheck struct {
+	*EnrollmentCoownerWire
 	ContractRevision   string            `json:"contractRevision"`
 	Proof              string            `json:"proof"`
 	Phase              string            `json:"phase"`
@@ -60,47 +65,53 @@ type EnrollmentCheck struct {
 }
 
 type EnrollmentVerified struct {
-	ContractRevision          string                    `json:"contractRevision"`
-	PrincipalID               string                    `json:"principalId"`
-	Kind                      string                    `json:"kind"`
-	SessionID                 string                    `json:"sessionId"`
-	Scope                     DomainScope               `json:"scope"`
-	RequestID                 string                    `json:"requestId"`
-	Request                   EnrollmentRequest         `json:"request"`
-	RequestFingerprint        string                    `json:"requestFingerprint"`
-	GrantRevision             string                    `json:"grantRevision"`
-	AuthorityPolicyRevision   string                    `json:"authorityPolicyRevision"`
-	AuthorityResourceRevision string                    `json:"authorityResourceRevision"`
-	ExpiresAt                 float64                   `json:"expiresAt"`
-	Issuer                    string                    `json:"issuer"`
-	Audience                  string                    `json:"audience"`
-	Phase                     string                    `json:"phase"`
-	LeaseBinding              *DomainLease              `json:"leaseBinding"`
-	ProofBinding              string                    `json:"proofBinding"`
-	OwnerAuthorized           bool                      `json:"ownerAuthorized"`
-	AdministratorAuthorized   bool                      `json:"administratorAuthorized,omitempty"`
-	PrincipalReference        *DomainPrincipalReference `json:"principalReference"`
-	Purpose                   string                    `json:"purpose"`
+	*EnrollmentCoownerWire
+	CoownerAuthority          *EnrollmentCoownerAuthority `json:"coownerAuthority,omitempty"`
+	ContractRevision          string                      `json:"contractRevision"`
+	PrincipalID               string                      `json:"principalId"`
+	Kind                      string                      `json:"kind"`
+	SessionID                 string                      `json:"sessionId"`
+	Scope                     DomainScope                 `json:"scope"`
+	RequestID                 string                      `json:"requestId"`
+	Request                   EnrollmentRequest           `json:"request"`
+	RequestFingerprint        string                      `json:"requestFingerprint"`
+	GrantRevision             string                      `json:"grantRevision"`
+	AuthorityPolicyRevision   string                      `json:"authorityPolicyRevision"`
+	AuthorityResourceRevision string                      `json:"authorityResourceRevision"`
+	ExpiresAt                 float64                     `json:"expiresAt"`
+	Issuer                    string                      `json:"issuer"`
+	Audience                  string                      `json:"audience"`
+	Phase                     string                      `json:"phase"`
+	LeaseBinding              *DomainLease                `json:"leaseBinding"`
+	ProofBinding              string                      `json:"proofBinding"`
+	OwnerAuthorized           bool                        `json:"ownerAuthorized"`
+	AdministratorAuthorized   bool                        `json:"administratorAuthorized,omitempty"`
+	PrincipalReference        *DomainPrincipalReference   `json:"principalReference"`
+	Purpose                   string                      `json:"purpose"`
 }
 
 type enrollmentRecordValue struct {
-	ContractRevision          string                    `json:"contractRevision"`
-	Request                   EnrollmentRequest         `json:"request"`
-	RequestID                 string                    `json:"requestId"`
-	PrincipalID               string                    `json:"principalId"`
-	SessionID                 string                    `json:"sessionId"`
-	RequestFingerprint        string                    `json:"requestFingerprint"`
-	GrantRevision             string                    `json:"grantRevision"`
-	AuthorityPolicyRevision   string                    `json:"authorityPolicyRevision"`
-	AuthorityResourceRevision string                    `json:"authorityResourceRevision"`
-	PrincipalReference        *DomainPrincipalReference `json:"principalReference"`
-	TargetGrantRevision       *string                   `json:"targetGrantRevision"`
+	CoownerAuthority          *EnrollmentCoownerAuthority `json:"coownerAuthority,omitempty"`
+	ACLEffectDigest           string                      `json:"aclEffectDigest,omitempty"`
+	ContractRevision          string                      `json:"contractRevision"`
+	Request                   EnrollmentRequest           `json:"request"`
+	RequestID                 string                      `json:"requestId"`
+	PrincipalID               string                      `json:"principalId"`
+	SessionID                 string                      `json:"sessionId"`
+	RequestFingerprint        string                      `json:"requestFingerprint"`
+	GrantRevision             string                      `json:"grantRevision"`
+	AuthorityPolicyRevision   string                      `json:"authorityPolicyRevision"`
+	AuthorityResourceRevision string                      `json:"authorityResourceRevision"`
+	PrincipalReference        *DomainPrincipalReference   `json:"principalReference"`
+	TargetGrantRevision       *string                     `json:"targetGrantRevision"`
 }
 
 type enrollmentEntry struct {
 	input          EnrollmentInput
 	actor          EnrollmentVerified
 	privateRequest json.RawMessage
+	effectDigest   string
+	inspection     *coownerInspection
 }
 
 type enrollmentSessionKey struct{ PrincipalID, SessionID string }

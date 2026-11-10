@@ -51,7 +51,7 @@ func validateDomainACLReference(reference domainACLReference, owned DomainOwnedS
 
 func domainACLTemplateValue(key string, root DomainRecord, kind string) (interface{}, error) {
 	acl, ok := root.Metadata[key].(map[string]interface{})
-	if !ok || acl["contractRevision"] != domainACLRevision {
+	if !ok || !coownerACLRevisionString(acl["contractRevision"]) {
 		return nil, fmt.Errorf("invalid current native ACL")
 	}
 	templates, _ := acl["createACLs"].(map[string]interface{})
@@ -135,7 +135,7 @@ func domainACLDecisionsEqual(left, right domainACL) bool {
 }
 
 func domainACLDecisions(acl domainACL) domainACL {
-	normalized := domainACL{ContractRevision: acl.ContractRevision, Principals: map[string]map[string]domainGrant{}, CreateACLs: acl.CreateACLs}
+	normalized := domainACL{ContractRevision: acl.ContractRevision, Principals: map[string]map[string]domainGrant{}, CreateACLs: acl.CreateACLs, Coowners: acl.Coowners}
 	for principal, grants := range acl.Principals {
 		normalized.Principals[principal] = map[string]domainGrant{}
 		for operation, grant := range grants {

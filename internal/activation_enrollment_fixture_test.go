@@ -12,6 +12,7 @@ import (
 )
 
 type enrollmentFixture struct {
+	coowner        *coownerFixtureAuthority
 	server         *Server
 	config         DomainConfig
 	mu             sync.Mutex
@@ -123,6 +124,10 @@ func (f *enrollmentFixture) callback(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	if enrollmentCoownerRequest(check.Request) {
+		f.coownerCallback(w, check)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.seen[check.Proof] {
@@ -141,6 +146,9 @@ func (f *enrollmentFixture) callback(w http.ResponseWriter, r *http.Request) {
 
 func (f *enrollmentFixture) actor(check EnrollmentCheck) EnrollmentVerified {
 	actor := EnrollmentVerified{ContractRevision: EnrollmentProofRevision, PrincipalID: "unit-verified-momentum-human", Kind: "human", SessionID: f.session, Scope: check.Request.Scope, RequestID: check.RequestID, Request: check.Request, RequestFingerprint: check.RequestFingerprint, GrantRevision: f.claim, AuthorityPolicyRevision: "unit-explicit-mapped-policy", AuthorityResourceRevision: "unit-pending-account-resource", ExpiresAt: domainNow() + 30, Issuer: f.config.Trust.Issuer, Audience: check.Audience, Phase: check.Phase, LeaseBinding: check.LeaseBinding, ProofBinding: stagedHash([]byte(check.Proof)), OwnerAuthorized: true, Purpose: check.Request.Operation}
+	if f.coowner != nil {
+		actor.PrincipalID, actor.GrantRevision = f.coowner.principal, f.coowner.grant
+	}
 	if check.Request.TargetPrincipalID != nil {
 		actor.PrincipalReference = f.target(actor)
 	}
@@ -160,6 +168,8 @@ func (f *enrollmentFixture) corruptActor(value map[string]interface{}) {
 	switch f.corrupt {
 	case "issuer":
 		value["issuer"] = "untrusted-issuer"
+	case "native-host":
+		value["nativeHostId"] = "untrusted-native-host"
 	case "kind":
 		value["kind"] = "integration_actor"
 	case "owner":

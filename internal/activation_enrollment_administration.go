@@ -47,6 +47,9 @@ func enrollmentAdministrationKeys(raw []byte, keys []string, extra string) []str
 }
 
 func enrollmentProofRevision(request EnrollmentRequest) string {
+	if enrollmentCoownerRequest(request) {
+		return EnrollmentCoownerProofRevision
+	}
 	if request.ContractRevision == EnrollmentAdminRevision {
 		return EnrollmentAdminProofRevision
 	}
@@ -54,6 +57,9 @@ func enrollmentProofRevision(request EnrollmentRequest) string {
 }
 
 func enrollmentRecordRevision(request EnrollmentRequest) string {
+	if enrollmentCoownerRequest(request) {
+		return EnrollmentCoownerRecordRevision
+	}
 	if request.ContractRevision == EnrollmentAdminRevision {
 		return EnrollmentAdminRecordRevision
 	}
@@ -61,6 +67,9 @@ func enrollmentRecordRevision(request EnrollmentRequest) string {
 }
 
 func enrollmentActorAuthorized(actor EnrollmentVerified) bool {
+	if enrollmentCoownerRequest(actor.Request) {
+		return coownerActorAuthorized(actor)
+	}
 	if actor.Kind != "human" {
 		return false
 	}

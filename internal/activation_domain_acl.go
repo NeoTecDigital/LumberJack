@@ -4,9 +4,10 @@ package internal
 import "fmt"
 
 type domainACL struct {
-	ContractRevision string                            `json:"contractRevision"`
-	Principals       map[string]map[string]domainGrant `json:"principals"`
-	CreateACLs       map[string]domainACL              `json:"createACLs,omitempty"`
+	ContractRevision string                               `json:"contractRevision"`
+	Principals       map[string]map[string]domainGrant    `json:"principals"`
+	CreateACLs       map[string]domainACL                 `json:"createACLs,omitempty"`
+	Coowners         map[string]domainCoownerContribution `json:"coowners,omitempty"`
 }
 type domainGrant struct {
 	TargetGrantRevision string   `json:"targetGrantRevision,omitempty"`
@@ -36,8 +37,11 @@ func (p *domainOwnerPolicy) acl(record DomainRecord) (domainACL, error) {
 		return domainACL{}, err
 	}
 	var acl domainACL
-	if DecodeDomainJSON(data, &acl) != nil || acl.ContractRevision != domainACLRevision || acl.Principals == nil {
+	if DecodeDomainJSON(data, &acl) != nil || !coownerACLRevision(acl.ContractRevision) || acl.Principals == nil {
 		return domainACL{}, fmt.Errorf("invalid current native ACL")
+	}
+	if err := validateCoownerACL(acl); err != nil {
+		return domainACL{}, err
 	}
 	return acl, nil
 }
@@ -58,6 +62,16 @@ func (p *domainOwnerPolicy) AuthorizeLocked(actor DomainVerified, access DomainA
 		return err
 	}
 	grant, present := acl.Principals[actor.PrincipalID][access.Operation]
+	denied := authorizeDomainGrant(actor, grant, present, access)
+	if denied == nil || coownerGrantAllows(actor, acl.Coowners[actor.PrincipalID], access) {
+		return nil
+	}
+	return denied
+}
+
+// A single grant must cover every field, creation kind and reference requirement.
+// If neither contribution suffices, preserve the original principal grant's denial.
+func authorizeDomainGrant(actor DomainVerified, grant domainGrant, present bool, access DomainAccess) error {
 	if !present || len(access.Fields) == 0 || grant.TargetGrantRevision != "" && grant.TargetGrantRevision != actor.GrantRevision {
 		return fmt.Errorf("current native action/fields denied")
 	}
@@ -80,11 +94,16 @@ func (p *domainOwnerPolicy) CreateACLLocked(actor DomainVerified, operation, kin
 		return nil, err
 	}
 	grant, present := acl.Principals[actor.PrincipalID][operation]
-	if !present || !domainContains(grant.CreateKinds, kind) {
+	if !present || grant.TargetGrantRevision != "" && grant.TargetGrantRevision != actor.GrantRevision || !domainContains(grant.CreateKinds, kind) {
+		contribution := acl.Coowners[actor.PrincipalID]
+		grant = contribution.Grants[operation]
+		if coownerEligible(actor, contribution) && grant.TargetGrantRevision == contribution.GrantRevision && domainContains(grant.CreateKinds, kind) {
+			return coownerCreateTemplate(acl, kind, root.ID)
+		}
 		return nil, fmt.Errorf("owner did not delegate this creation")
 	}
 	template, present := acl.CreateACLs[kind]
-	if !present || template.ContractRevision != domainACLRevision || template.Principals == nil {
+	if !present || !coownerACLRevision(template.ContractRevision) || template.Principals == nil {
 		return nil, fmt.Errorf("explicit owner new-record ACL template absent")
 	}
 	return domainACLReferenceValue(root.ID, kind), nil
