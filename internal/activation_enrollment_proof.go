@@ -124,6 +124,9 @@ func validEnrollmentPhaseLease(actor EnrollmentVerified, check EnrollmentCheck, 
 
 func validEnrollmentTarget(actor EnrollmentVerified, maximum int, now, lifetime float64) bool {
 	ref := actor.PrincipalReference
+	if !workloadEnrollmentReference(actor.Request, ref) {
+		return false
+	}
 	if actor.Request.Operation == EnrollmentProvision {
 		return ref == nil && actor.Request.TargetPrincipalID == nil
 	}

@@ -107,11 +107,12 @@ func (d *domainEngine) receive(entry *domainEntry) (DomainControlResult, error) 
 func (s *Server) validateDomainLease(d *domainEngine, entry *domainEntry, input DomainControl) (DomainControlResult, error) {
 	d.mu.Lock()
 	active := d.activeLocked(entry)
+	deadline := workloadLeaseDeadlineLocked(entry)
 	d.mu.Unlock()
 	if !active || input.LeaseBinding == nil || input.Intent == nil || !domainEqual(*input.LeaseBinding, entry.lease) || !domainEqual(*input.Intent, entry.intent) || input.PrincipalID != entry.lease.PrincipalID || input.SessionID != entry.lease.SessionID {
 		return DomainControlResult{}, fmt.Errorf("exact current lease binding denied")
 	}
-	until := math.Min(input.ValidUntil, entry.actor.ExpiresAt)
+	until := math.Min(input.ValidUntil, deadline)
 	if math.IsNaN(until) || math.IsInf(until, 0) || until <= domainNow() {
 		return DomainControlResult{}, fmt.Errorf("finite native lease validity expired")
 	}
@@ -120,7 +121,8 @@ func (s *Server) validateDomainLease(d *domainEngine, entry *domainEntry, input 
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.activeLocked(entry) {
+	until = math.Min(until, workloadLeaseDeadlineLocked(entry))
+	if !d.activeLocked(entry) || until <= domainNow() {
 		return DomainControlResult{}, fmt.Errorf("native lease no longer active")
 	}
 	return DomainControlResult{Value: map[string]interface{}{"leaseBinding": entry.lease, "validUntil": until}}, nil
@@ -139,6 +141,9 @@ func (s *Server) handoffDomain(ctx context.Context, d *domainEngine, entry *doma
 	if actor.PrincipalID != entry.lease.PrincipalID || actor.SessionID != entry.lease.SessionID {
 		return DomainControlResult{}, fmt.Errorf("handoff actor mismatch")
 	}
+	if err = d.refreshWorkloadDeadline(entry, &actor); err != nil {
+		return DomainControlResult{}, err
+	}
 	if err = s.authorizeDomainHandoffLocked(d, entry, actor); err != nil {
 		return DomainControlResult{}, err
 	}
@@ -148,7 +153,7 @@ func (s *Server) handoffDomain(ctx context.Context, d *domainEngine, entry *doma
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.activeLocked(entry) || actor.ExpiresAt <= domainNow() {
+	if !d.activeLocked(entry) || actor.ExpiresAt <= domainNow() || entry.actor.Workload != nil && workloadLeaseDeadlineLocked(entry) <= domainNow() {
 		return DomainControlResult{}, fmt.Errorf("native handoff denied")
 	}
 	entry.permitID = id
@@ -161,6 +166,9 @@ func (d *domainEngine) activeLocked(entry *domainEntry) bool {
 func (s *Server) authorizeDomainHandoffLocked(d *domainEngine, entry *domainEntry, actor DomainVerified) error {
 	d.mu.Lock()
 	copy := *entry
+	if entry.actor.Workload != nil {
+		actor.ExpiresAt = math.Min(actor.ExpiresAt, workloadLeaseDeadlineLocked(entry))
+	}
 	d.mu.Unlock()
 	entry = &copy
 	if domainV2(entry.owned) {

@@ -41,10 +41,13 @@ func (d *domainEngine) validEnrollmentWorkloadForms(actor EnrollmentVerified) bo
 		return false
 	}
 	target := actor.Request.TargetPrincipalID
+	if boundWorkloadEnrollment(actor.Request) {
+		return d.validBoundWorkloadEnrollment(actor)
+	}
 	if !isEnrollmentWorkloadOperation(actor.Request.Operation) {
 		return target == nil || !domainWorkloadIdentity(*target, "")
 	}
-	if d.config.WorkloadPolicy == nil || target == nil {
+	if legacyWorkloadPolicy(d.config.WorkloadPolicy) == nil || target == nil {
 		return false
 	}
 	_, valid := domainWorkloadID(*target)
@@ -62,7 +65,10 @@ func enrollmentAdministratorMayDelegate(actor EnrollmentVerified, acl domainACL)
 }
 
 func enrollmentWorkloadGrants(d *domainEngine, entry *domainEntry, kind string) (map[string]domainGrant, error) {
-	policy, layout := d.config.WorkloadPolicy, entry.owned.Layout
+	if boundWorkloadEnrollment(entry.enrollment.actor.Request) {
+		return boundEnrollmentWorkloadGrants(d, entry, kind)
+	}
+	policy, layout := legacyWorkloadPolicy(d.config.WorkloadPolicy), entry.owned.Layout
 	if policy == nil {
 		return nil, fmt.Errorf("workload policy absent")
 	}
@@ -91,7 +97,7 @@ func (w *enrollmentACLWrites) workloadWrite(record DomainRecord, kind string) (*
 		return nil, err
 	}
 	if reference {
-		if kind == domainWorkloadCreateKind {
+		if kind == domainWorkloadCreateKind || boundWorkloadEnrollment(w.entry.enrollment.actor.Request) && kind == "associate" {
 			w.countFollower(kind)
 		}
 		return nil, nil
@@ -114,6 +120,12 @@ func (w *enrollmentACLWrites) workloadWrite(record DomainRecord, kind string) (*
 
 func (w *enrollmentACLWrites) applyWorkloadChange(acl *domainACL, record DomainRecord, kind string) (bool, error) {
 	actor := w.entry.enrollment.actor
+	if boundWorkloadEnrollment(actor.Request) {
+		return w.applyBoundWorkloadChange(acl, record, kind)
+	}
+	if workloadHasBoundGrant(*acl, *actor.Request.TargetPrincipalID) {
+		return false, fmt.Errorf("legacy control cannot alter bound workload grant")
+	}
 	target := *actor.Request.TargetPrincipalID
 	if _, owner := acl.Principals[target][EnrollmentProvision]; owner {
 		return false, fmt.Errorf("owner ACL cannot be changed by workload control")
@@ -167,12 +179,19 @@ func (w *enrollmentACLWrites) revokeWorkload(acl *domainACL, kind, target string
 
 func (w *enrollmentACLWrites) workloadRecordInFamily(record DomainRecord) bool {
 	family, _ := record.Metadata[w.entry.owned.Layout.Fields["pngFamily"]].(string)
-	_, present := w.d.config.WorkloadPolicy.Families[family]
+	policy := legacyWorkloadPolicy(w.d.config.WorkloadPolicy)
+	if policy == nil {
+		return false
+	}
+	_, present := policy.Families[family]
 	return present
 }
 
 // The handoff recheck: a grant replaced or removed after its command is refused here.
 func (s *Server) validateEnrollmentWorkloadPinLocked(d *domainEngine, entry *domainEntry) error {
+	if boundWorkloadEnrollment(entry.enrollment.actor.Request) {
+		return s.validateBoundWorkloadPinsLocked(d, entry)
+	}
 	root, nodes, err := s.enrollmentPinRecordsLocked(entry)
 	if err != nil {
 		return err

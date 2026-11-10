@@ -31,6 +31,7 @@ type DomainProvisioningProfile struct {
 }
 
 type EnrollmentRequest struct {
+	WorkloadGrant     *DomainWorkloadGrant      `json:"workloadGrant,omitempty"`
 	ContractRevision  string                    `json:"contractRevision"`
 	Scope             DomainScope               `json:"scope"`
 	CommandID         string                    `json:"commandId"`

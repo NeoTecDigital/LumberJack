@@ -42,8 +42,12 @@ func enrollmentIdentifiers(maximum int, values ...string) error {
 
 func (r *EnrollmentRequest) UnmarshalJSON(raw []byte) error {
 	keys := []string{"contractRevision", "scope", "commandId", "expectedRevision", "operation", "targetPrincipalId", "profileRef"}
-	keys = coownerKeys(raw, enrollmentAdministrationKeys(raw, keys, "administration"), []string{"coownerChange"})
-	shape, err := enrollmentShape(raw, keys, nil, []string{"targetPrincipalId"})
+	keys = workloadEnrollmentKeys(raw, coownerKeys(raw, enrollmentAdministrationKeys(raw, keys, "administration"), []string{"coownerChange"}))
+	nullable := []string{"targetPrincipalId"}
+	if domainContains(keys, "workloadGrant") {
+		nullable = append(nullable, "administration")
+	}
+	shape, err := enrollmentShape(raw, keys, nil, nullable)
 	if err != nil {
 		return err
 	}
@@ -99,11 +103,17 @@ func canonicalEnrollmentRequest(request EnrollmentRequest, maximum int) ([]byte,
 }
 
 func validateEnrollmentRequest(r EnrollmentRequest, maximum int) error {
-	if (r.ContractRevision != EnrollmentRevision && r.ContractRevision != EnrollmentAdminRevision && !enrollmentCoownerRequest(r)) || r.Scope.Product != "manifest" || !domainValidHash(r.ProfileRef.ProfileDigest) {
+	if (r.ContractRevision != EnrollmentRevision && r.ContractRevision != EnrollmentAdminRevision && !enrollmentCoownerRequest(r) && !boundWorkloadEnrollment(r)) || r.Scope.Product != "manifest" || !domainValidHash(r.ProfileRef.ProfileDigest) {
 		return fmt.Errorf("exact enrollment revision/scope/profile required")
 	}
 	if err := enrollmentIdentifiers(maximum, r.Scope.AccountID, r.CommandID, r.Operation, r.ProfileRef.ProfileID, r.ProfileRef.ProfileRevision); err != nil {
 		return err
+	}
+	if boundWorkloadEnrollment(r) {
+		return validateBoundWorkloadEnrollment(r, maximum)
+	}
+	if r.WorkloadGrant != nil {
+		return fmt.Errorf("legacy enrollment cannot carry workload grant")
 	}
 	if enrollmentCoownerRequest(r) {
 		return validateCoownerRequest(r, maximum)

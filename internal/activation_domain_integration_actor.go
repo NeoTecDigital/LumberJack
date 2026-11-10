@@ -30,6 +30,9 @@ type DomainIntegrationActor struct {
 }
 
 func (d *domainEngine) validDomainActorKind(actor DomainVerified) bool {
+	if actor.Kind != domainWorkloadKind && (actor.Workload != nil || actor.Intent.Workload != nil) {
+		return false
+	}
 	if actor.Kind == "human" {
 		return actor.Issuer == d.config.Trust.Issuer && actor.IntegrationActor == nil && !domainWorkloadIdentity(actor.PrincipalID, actor.SessionID)
 	}

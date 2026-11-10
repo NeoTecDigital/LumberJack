@@ -51,6 +51,9 @@ func resolveDomainView(d *domainEngine, input DomainInput, owned DomainOwnedScop
 	}
 	intent, err := d.products[owned.Binding.ProductID].Resolve(input, owned, callbackView)
 	if err == nil {
+		err = d.bindWorkloadIntent(input, &intent)
+	}
+	if err == nil {
 		err = validateDomainIntent(d, intent, owned, input)
 	}
 	return intent, err
@@ -139,7 +142,11 @@ func (d *domainEngine) authorizeNativeTarget(entry *domainEntry, view DomainView
 	if !present {
 		return fmt.Errorf("current native target absent")
 	}
-	return d.authorizeDomainRecord(entry.actor, DomainAccess{Operation: access.Action, Kind: access.Kind, Fields: fields}, view, record)
+	kind := access.Kind
+	if entry.actor.Workload != nil {
+		kind = domainSemanticKind(entry.owned.Layout, kind)
+	}
+	return d.authorizeDomainRecord(entry.actor, DomainAccess{Operation: access.Action, Kind: kind, Fields: fields}, view, record)
 }
 
 func (d *domainEngine) authorizeDefinitionTarget(entry *domainEntry, view DomainView, access stagedAccess, fields []string) error {

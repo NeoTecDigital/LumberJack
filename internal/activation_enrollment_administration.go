@@ -40,13 +40,16 @@ func enrollmentAdministrationKeys(raw []byte, keys []string, extra string) []str
 	}
 	// This preliminary read selects grammar only; the closed decoder follows.
 	_ = json.Unmarshal(raw, &shape)
-	if shape.ContractRevision == EnrollmentAdminRevision || shape.ContractRevision == EnrollmentAdminProofRevision {
+	if shape.ContractRevision == EnrollmentAdminRevision || shape.ContractRevision == EnrollmentAdminProofRevision || shape.ContractRevision == EnrollmentBoundWorkloadRevision || shape.ContractRevision == EnrollmentBoundWorkloadProofRevision {
 		return append(keys, extra)
 	}
 	return keys
 }
 
 func enrollmentProofRevision(request EnrollmentRequest) string {
+	if boundWorkloadEnrollment(request) {
+		return EnrollmentBoundWorkloadProofRevision
+	}
 	if enrollmentCoownerRequest(request) {
 		return EnrollmentCoownerProofRevision
 	}
@@ -57,6 +60,9 @@ func enrollmentProofRevision(request EnrollmentRequest) string {
 }
 
 func enrollmentRecordRevision(request EnrollmentRequest) string {
+	if boundWorkloadEnrollment(request) {
+		return EnrollmentBoundWorkloadRecordRevision
+	}
 	if enrollmentCoownerRequest(request) {
 		return EnrollmentCoownerRecordRevision
 	}
@@ -72,6 +78,9 @@ func enrollmentActorAuthorized(actor EnrollmentVerified) bool {
 	}
 	if actor.Kind != "human" {
 		return false
+	}
+	if boundWorkloadEnrollment(actor.Request) {
+		return actor.Request.Administration == nil && actor.OwnerAuthorized && !actor.AdministratorAuthorized || actor.Request.Administration != nil && !actor.OwnerAuthorized && actor.AdministratorAuthorized
 	}
 	if actor.Request.ContractRevision == EnrollmentAdminRevision {
 		return actor.Request.Administration != nil && !actor.OwnerAuthorized && actor.AdministratorAuthorized
@@ -118,7 +127,7 @@ func validateEnrollmentAdministrationGrants(a *EnrollmentAdministration, p *Doma
 func validateEnrollmentAdministratorKind(grants, owner map[string]domainGrant, maximum int) error {
 	for operation, grant := range grants {
 		bound, present := owner[operation]
-		if !present || operation == "*" || grant.TargetGrantRevision != "" || grant.Reference && !bound.Reference {
+		if !present || operation == "*" || grant.TargetGrantRevision != "" || grant.WorkloadGrant != nil || grant.Reference && !bound.Reference {
 			return fmt.Errorf("administrator operation/reference exceeds protected owner profile")
 		}
 		if enrollmentUniqueFields(grant.Fields, len(bound.Fields), maximum) != nil || !enrollmentGrantSubset(grant.Fields, bound.Fields) {
@@ -157,7 +166,7 @@ func validateEnrollmentAdministrationShape(a *EnrollmentAdministration, maximum 
 
 func validateEnrollmentAdministrationOperations(grants map[string]domainGrant, maximum int) error {
 	for operation, grant := range grants {
-		if operation == "*" || enrollmentIdentifiers(maximum, operation) != nil || grant.TargetGrantRevision != "" {
+		if operation == "*" || enrollmentIdentifiers(maximum, operation) != nil || grant.TargetGrantRevision != "" || grant.WorkloadGrant != nil {
 			return fmt.Errorf("explicit administrator operation required without target claim")
 		}
 		if enrollmentUniqueFields(grant.Fields, maximum, maximum) != nil {

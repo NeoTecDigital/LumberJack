@@ -150,7 +150,11 @@ func (s *Server) domainBuilder(d *domainEngine, entry *domainEntry, operation st
 		if err != nil {
 			return delta, err
 		}
-		return delta, d.validateWorkloadDelta(entry, native, delta)
+		if err = d.validateWorkloadDelta(entry, native, delta); err != nil {
+			return delta, err
+		}
+		err = retainWorkloadRecord(entry, &delta)
+		return delta, err
 	}
 }
 func (s *Server) captureDomainPending(d *domainEngine, entry *domainEntry, command stagedCommand, result stagedResult) bool {

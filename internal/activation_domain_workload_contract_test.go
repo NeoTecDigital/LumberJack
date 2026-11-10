@@ -63,3 +63,25 @@ func TestWorkloadContractExamplesDecode(t *testing.T) {
 		t.Fatal("the contract's grant answer does not fit its grant")
 	}
 }
+
+// Golden independently encoded UTF-8 tuple; neither custody's ASCII escaping nor
+// a floating-point expiry/fence may replace this native canonical commitment.
+func TestBoundWorkloadCanonicalTupleAndMaximumExpiry(t *testing.T) {
+	g := wbGrant("labelled-account", "accounting.sync")
+	g.InstallationID = "LABELLED-安装"
+	g.ConnectionID = "labelled-connection"
+	g.ExpiresAt = 9007199254740991
+	if workloadPrincipal(g) != "workload:ac7be8915dbcd86904fc02b645368634a02222b1c0dddb2039d021a9b27beb69" {
+		t.Fatal("native tuple canonical parity changed")
+	}
+	raw := wbJSON(t, g)
+	var decoded DomainWorkloadGrant
+	if err := DecodeDomainJSON(raw, &decoded); err != nil || decoded.ExpiresAt != g.ExpiresAt {
+		t.Fatal("maximum exact JSON integer lost", err)
+	}
+	policy := wbPolicy()
+	var roundtrip DomainWorkloadPolicy
+	if err := DecodeDomainJSON(wbJSON(t, policy), &roundtrip); err != nil || !domainEqual(policy, &roundtrip) {
+		t.Fatal("closed policy parity", err)
+	}
+}

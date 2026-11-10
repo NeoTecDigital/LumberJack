@@ -2,6 +2,11 @@
 package internal
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/NeoTecDigital/LumberJack/internal/core"
@@ -157,4 +162,130 @@ func wlRootACL(t *testing.T, f *enrollmentFixture, rootID string) domainACL {
 		t.Fatal(err)
 	}
 	return acl
+}
+
+func wbPolicy() *DomainWorkloadPolicy {
+	p := &DomainWorkloadPolicy{ContractRevision: domainWorkloadPolicyRevision, InstallationID: "labelled-installation", Issuer: wlIssuer, MaxLifetimeSeconds: 30, Purposes: map[string]DomainWorkloadPurpose{}}
+	for _, purpose := range []string{"messaging.sync", "accounting.sync"} {
+		p.Purposes[purpose] = wbPurpose(purpose)
+	}
+	for name, purpose := range p.Purposes {
+		purpose.PolicyDigest, _ = workloadPolicyDigest(p, name, purpose)
+		p.Purposes[name] = purpose
+	}
+	return p
+}
+
+func wbPurpose(name string) DomainWorkloadPurpose {
+	p := DomainWorkloadPurpose{Provider: workloadProvider(name), Families: map[string]DomainWorkloadFamily{}}
+	for family, fixed := range workloadFamilyRules {
+		if fixed.purpose != name {
+			continue
+		}
+		read := strings.Fields(fixed.read)
+		create := append(strings.Fields(fixed.create), "id", "account_id")
+		update := append(strings.Fields(fixed.update), "id", "account_id")
+		sort.Strings(read)
+		sort.Strings(create)
+		sort.Strings(update)
+		p.Families[family] = DomainWorkloadFamily{fixed.kind, read, create, update, fixed.rule}
+	}
+	return p
+}
+
+func wbGrant(account, purpose string) DomainWorkloadGrant {
+	p := wbPolicy()
+	return DomainWorkloadGrant{domainWorkloadGrantRevision, p.InstallationID, account, "labelled-connection", workloadProvider(purpose), purpose, "labelled-G1", p.Purposes[purpose].PolicyDigest, 4102444800}
+}
+
+func wbConfig(t *testing.T) DomainConfig {
+	t.Helper()
+	config := wlFixtureConfig(t)
+	config.MaxFields = 1024
+	p := config.ProvisioningProfile
+	empty := ""
+	p.Layout.AssociateCarrier = &DomainAssociateCarrierPolicy{ContractRevision: "manifest-associate-carrier/0.1", Family: "business:associate", NativeKind: "associate", LabelField: "full_name", NullLabel: &empty, InitialRoleIDs: []string{}}
+	config.WorkloadPolicy = wbPolicy()
+	for _, purpose := range config.WorkloadPolicy.Purposes {
+		wbOwnerCeilings(p, purpose)
+	}
+	digest, err := DomainProvisioningProfileDigest(*p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.ProfileRef.ProfileDigest = digest
+	return config
+}
+
+// Synthetic test profile only. Production masks are never widened by installation.
+func wbOwnerCeilings(p *DomainProvisioningProfile, purpose DomainWorkloadPurpose) {
+	for _, kind := range workloadPurposeKinds(purpose) {
+		wbOwnerKindCeiling(p, purpose, kind)
+	}
+}
+
+func wbOwnerKindCeiling(p *DomainProvisioningProfile, purpose DomainWorkloadPurpose, kind string) {
+	for _, operation := range []string{domainStoreReadOperation, nativeStoreCommand} {
+		fields, _ := boundWorkloadGrantFields(purpose, p.Layout, operation, kind)
+		fields = workloadUniqueFields(append(fields, p.Layout.Profiles[operation][kind]...))
+		p.Layout.Profiles[operation][kind] = fields
+		held := p.OwnerGrants[kind][operation]
+		held.Fields = fields
+		if kind == "root" && operation == nativeStoreCommand {
+			held.CreateKinds = []string{"associate", "png_record"}
+		}
+		p.OwnerGrants[kind][operation] = held
+	}
+}
+
+func newBoundWorkloadFixture(t *testing.T) *enrollmentFixture {
+	t.Helper()
+	f := &enrollmentFixture{server: stagedTestServer(t, t.TempDir()), config: wbConfig(t), seen: map[string]bool{}, session: "unit-current-session", claim: "unit-owner-claim-1", targetRevision: "labelled-G1", targetState: "active"}
+	if err := f.server.configureStagedScope(stagedTestBinding(), stagedTestBounds()); err != nil {
+		t.Fatal(err)
+	}
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { wbEnrollmentCallback(f, w, r) }))
+	t.Cleanup(callback.Close)
+	f.config.Trust.VerifierEndpoint = callback.URL + "/labelled-workload-authority"
+	policy, err := NewDomainOwnerPolicy(f.config.ACLMetadataKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.server.ConfigureDomain(f.config, map[string]DomainProduct{"manifest": domainTestProduct{}}, policy); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func wbEnrollmentCallback(f *enrollmentFixture, w http.ResponseWriter, r *http.Request) {
+	var check EnrollmentCheck
+	if json.NewDecoder(r.Body).Decode(&check) != nil || r.Header.Get("Authorization") != "Bearer "+f.config.Trust.ChannelToken {
+		w.WriteHeader(403)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seen[check.Proof] {
+		w.WriteHeader(403)
+		return
+	}
+	f.seen[check.Proof] = true
+	actor := f.actor(check)
+	actor.ContractRevision = enrollmentProofRevision(check.Request)
+	raw, _ := CanonicalDomainJSON(actor)
+	var value map[string]interface{}
+	_ = DecodeDomainJSON(raw, &value)
+	if boundWorkloadEnrollment(check.Request) {
+		value["administratorAuthorized"] = false
+	}
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func wbInput(t *testing.T, f *enrollmentFixture, root string, g DomainWorkloadGrant, operation, tag string) EnrollmentInput {
+	t.Helper()
+	target := workloadPrincipal(g)
+	input := f.input(operation, g.AccountID, "labelled-"+tag, "labelled_"+strings.ReplaceAll(tag, "-", "_"), enrollmentCurrentRevision(t, f, root), &target)
+	input.ContractRevision, input.Request.ContractRevision = EnrollmentBoundWorkloadProofRevision, EnrollmentBoundWorkloadRevision
+	input.Request.WorkloadGrant = &g
+	return input
 }

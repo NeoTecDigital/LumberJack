@@ -48,6 +48,9 @@ func (s *Server) enrollmentAuthorizer(d *domainEngine, entry *domainEntry) stage
 		if len(access.Fields) > 0 && !domainEqual(access.Fields, []string{d.config.ACLMetadataKey}) {
 			return fmt.Errorf("enrollment may only change explicit resource ACL")
 		}
+		if err := s.authorizeBoundWorkloadEnrollmentReplay(d, entry, access); err != nil {
+			return err
+		}
 		return s.authorizeEnrollmentRootLocked(d, entry)
 	}
 }
@@ -70,6 +73,9 @@ func (s *Server) authorizeEnrollmentRootLocked(d *domainEngine, entry *domainEnt
 		return err
 	}
 	actor := entry.enrollment.actor
+	if err := authorizeBoundWorkloadDelegation(d, entry, acl); err != nil {
+		return err
+	}
 	if enrollmentCoownerRequest(actor.Request) {
 		account := index[entry.owned.Binding.AccountRootID]
 		if account == nil || account.CreatedBy != root.CreatedBy {
@@ -150,6 +156,9 @@ func (s *Server) validateEnrollmentCurrentLocked(d *domainEngine, entry *domainE
 	}
 	if err = validateEnrollmentReplay(scope, receipt, entry.enrollment.actor); err != nil {
 		return err
+	}
+	if boundWorkloadEnrollment(entry.enrollment.actor.Request) {
+		return s.validateBoundWorkloadPinsLocked(d, entry)
 	}
 	if enrollmentCoownerRequest(entry.enrollment.actor.Request) {
 		return s.validateCoownerPinsLocked(d, entry)

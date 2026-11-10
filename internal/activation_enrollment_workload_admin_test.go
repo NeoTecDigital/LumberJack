@@ -132,3 +132,46 @@ func TestWorkloadForestOpensWithoutThePolicyAndAdmitsNoWorkload(t *testing.T) {
 		t.Fatal("the policy guard passed with no policy")
 	}
 }
+
+func TestBoundWorkloadDelegationNeverCombinesPartialOwnerContributions(t *testing.T) {
+	actor := DomainVerified{Kind: "human", PrincipalID: "LABELLED-coowner", GrantRevision: "LABELLED-current"}
+	first := domainGrant{Fields: []string{"data.id"}, CreateKinds: []string{"png_record"}}
+	second := domainGrant{Fields: []string{"data.full_name"}, CreateKinds: []string{"associate"}, TargetGrantRevision: actor.GrantRevision}
+	acl := domainACL{ContractRevision: domainCoownerACLRevision, Principals: map[string]map[string]domainGrant{actor.PrincipalID: {nativeStoreCommand: first}}, Coowners: map[string]domainCoownerContribution{actor.PrincipalID: {State: "installed", GrantRevision: actor.GrantRevision, Grants: map[string]domainGrant{nativeStoreCommand: second}}}}
+	access := DomainAccess{Operation: nativeStoreCommand, Fields: []string{"data.id", "data.full_name"}}
+	if workloadDelegationDecision(actor, acl, access, []string{"png_record", "associate"}) == nil {
+		t.Fatal("partial fields/kinds combined across contributions")
+	}
+	first.Fields = access.Fields
+	acl.Principals[actor.PrincipalID][nativeStoreCommand] = first
+	if workloadDelegationDecision(actor, acl, access, []string{"png_record", "associate"}) == nil {
+		t.Fatal("complete fields combined with another contribution's create kind")
+	}
+	first.CreateKinds = []string{"png_record", "associate"}
+	acl.Principals[actor.PrincipalID][nativeStoreCommand] = first
+	if err := workloadDelegationDecision(actor, acl, access, first.CreateKinds); err != nil {
+		t.Fatal("one complete legitimate grant denied", err)
+	}
+}
+
+func TestBoundWorkloadACLNeverAdoptsLegacyOrHumanAuthority(t *testing.T) {
+	actor := wbValidActor()
+	g := actor.Workload.Grant
+	grant := domainGrant{Fields: []string{"id"}, TargetGrantRevision: g.GrantRevision, WorkloadGrant: &g}
+	if !workloadGrantMatches(actor, grant) {
+		t.Fatal("positive exact installed G refused")
+	}
+	legacy := grant
+	legacy.WorkloadGrant = nil
+	if workloadGrantMatches(actor, legacy) {
+		t.Fatal("legacy grant adopted a bound run")
+	}
+	actor.Workload = nil
+	if workloadGrantMatches(actor, grant) {
+		t.Fatal("bound grant became legacy/human authority")
+	}
+	acl := domainACL{ContractRevision: domainCoownerACLRevision, Principals: map[string]map[string]domainGrant{workloadPrincipal(g): {domainStoreReadOperation: legacy, nativeStoreCommand: legacy}}}
+	if _, err := boundWorkloadListGrant(acl, workloadPrincipal(g)); err == nil {
+		t.Fatal("/.5 adopted an existing G-less workload")
+	}
+}

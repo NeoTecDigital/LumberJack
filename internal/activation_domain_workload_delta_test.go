@@ -129,3 +129,161 @@ func TestPersonDeltaIsNotHeldToAWorkloadList(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func wbGuard(t *testing.T, purpose string) (*domainEngine, *domainEntry, stagedView) {
+	t.Helper()
+	config := wbConfig(t)
+	config.ACLMetadataKey = aclKey
+	g := wbGrant("acl-account", purpose)
+	owned := DomainOwnedScope{Binding: stagedBinding{RootID: wlRoot, AccountID: g.AccountID}, Layout: config.ProvisioningProfile.Layout}
+	entry := &domainEntry{actor: DomainVerified{Kind: domainWorkloadKind, Workload: &DomainWorkloadRun{domainWorkloadRunRevision, g, "labelled-run", "1"}}, owned: owned}
+	return &domainEngine{config: config}, entry, stagedView{Records: map[string]stagedRecord{}}
+}
+
+func wbCreate(t *testing.T, entry *domainEntry, family string, data map[string]interface{}) stagedCreate {
+	t.Helper()
+	kind := workloadFamilyRules[family].kind
+	fields := entry.owned.Layout.Fields
+	create := wlCreate(family, data)
+	create.Kind = entry.owned.Layout.Kinds[kind]
+	create.Metadata[aclKey] = domainACLReferenceValue(wlRoot, kind)
+	if kind == "associate" {
+		create.Metadata[fields["accountId"]] = entry.owned.Binding.AccountID
+		label := data["full_name"]
+		if label == nil {
+			label = ""
+		}
+		create.Metadata[fields["label"]] = label
+		create.Metadata[fields["roleIds"]] = []string{}
+	}
+	return create
+}
+
+func wbObservation() map[string]interface{} {
+	return map[string]interface{}{"contractRevision": "quickbooks-observation/1", "provider": "quickbooks", "connectionId": "labelled-connection", "entity": "Account", "externalId": "labelled-source", "environment": "sandbox", "realmId": "labelled-realm", "sourceRevision": strings.Repeat("a", 64), "source": map[string]interface{}{"Id": "labelled-source"}, "projectedFamily": nil, "projected": map[string]interface{}{}}
+}
+
+func TestBoundWorkloadSixExactCreateFamiliesAndCarrier(t *testing.T) {
+	rows := map[string]map[string]interface{}{
+		wlMessages: {"text": "LABELLED"}, wlConversations: {"is_archived": false, "title": "LABELLED"}, wlContacts: {"phone": "LABELLED"},
+		"resource:png_import": {"attributes": wbObservation()}, "business:associate": {"type": "client", "full_name": "LABELLED"}, "business:job": {"title": "LABELLED", "quickbooks_id": "labelled-source"},
+	}
+	for family, data := range rows {
+		d, entry, view := wbGuard(t, workloadFamilyRules[family].purpose)
+		data["id"], data["account_id"] = "k", "acl-account"
+		create := wbCreate(t, entry, family, data)
+		if err := d.validateWorkloadDelta(entry, view, stagedDelta{Creates: []stagedCreate{create}}); err != nil {
+			t.Fatalf("%s positive create: %v", family, err)
+		}
+		create.Metadata["arbitrary"] = "not allowed"
+		if d.validateWorkloadDelta(entry, view, stagedDelta{Creates: []stagedCreate{create}}) == nil {
+			t.Fatal("extra metadata accepted", family)
+		}
+	}
+}
+
+func TestBoundWorkloadSourceRulesAndLocalFieldsSurviveUpdates(t *testing.T) {
+	cases := []struct {
+		family, field string
+		before, value interface{}
+		allow         bool
+	}{
+		{wlMessages, "text", "old", "new", false},
+		{wlConversations, "last_message", "old", "new", true},
+		{wlConversations, "title", "local", "source", false},
+		{wlConversations, "title", nil, "source", true},
+		{wlConversations, "is_archived", false, true, false},
+		{wlContacts, "phone", "local", "source", false},
+		{wlContacts, "phone", nil, "source", true},
+		{"business:associate", "full_name", "old", "new", true},
+		{"business:associate", "user_id", nil, "forbidden", false},
+		{"business:job", "title", "old", "new", true},
+		{"business:job", "status", "local", "source", false},
+	}
+	for _, item := range cases {
+		wbUpdateDecision(t, item.family, item.field, item.before, item.value, item.allow)
+	}
+}
+
+func wbUpdateDecision(t *testing.T, family, field string, old, value interface{}, allow bool) {
+	t.Helper()
+	d, entry, view := wbGuard(t, workloadFamilyRules[family].purpose)
+	before := map[string]interface{}{"id": "k", "account_id": "acl-account", field: old, "created_by": "LABELLED local provenance"}
+	if family == "business:associate" {
+		before["type"] = "client"
+	}
+	create := wbCreate(t, entry, family, before)
+	record := stagedRecord{ID: "existing", Kind: create.Kind, Metadata: create.Metadata}
+	view.Records[record.ID] = record
+	after := map[string]interface{}{}
+	for k, v := range before {
+		after[k] = v
+	}
+	after[field] = value
+	writes := []stagedWrite{{NodeID: record.ID, Key: "pngData", Value: after}}
+	if family == "business:associate" {
+		writes = append(writes, stagedWrite{NodeID: record.ID, Key: entry.owned.Layout.Fields["label"], Value: after["full_name"]})
+	}
+	err := d.validateWorkloadDelta(entry, view, stagedDelta{Writes: writes})
+	if (err == nil) != allow {
+		t.Fatalf("%s/%s complete update: %v, wanted %v", family, field, err, allow)
+	}
+}
+
+func TestBoundWorkloadQueriesAndMutationsNeverUnionFamilies(t *testing.T) {
+	purpose := wbPolicy().Purposes["messaging.sync"]
+	positive := workloadStoreQuery{Family: wlMessages, Fields: []string{"id", "text"}, OrderBy: []string{"-created_at"}}
+	if err := validateWorkloadQuery(positive, purpose); err != nil {
+		t.Fatal(err)
+	}
+	positive.Fields = []string{"id", "phone"}
+	if validateWorkloadQuery(positive, purpose) == nil {
+		t.Fatal("contacts field widened messages query")
+	}
+	body := map[string]interface{}{"mutations": []interface{}{map[string]interface{}{"family": wlMessages, "data": map[string]interface{}{"phone": "LABELLED"}}, map[string]interface{}{"family": wlContacts, "data": map[string]interface{}{"phone": "LABELLED"}}}}
+	if validateBoundWorkloadInput(DomainInput{Mode: "command", Body: wbJSON(t, body)}, purpose) == nil {
+		t.Fatal("one family's complete permission authorized another's partial request")
+	}
+}
+
+func TestBoundWorkloadAssociateCarrierAndObservationIdentityCannotMove(t *testing.T) {
+	for _, damage := range []string{"kind", "roles", "label", "account", "reference"} {
+		wbCarrierDenial(t, damage)
+	}
+	d, entry, view := wbGuard(t, "accounting.sync")
+	data := wlRow()
+	data["attributes"] = wbObservation()
+	create := wbCreate(t, entry, "resource:png_import", data)
+	view.Records["existing"] = stagedRecord{ID: "existing", Kind: create.Kind, Metadata: create.Metadata}
+	changed := wlRow()
+	attributes := wbObservation()
+	attributes["realmId"] = "another-realm"
+	changed["attributes"] = attributes
+	if err := d.validateWorkloadDelta(entry, view, stagedDelta{Writes: []stagedWrite{wlPatch(changed)}}); err == nil {
+		t.Fatal("observation source identity moved")
+	}
+}
+
+func wbCarrierDenial(t *testing.T, damage string) {
+	t.Helper()
+	d, entry, view := wbGuard(t, "accounting.sync")
+	data := wlRow()
+	data["type"], data["full_name"] = "client", "LABELLED"
+	create := wbCreate(t, entry, "business:associate", data)
+	fields := entry.owned.Layout.Fields
+	switch damage {
+	case "kind":
+		create.Kind = entry.owned.Layout.Kinds["png_record"]
+	case "roles":
+		create.Metadata[fields["roleIds"]] = []string{"ungranted-role"}
+	case "label":
+		create.Metadata[fields["label"]] = "not derived"
+	case "account":
+		create.Metadata[fields["accountId"]] = "another-account"
+	case "reference":
+		create.Metadata[aclKey] = domainACLReferenceValue(wlRoot, "png_record")
+	}
+	if d.validateWorkloadDelta(entry, view, stagedDelta{Creates: []stagedCreate{create}}) == nil {
+		t.Fatal("carrier safety failed", damage)
+	}
+}

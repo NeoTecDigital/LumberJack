@@ -157,15 +157,8 @@ func buildOwnedPending(scope *stagedScope, root *core.Node, occupied map[string]
 	if err != nil {
 		return nil, err
 	}
-	if len(delta.ProductIntent) != 0 && targets == nil {
-		targets = []stagedTarget{}
-	}
-	receipt := stagedReceipt{Version: 1, Command: command,
-		Fingerprint: stagedCommandFingerprint(scope.descriptor.Binding, command), AfterRevision: revision, Targets: targets, Followers: delta.Followers, ProductIntent: append([]byte(nil), delta.ProductIntent...), EnrollmentRecord: append([]byte(nil), delta.EnrollmentRecord...), MappingRecord: append([]byte(nil), delta.MappingRecord...)}
-	if err = validateEnrollmentReceipt(scope.descriptor.Binding, receipt, scope.descriptor.Bounds.MaxScopeBytes); err != nil {
-		return nil, err
-	}
-	if err = validateProductReceiptIntent(scope.descriptor.Binding, receipt, scope.descriptor.Bounds.MaxScopeBytes); err != nil {
+	receipt, err := newOwnedReceipt(scope, command, revision, targets, delta)
+	if err != nil {
 		return nil, err
 	}
 	key := stagedCommandKey(command)
@@ -173,7 +166,26 @@ func buildOwnedPending(scope *stagedScope, root *core.Node, occupied map[string]
 	if _, err := validateOwnedCandidate(candidate, scope.descriptor.Bounds); err != nil {
 		return nil, err
 	}
+	if len(receipt.WorkloadRecord) != 0 {
+		if err = authorizeStagedReplay(authorize, scope.descriptor.Binding, receipt); err != nil {
+			return nil, err
+		}
+	}
 	return &stagedPending{root: candidate, nodes: nodes, receipt: receipt, key: key}, nil
+}
+
+func newOwnedReceipt(scope *stagedScope, command stagedCommand, revision string, targets []stagedTarget, delta stagedDelta) (stagedReceipt, error) {
+	if len(delta.ProductIntent) != 0 && targets == nil {
+		targets = []stagedTarget{}
+	}
+	receipt := stagedReceipt{Version: 1, Command: command, Fingerprint: stagedCommandFingerprint(scope.descriptor.Binding, command), AfterRevision: revision, Targets: targets, Followers: delta.Followers, ProductIntent: append([]byte(nil), delta.ProductIntent...), WorkloadRecord: append([]byte(nil), delta.WorkloadRecord...), EnrollmentRecord: append([]byte(nil), delta.EnrollmentRecord...), MappingRecord: append([]byte(nil), delta.MappingRecord...)}
+	if err := validateEnrollmentReceipt(scope.descriptor.Binding, receipt, scope.descriptor.Bounds.MaxScopeBytes); err != nil {
+		return receipt, err
+	}
+	if err := validateProductReceiptIntent(scope.descriptor.Binding, receipt, scope.descriptor.Bounds.MaxScopeBytes); err != nil {
+		return receipt, err
+	}
+	return receipt, validateWorkloadReceipt(scope.descriptor.Binding, receipt, scope.descriptor.Bounds.MaxScopeBytes)
 }
 
 func validateOwnedCandidate(root *core.Node, bounds stagedBounds) (string, error) {

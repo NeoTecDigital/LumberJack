@@ -54,6 +54,9 @@ func stagedReceiptPair(binding stagedBinding, key string, data []byte) (stagedPa
 	if err := validateProductReceiptIntent(binding, receipt, len(data)); err != nil {
 		return stagedPair{}, err
 	}
+	if err := validateWorkloadReceipt(binding, receipt, len(data)); err != nil {
+		return stagedPair{}, err
+	}
 	if err := validateEnrollmentReceipt(binding, receipt, len(data)); err != nil {
 		return stagedPair{}, err
 	}
@@ -102,6 +105,11 @@ func authorizeStagedTarget(authorize stagedAuthorizer, binding stagedBinding, co
 }
 
 func authorizeStagedReplay(authorize stagedAuthorizer, binding stagedBinding, receipt stagedReceipt) error {
+	if len(receipt.WorkloadRecord) != 0 || domainWorkloadIdentity(receipt.Command.PrincipalID, "") {
+		if err := authorize(stagedAccess{Binding: binding, PrincipalID: receipt.Command.PrincipalID, Action: receipt.Command.Action, ReplayWorkload: true, WorkloadRecord: receipt.WorkloadRecord}); err != nil {
+			return err
+		}
+	}
 	for _, target := range receipt.Targets {
 		if err := authorizeStagedTarget(authorize, binding, receipt.Command, target); err != nil {
 			return err
@@ -130,11 +138,8 @@ func equalStagedPairs(left, right map[string]stagedPair) bool {
 // The closed legacy outer grammar is unchanged. Only canonical trusted /.2 intent
 // is nullable; configured scope/request limits are checked before admission/replay.
 func decodeStagedProductReceipt(data []byte, target *stagedReceipt, maximum int) error {
-	if len(data) == 0 || len(data) > maximum {
-		return fmt.Errorf("bounded typed receipt required")
-	}
-	var shape map[string]json.RawMessage
-	if err := DecodeDomainJSON(data, &shape); err != nil {
+	shape, data, err := decodeWorkloadReceiptShape(data, target, maximum)
+	if err != nil {
 		return err
 	}
 	product, productPresent := shape["productIntent"]

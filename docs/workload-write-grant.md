@@ -1,6 +1,10 @@
 <!-- Written by Richard Christopher, Copyright 2026 NeoTec, LLC -->
 # Workload write grant: the host's contract
 
+The connection-bound R5 contract is specified in section 9. Sections 1–8 and their
+examples are the explicit **legacy messaging-only** branch, not an accounting
+grant or an automatic upgrade path. Source authoring is not deployment or acceptance.
+
 A workload is a scheduled process that reads and writes an account's records with no person signed
 in. It is its own kind of actor. It cannot be a person, a person cannot be it, and it holds store
 read and store write over three families and nothing else.
@@ -205,3 +209,139 @@ The principal form is reserved, so a receipt naming a workload cannot mean a per
   `owned receipt map contains unsupported state`. Rollback past the first one is restoring a backup.
 - Every workload write is one command against one revision. A concurrent person's write makes it a
   conflict, and the next poll tries again.
+
+## 9. Connection-bound policy, grant and run (R5)
+
+The protected policy revision is `manifest-native-workload-policy/0.2`. Its exact
+keys are `contractRevision`, `installationId`, `issuer`, `maxLifetimeSeconds`,
+`legacyMessaging`, and `purposes`. `legacyMessaging` is null or the old explicit
+messaging family map. It never includes accounting. The proof lifetime cap is
+positive, at most 30 seconds and at most the host trust cap; it is not G's lifetime.
+
+`purposes` has only `messaging.sync` (provider `alive5`) and `accounting.sync`
+(provider `quickbooks`). Each value is exactly `{provider,policyDigest,families}`.
+Each family is exactly `{kind,readFields,createFields,updateFields,rule}`. All
+lists are explicit, sorted, unique and finite. R is bounded by the corresponding
+checked-in schema plus `id`/`account_id`, intersected with actual owner profiles
+and grants. No missing owner mask or AssociateCarrier is manufactured.
+
+| Purpose | Family | Kind | Rule |
+|---|---|---|---|
+| messaging.sync | resource:png.messages | png_record | alive5.messages/1 |
+| messaging.sync | resource:png.conversations | png_record | alive5.conversations/1 |
+| messaging.sync | resource:png_source.messaging.contacts | png_record | alive5.contacts/1 |
+| accounting.sync | resource:png_import | png_record | quickbooks.observation/1 |
+| accounting.sync | business:associate | associate | quickbooks.client/1 |
+| accounting.sync | business:job | png_record | quickbooks.project/1 |
+
+The policy digest is SHA256 of `CanonicalDomainJSON` over
+`{contractRevision,installationId,purpose,provider,families}`. Custody hashes use
+their own encoding and cannot substitute for native request/intent/receipt hashes.
+
+### Closed G, W and enrollment
+
+G has exactly `{contractRevision,installationId,accountId,connectionId,provider,
+purpose,grantRevision,policyDigest,expiresAt}`, revision
+`manifest-workload-grant/0.2`. `expiresAt` is a strict JSON INTEGER token in
+1..9007199254740991 Unix seconds; strings, booleans, fractions and exponent tokens
+are refused. A different expiry requires a different grant revision and human
+enrollment. G never grants permission to use credentials.
+
+The principal is `workload:` plus lowercase SHA256 of canonical
+`{installationId,accountId,connectionId,provider,purpose}`. W is exactly
+`{contractRevision,grant,runId,fenceGeneration}`, revision
+`manifest-workload-run/0.1`. The session is
+`workload-session:<derived-id>:<runId>`; the existing run syntax is unchanged.
+`fenceGeneration` is an ASCII decimal STRING matching `[1-9][0-9]{0,19}` and at
+most `18446744073709551615`. Zero is unissued, not a valid W. No extra expiry is
+added to W. The backend owns the durable installation/account/connection
+high-water shared by manual and scheduled work; G replacement, revoke and restart
+must not reset it. A valid already-issued MAX fence may finish, not wrap or mint
+a successor. Native proof callbacks must attest that exact current run.
+
+The existing workload grant/revoke operations use request
+`manifest-account-enrollment/0.5`, input/proof `manifest-native-enrollment/0.5`,
+and retained provenance `manifest-native-enrollment-record/0.5`. Requests retain
+the seven original fields and require `workloadGrant:G` and `administration`
+(null for a current human owner/co-owner; the exact existing object for an admin).
+No /.4 co-owner fields are allowed. Verified answers require the explicit boolean
+`administratorAuthorized`, mutually exclusive with owner authorization. The target
+reference proves current registered target revision, not an echo of requested G.
+Revoke can carry revoked/null target authority but still removes only exact
+installed G, including expired G under fresh human authority.
+
+Native ACL/2 store grants carry typed `workloadGrant:G` and
+`targetGrantRevision==G.grantRevision`. Installation changes only the reserved
+target; founder profile, identities, independent principals and co-owner
+contributions remain untouched. Delegation requires ONE complete currently held
+root/template grant for all fields and creation kinds, not combined partial
+contributions. Legacy controls cannot alter bound grants. Historical grant/revoke
+replay and handoff check current exact pins; an old revoke cannot become current
+after a successor G is installed.
+
+### Callback, retained request and actual ACK
+
+`DomainInput.workload:W` is optional and absent on legacy human/channel/workload
+calls. Native adds its private copy to the product-resolved intent; callers cannot
+replace product intent. Only W-bearing requests use
+`manifest-workload-handoff/0.1`. The six check keys/transport stay unchanged.
+Verified answers require `workload:W` equal to `intent.workload`; even explicit
+null owner/principal-reference/integration/namespace claims are refused.
+
+Every admission and fresh handoff checks current protected policy, exact installed
+G, scope, derived identity and current callback W. Callback expiry is finite and
+bounded by the proof cap, G, approval and run deadline; handoff cannot extend the
+original lease. The native engine retains shortened deadlines. Proof is never a
+receipt or terminal ACK.
+
+Native retains `workloadRecord` with exactly
+`{contractRevision,principalId,sessionId,workload,requestFingerprint,intentFingerprint}`,
+revision `manifest-native-workload-record/0.1`. The product hash E is unchanged;
+the intent hash includes W. This typed record is covered by the actual paired
+receipt hash/snapshot, accompanies only a native store command and its existing
+product result, and never mixes with enrollment/mapping provenance. Old receipts
+remain byte-compatible without the member.
+
+Locked prepare/replay and handoff compare the complete retained record, even for
+zero-target commands. Missing historical W cannot be adopted. Changed run/fence/G
+conflicts, and a bound command ID already retained for another workload principal
+in the same owned scope cannot be reused across connection/purpose tuples. Legacy
+human command-key namespaces are unchanged. Reads bind W through the intent hash
+without creating a command receipt. Unknown outcomes remain fenced; backend
+checkpoint advancement requires actual finish/ACK and the same durable claim.
+
+### Source-owned effects, not field unions
+
+Queries require explicit fields and per-family filter/order ceilings. Each mutation
+is checked independently against that family's R; actual changed/removed fields
+must satisfy that family's W. Record key/family/id/account cannot move. Unchanged
+local fields survive. Result metadata is null/empty or the existing command digest,
+not derivation or approval effects. References, history, graph controls and arbitrary
+metadata are not workload capabilities.
+
+Messages are create-only. Conversations start unarchived and can update only
+last_message/updated_at or a missing title. Contacts fill missing source fields.
+QuickBooks observations retain bounded inert original source, exact connection,
+realm/environment/entity/external identity and source hash; identity cannot move.
+Clients remain type client; jobs cannot change lifecycle/approval fields.
+The exact engine W ceiling lists live in `activation_domain_workload_policy.go`.
+
+A png_record create still has exactly its original five metadata keys. An Associate
+has exactly those plus the actual carrier's accountId, deterministic label and
+empty initial roleIds. Existing native roles never change. Both require an exact
+same-root/same-kind ACL reference; a generic png_record cannot impersonate an
+AssociateCarrier.
+
+### Source-phase evidence and remaining gates
+
+Authored native tests include strict token/canonical vectors, complete policy and
+delegation decisions, real /.5 enrollment/regrant/revoke/reopen, retained W/hash and
+zero-target replay, six family delta rules, and actual embedded pngstore paired
+create/read/update/reopen/revoke/fresh-handoff tests. The embedded fixture uses an
+explicit synthetic authority/profile and the real product adapter, not a fixture
+writer. Legacy examples and regressions remain.
+
+No tests/builds/typechecks have been run during this source phase. Consolidated R5
+QA must run these tests plus affected legacy/.4/staged/actual FFI regressions,
+security/quality review, and the backend two-process fencing/ambiguous-outcome/
+checkpoint integration. No native artifact, pin or deployment is promoted here.

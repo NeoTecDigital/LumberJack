@@ -14,6 +14,13 @@ func (d *domainEngine) validateWorkloadDelta(entry *domainEntry, view stagedView
 	if policy == nil || len(delta.EnrollmentRecord)+len(delta.MappingRecord) != 0 || len(delta.Followers) != 0 {
 		return fmt.Errorf("workload change outside the native store")
 	}
+	if entry.actor.Workload != nil {
+		return d.validateBoundWorkloadDelta(entry, view, delta)
+	}
+	policy = legacyWorkloadPolicy(policy)
+	if policy == nil {
+		return fmt.Errorf("explicit legacy workload policy required")
+	}
 	guard := domainWorkloadGuard{policy: policy, owned: entry.owned, key: d.config.ACLMetadataKey, records: view.Records}
 	for _, create := range delta.Creates {
 		if err := guard.create(create); err != nil {

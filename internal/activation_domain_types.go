@@ -32,18 +32,19 @@ type DomainFieldSet struct {
 	Fields   []string       `json:"fields"`
 }
 type DomainIntent struct {
-	ContractRevision   string           `json:"contractRevision"`
-	Scope              DomainScope      `json:"scope"`
-	Binding            DomainBinding    `json:"binding"`
-	Mode               string           `json:"mode"`
-	Operation          *string          `json:"operation"`
-	Method             string           `json:"method"`
-	Target             string           `json:"target"`
-	RequestFingerprint string           `json:"requestFingerprint"`
-	Resources          []DomainResource `json:"resources"`
-	Fields             []DomainFieldSet `json:"fields"`
-	PrincipalID        *string          `json:"principalId,omitempty"`
-	TargetPrincipalID  *string          `json:"targetPrincipalId,omitempty"`
+	Workload           *DomainWorkloadRun `json:"workload,omitempty"`
+	ContractRevision   string             `json:"contractRevision"`
+	Scope              DomainScope        `json:"scope"`
+	Binding            DomainBinding      `json:"binding"`
+	Mode               string             `json:"mode"`
+	Operation          *string            `json:"operation"`
+	Method             string             `json:"method"`
+	Target             string             `json:"target"`
+	RequestFingerprint string             `json:"requestFingerprint"`
+	Resources          []DomainResource   `json:"resources"`
+	Fields             []DomainFieldSet   `json:"fields"`
+	PrincipalID        *string            `json:"principalId,omitempty"`
+	TargetPrincipalID  *string            `json:"targetPrincipalId,omitempty"`
 }
 type DomainLease struct {
 	Epoch             string        `json:"epoch"`
@@ -55,6 +56,7 @@ type DomainLease struct {
 	IntentFingerprint string        `json:"intentFingerprint"`
 }
 type DomainVerified struct {
+	Workload                  *DomainWorkloadRun         `json:"workload,omitempty"`
 	IntegrationActor          *DomainIntegrationActor    `json:"integrationActor,omitempty"`
 	ContractRevision          string                     `json:"contractRevision"`
 	PrincipalID               string                     `json:"principalId"`
@@ -149,6 +151,7 @@ type DomainConfig struct {
 	Scopes              []DomainOwnedScope         `json:"scopes"`
 }
 type DomainInput struct {
+	Workload            *DomainWorkloadRun         `json:"workload,omitempty"`
 	Mode                string                     `json:"mode"`
 	Method              string                     `json:"method"`
 	Target              string                     `json:"target"`
@@ -255,23 +258,24 @@ type DomainPermit struct {
 	ResponseHash string `json:"responseHash"`
 }
 type domainEntry struct {
-	enrollment   *enrollmentEntry
-	executing    bool
-	receiptKey   string
-	lease        DomainLease
-	intent       DomainIntent
-	input        DomainInput
-	actor        DomainVerified
-	owned        DomainOwnedScope
-	product      DomainProduct
-	body         []byte
-	responseHash string
-	pair         *DomainPairConfirmation
-	adopted      bool
-	permitID     string
-	disposition  string
-	finished     bool
-	pendingKey   string
+	workloadDeadline float64 // d.mu; only narrows immutable admission authority.
+	enrollment       *enrollmentEntry
+	executing        bool
+	receiptKey       string
+	lease            DomainLease
+	intent           DomainIntent
+	input            DomainInput
+	actor            DomainVerified
+	owned            DomainOwnedScope
+	product          DomainProduct
+	body             []byte
+	responseHash     string
+	pair             *DomainPairConfirmation
+	adopted          bool
+	permitID         string
+	disposition      string
+	finished         bool
+	pendingKey       string
 }
 type domainEngine struct {
 	source         *sourceCoordinator

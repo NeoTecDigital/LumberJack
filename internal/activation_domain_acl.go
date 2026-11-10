@@ -10,10 +10,11 @@ type domainACL struct {
 	Coowners         map[string]domainCoownerContribution `json:"coowners,omitempty"`
 }
 type domainGrant struct {
-	TargetGrantRevision string   `json:"targetGrantRevision,omitempty"`
-	Fields              []string `json:"fields"`
-	CreateKinds         []string `json:"createKinds,omitempty"`
-	Reference           bool     `json:"reference,omitempty"`
+	WorkloadGrant       *DomainWorkloadGrant `json:"workloadGrant,omitempty"`
+	TargetGrantRevision string               `json:"targetGrantRevision,omitempty"`
+	Fields              []string             `json:"fields"`
+	CreateKinds         []string             `json:"createKinds,omitempty"`
+	Reference           bool                 `json:"reference,omitempty"`
 }
 type domainOwnerPolicy struct {
 	key           string
@@ -41,6 +42,9 @@ func (p *domainOwnerPolicy) acl(record DomainRecord) (domainACL, error) {
 		return domainACL{}, fmt.Errorf("invalid current native ACL")
 	}
 	if err := validateCoownerACL(acl); err != nil {
+		return domainACL{}, err
+	}
+	if err := validateWorkloadACL(acl); err != nil {
 		return domainACL{}, err
 	}
 	return acl, nil
@@ -72,6 +76,9 @@ func (p *domainOwnerPolicy) AuthorizeLocked(actor DomainVerified, access DomainA
 // A single grant must cover every field, creation kind and reference requirement.
 // If neither contribution suffices, preserve the original principal grant's denial.
 func authorizeDomainGrant(actor DomainVerified, grant domainGrant, present bool, access DomainAccess) error {
+	if !workloadGrantMatches(actor, grant) {
+		return fmt.Errorf("current native workload grant denied")
+	}
 	if !present || len(access.Fields) == 0 || grant.TargetGrantRevision != "" && grant.TargetGrantRevision != actor.GrantRevision {
 		return fmt.Errorf("current native action/fields denied")
 	}
@@ -94,7 +101,7 @@ func (p *domainOwnerPolicy) CreateACLLocked(actor DomainVerified, operation, kin
 		return nil, err
 	}
 	grant, present := acl.Principals[actor.PrincipalID][operation]
-	if !present || grant.TargetGrantRevision != "" && grant.TargetGrantRevision != actor.GrantRevision || !domainContains(grant.CreateKinds, kind) {
+	if !present || !workloadGrantMatches(actor, grant) || grant.TargetGrantRevision != "" && grant.TargetGrantRevision != actor.GrantRevision || !domainContains(grant.CreateKinds, kind) {
 		contribution := acl.Coowners[actor.PrincipalID]
 		grant = contribution.Grants[operation]
 		if coownerEligible(actor, contribution) && grant.TargetGrantRevision == contribution.GrantRevision && domainContains(grant.CreateKinds, kind) {

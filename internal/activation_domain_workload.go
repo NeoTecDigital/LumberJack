@@ -31,14 +31,22 @@ var domainWorkloadDataField = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$
 // DomainWorkloadPolicy is protected host configuration, never request data. Without it no workload
 // is admitted and no workload control runs.
 type DomainWorkloadPolicy struct {
-	Issuer   string              `json:"issuer"`
-	Families map[string][]string `json:"families"`
+	ContractRevision   string                           `json:"contractRevision,omitempty"`
+	InstallationID     string                           `json:"installationId,omitempty"`
+	MaxLifetimeSeconds int64                            `json:"maxLifetimeSeconds,omitempty"`
+	LegacyMessaging    map[string][]string              `json:"legacyMessaging,omitempty"`
+	Purposes           map[string]DomainWorkloadPurpose `json:"purposes,omitempty"`
+	Issuer             string                           `json:"issuer"`
+	Families           map[string][]string              `json:"families"`
 }
 
 func validateDomainWorkloadPolicy(config DomainConfig) error {
 	policy := config.WorkloadPolicy
 	if policy == nil {
 		return nil
+	}
+	if policy.ContractRevision != "" {
+		return validateBoundWorkloadPolicy(config)
 	}
 	if config.ProvisioningProfile == nil || !strings.HasPrefix(policy.Issuer, domainWorkloadIssuerPrefix) || policy.Issuer == domainWorkloadIssuerPrefix || strings.ContainsAny(policy.Issuer, "\r\n") {
 		return fmt.Errorf("explicit workload issuer on an enrollment profile required")
@@ -74,15 +82,21 @@ func validateDomainWorkloadFields(fields []string, maximum int) error {
 // What a workload holds can never exceed what the owner's own profile declares.
 func validateDomainWorkloadCeilings(policy *DomainWorkloadPolicy, layout DomainLayout) error {
 	for _, operation := range []string{domainStoreReadOperation, nativeStoreCommand} {
-		for _, kind := range []string{"root", domainWorkloadCreateKind} {
-			ceiling := layout.Profiles[operation][kind]
-			fields, err := domainWorkloadGrantFields(policy, layout, operation, kind)
-			if err != nil {
-				return err
-			}
-			if !enrollmentGrantSubset(fields, ceiling) {
-				return fmt.Errorf("workload fields exceed the owner profile for %s on %s", operation, kind)
-			}
+		if err := validateLegacyWorkloadCeiling(policy, layout, operation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateLegacyWorkloadCeiling(policy *DomainWorkloadPolicy, layout DomainLayout, operation string) error {
+	for _, kind := range []string{"root", domainWorkloadCreateKind} {
+		fields, err := domainWorkloadGrantFields(policy, layout, operation, kind)
+		if err != nil {
+			return err
+		}
+		if !enrollmentGrantSubset(fields, layout.Profiles[operation][kind]) {
+			return fmt.Errorf("workload fields exceed the owner profile for %s on %s", operation, kind)
 		}
 	}
 	return nil
@@ -136,6 +150,12 @@ func (d *domainEngine) validWorkloadActor(actor DomainVerified) bool {
 	if policy == nil || actor.Issuer != policy.Issuer || actor.IntegrationActor != nil || actor.OwnerAuthorized || actor.PrincipalReference != nil || actor.ResolutionNamespace != nil {
 		return false
 	}
+	if actor.Workload != nil || actor.Intent.Workload != nil {
+		return d.validBoundWorkloadActor(actor)
+	}
+	if legacyWorkloadPolicy(policy) == nil {
+		return false
+	}
 	id, valid := domainWorkloadID(actor.PrincipalID)
 	return valid && domainWorkloadSessionValid(id, actor.SessionID) && domainWorkloadIntent(actor.Intent)
 }
@@ -153,6 +173,10 @@ func domainWorkloadIntent(intent DomainIntent) bool {
 // Held regardless of what any access list says: a list naming a workload cannot widen this, and a
 // list granted before the policy was narrowed stops at the policy now.
 func authorizeDomainWorkloadAccess(policy *DomainWorkloadPolicy, actor DomainVerified, access DomainAccess) error {
+	if actor.Workload != nil {
+		return authorizeBoundWorkloadAccess(policy, actor, access)
+	}
+	policy = legacyWorkloadPolicy(policy)
 	if id, valid := domainWorkloadID(actor.PrincipalID); policy == nil || !valid || !domainWorkloadSessionValid(id, actor.SessionID) {
 		return fmt.Errorf("current workload identity invalid")
 	}
@@ -176,12 +200,16 @@ func domainWorkloadFieldAllowed(policy *DomainWorkloadPolicy, field string) bool
 		return granted && domainWorkloadFamilies[family]
 	}
 	if name, found := strings.CutPrefix(field, "data."); found {
-		for _, fields := range policy.Families {
-			if domainContains(fields, name) {
-				return true
-			}
-		}
-		return false
+		return legacyWorkloadDataFieldAllowed(policy, name)
 	}
 	return field == "children" || domainContains(domainWorkloadBaseFields, field)
+}
+
+func legacyWorkloadDataFieldAllowed(policy *DomainWorkloadPolicy, name string) bool {
+	for _, fields := range policy.Families {
+		if domainContains(fields, name) {
+			return true
+		}
+	}
+	return false
 }

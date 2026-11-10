@@ -73,7 +73,13 @@ func (s *Server) domainHandoffReceiptLocked(entry *domainEntry) (stagedReceipt, 
 }
 
 func (s *Server) domainEvaluationCurrentLocked(d *domainEngine, entry *domainEntry, access stagedAccess) error {
-	if entry.actor.ExpiresAt <= domainNow() || access.Binding != entry.owned.Binding {
+	if err := s.authorizeWorkloadCommandKeyLocked(entry, access); err != nil {
+		return err
+	}
+	if err := authorizeWorkloadReplay(entry, access); err != nil {
+		return err
+	}
+	if !d.workloadLeaseLive(entry) || access.Binding != entry.owned.Binding {
 		return fmt.Errorf("current domain authority expired/rebound")
 	}
 	owned, present := d.scopes[entry.intent.Scope]

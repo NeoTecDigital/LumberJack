@@ -62,12 +62,14 @@ type stagedCommand struct {
 }
 
 type stagedAccess struct {
-	Binding     stagedBinding
-	PrincipalID string
-	Action      string
-	NodeID      string
-	Kind        string
-	Fields      []string
+	ReplayWorkload bool
+	WorkloadRecord json.RawMessage
+	Binding        stagedBinding
+	PrincipalID    string
+	Action         string
+	NodeID         string
+	Kind           string
+	Fields         []string
 }
 
 // These callbacks are trusted engine-local hooks, never remote calls or public DTOs.
@@ -103,6 +105,7 @@ type stagedCreate struct {
 }
 
 type stagedDelta struct {
+	WorkloadRecord   json.RawMessage
 	ProductIntent    json.RawMessage
 	EnrollmentRecord json.RawMessage
 	MappingRecord    json.RawMessage
@@ -118,11 +121,12 @@ type stagedTarget struct {
 }
 
 type stagedReceipt struct {
-	Version       int            `json:"version"`
-	Command       stagedCommand  `json:"command"`
-	Fingerprint   string         `json:"fingerprint"`
-	AfterRevision string         `json:"afterRevision"`
-	Targets       []stagedTarget `json:"targets"`
+	WorkloadRecord json.RawMessage `json:"workloadRecord,omitempty"`
+	Version        int             `json:"version"`
+	Command        stagedCommand   `json:"command"`
+	Fingerprint    string          `json:"fingerprint"`
+	AfterRevision  string          `json:"afterRevision"`
+	Targets        []stagedTarget  `json:"targets"`
 	// Followers says, per kind, how many records an enrollment change reached through their kind's
 	// template at that moment. They took no write, so Targets cannot name them.
 	Followers        map[string]int  `json:"followers,omitempty"`

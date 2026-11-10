@@ -69,6 +69,9 @@ func validateEnrollmentRecord(record enrollmentRecordValue, maximum int) error {
 
 func validateEnrollmentHistoricalTarget(record enrollmentRecordValue, maximum int) error {
 	ref := record.PrincipalReference
+	if !workloadEnrollmentReference(record.Request, ref) {
+		return fmt.Errorf("workload provenance target revision mismatch")
+	}
 	if enrollmentIdentifiers(maximum, ref.PrincipalID, ref.EvidenceRevision, ref.AuthorityPolicyRevision) != nil || !domainFinite(ref.CheckedAt) || !domainFinite(ref.ValidUntil) || ref.CheckedAt <= 0 || ref.ValidUntil <= ref.CheckedAt {
 		return fmt.Errorf("invalid historical target provenance")
 	}
@@ -107,7 +110,7 @@ func validateEnrollmentReceipt(binding stagedBinding, receipt stagedReceipt, max
 		}
 		return nil
 	}
-	if !enrollment || len(receipt.ProductIntent)+len(receipt.MappingRecord) != 0 {
+	if !enrollment || len(receipt.ProductIntent)+len(receipt.MappingRecord)+len(receipt.WorkloadRecord) != 0 {
 		return fmt.Errorf("mixed/unrelated enrollment receipt grammar denied")
 	}
 	record, err := decodeEnrollmentRecord(receipt.EnrollmentRecord, maximum)

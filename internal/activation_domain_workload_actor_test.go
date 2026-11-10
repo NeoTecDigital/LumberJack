@@ -179,3 +179,77 @@ func TestWorkloadPolicyLeavesEveryOtherActorAsItWas(t *testing.T) {
 		t.Fatal("with no policy a workload stays refused as it always was")
 	}
 }
+
+func wbValidActor() DomainVerified {
+	entry := wbRecordEntry()
+	actor := entry.actor
+	actor.Intent, actor.Scope = entry.intent, entry.intent.Scope
+	actor.ContractRevision, actor.Issuer = domainWorkloadHandoffRevision, wlIssuer
+	actor.GrantRevision, actor.ExpiresAt = actor.Workload.Grant.GrantRevision, domainNow()+20
+	return actor
+}
+
+func TestBoundWorkloadActorRequiresCurrentWholeTuple(t *testing.T) {
+	d := &domainEngine{config: DomainConfig{WorkloadPolicy: wbPolicy()}}
+	if !d.validWorkloadActor(wbValidActor()) {
+		t.Fatal("positive bound actor refused")
+	}
+	cases := []func(*DomainVerified){
+		func(a *DomainVerified) { a.Workload = nil },
+		func(a *DomainVerified) { a.Intent.Workload = nil },
+		func(a *DomainVerified) { a.Workload.Grant.ConnectionID = "another-connection" },
+		func(a *DomainVerified) { a.Workload.Grant.GrantRevision = "G2" },
+		func(a *DomainVerified) { a.Workload.Grant.PolicyDigest = strings.Repeat("0", 64) },
+		func(a *DomainVerified) { a.Workload.Grant.ExpiresAt = 1 },
+		func(a *DomainVerified) { a.Scope.AccountID = "another-account" },
+		func(a *DomainVerified) { a.ExpiresAt = domainNow() + 60 },
+		func(a *DomainVerified) { a.ContractRevision = DomainRevision },
+		func(a *DomainVerified) { a.OwnerAuthorized = true },
+		func(a *DomainVerified) { a.Intent.ContractRevision = "manifest-associates/0.2" },
+	}
+	for i, change := range cases {
+		actor := wbValidActor()
+		change(&actor)
+		if d.validWorkloadActor(actor) {
+			t.Fatalf("mutated whole tuple %d accepted", i)
+		}
+	}
+}
+
+func TestBoundWorkloadRefreshedDeadlineIsRetainedAndNeverExtended(t *testing.T) {
+	actor := wbValidActor()
+	entry := &domainEntry{actor: actor}
+	d := &domainEngine{}
+	refreshed := actor
+	refreshed.ExpiresAt = actor.ExpiresAt - 10
+	if d.refreshWorkloadDeadline(entry, &refreshed) != nil || workloadLeaseDeadlineLocked(entry) != refreshed.ExpiresAt {
+		t.Fatal("shortened deadline not retained")
+	}
+	extended := actor
+	if d.refreshWorkloadDeadline(entry, &extended) != nil || extended.ExpiresAt != refreshed.ExpiresAt || workloadLeaseDeadlineLocked(entry) != refreshed.ExpiresAt {
+		t.Fatal("original lease extended")
+	}
+	entry.actor.ExpiresAt = domainNow() - 1
+	if d.refreshWorkloadDeadline(entry, &actor) == nil {
+		t.Fatal("expired lease revived")
+	}
+}
+
+func TestBoundWorkloadProofGrammarRejectsEvenNullHumanClaims(t *testing.T) {
+	actor := wbValidActor()
+	raw := wbJSON(t, actor)
+	var decoded DomainVerified
+	if decodeWorkloadAnswer(raw, actor.Intent, &decoded) != nil {
+		t.Fatal("positive workload answer denied")
+	}
+	for _, field := range []string{"ownerAuthorized", "principalReference", "integrationActor", "resolutionNamespace"} {
+		var shape map[string]interface{}
+		if DecodeDomainJSON(raw, &shape) != nil {
+			t.Fatal("fixture JSON")
+		}
+		shape[field] = nil
+		if decodeWorkloadAnswer(wbJSON(t, shape), actor.Intent, &decoded) == nil {
+			t.Fatal("forbidden workload claim", field)
+		}
+	}
+}

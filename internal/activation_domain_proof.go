@@ -18,7 +18,7 @@ func (d *domainEngine) verify(ctx context.Context, proof, phase string, intent D
 	if len(proof) == 0 || len(proof) > d.config.Trust.MaxProofBytes || !domainOpaqueProof.MatchString(proof) {
 		return DomainVerified{}, fmt.Errorf("domain proof denied")
 	}
-	check := DomainCheck{DomainRevision, proof, phase, d.config.Trust.Audience, intent, lease}
+	check := DomainCheck{workloadHandoffRevision(intent), proof, phase, d.config.Trust.Audience, intent, lease}
 	body, err := CanonicalDomainJSON(check)
 	if err != nil {
 		return DomainVerified{}, err
@@ -42,7 +42,7 @@ func (d *domainEngine) verify(ctx context.Context, proof, phase string, intent D
 		return DomainVerified{}, fmt.Errorf("domain authority denied/unavailable")
 	}
 	var actor DomainVerified
-	if DecodeDomainJSON(answer, &actor) != nil || !d.validActor(actor, check) {
+	if decodeWorkloadAnswer(answer, intent, &actor) != nil || !d.validActor(actor, check) || ctx.Err() != nil {
 		return DomainVerified{}, fmt.Errorf("invalid domain authority")
 	}
 	return actor, nil
@@ -56,7 +56,7 @@ func (d *domainEngine) validActor(actor DomainVerified, check DomainCheck) bool 
 	if validateStagedIdentifiers(owned.Bounds, actor.PrincipalID, actor.SessionID, actor.GrantRevision, actor.AuthorityResourceRevision) != nil {
 		return false
 	}
-	if actor.ContractRevision != DomainRevision || !d.validDomainActorKind(actor) || actor.PrincipalID == "" || actor.SessionID == "" || actor.GrantRevision == "" || actor.AuthorityResourceRevision == "" {
+	if actor.ContractRevision != workloadHandoffRevision(check.Intent) || !d.validDomainActorKind(actor) || actor.PrincipalID == "" || actor.SessionID == "" || actor.GrantRevision == "" || actor.AuthorityResourceRevision == "" {
 		return false
 	}
 	if actor.Audience != check.Audience || actor.Phase != check.Phase || actor.ProofBinding != stagedHash([]byte(check.Proof)) {
