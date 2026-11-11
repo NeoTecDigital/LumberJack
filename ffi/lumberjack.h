@@ -98,6 +98,17 @@ typedef const char *lj_cstr;
  * request — a mutation's path is capped at LJ_MAX_PATH — and comfortably above LJ_MUTATION_OUT_MIN. */
 #define LJ_MAX_IN_LEN        (256 * 1024 * 1024)
 
+/* Additive ABI-2 bounded complete-event publication, without changing old limits.
+ * One path, 1..16 fresh single-entry events: {event_id, metadata, content,
+ * entry_metadata}. Validate the whole request and current permission before effects;
+ * duplicates (including planned IDs) are refused without mutation. One durable
+ * commit precedes {published: count} and at most 16 completed-event notifications.
+ * Persistence failure is uncertain, not rollback. The mutation output floor applies. */
+#define LJ_PUBLISH_MAX_EVENTS 16
+#define LJ_PUBLISH_MAX_BYTES (4 * 1024 * 1024)
+lj_status_t ic_lj_events_publish(lj_handle_t h, lj_cstr req, int64_t req_len,
+                                char *out, int64_t out_cap, int64_t *out_len);
+
 /* YAML ON THE WIRE, JSON ON THE ROUTES. The document names are the HTTP surface's json names exactly,
  * because the codec re-encodes through JSON rather than tagging sixteen structs twice. Typed fields
  * are carried faithfully in BOTH directions — including large integers: epoch, oldest and sequence

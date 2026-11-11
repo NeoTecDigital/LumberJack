@@ -22,7 +22,7 @@ CLIBS   := -lpthread -ldl -lresolv
 
 .PHONY: all test ffi activity-shared header-check nm-check smoke smoke-lock smoke-panic canon-check clean
 
-all: test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check
+all: test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check
 
 test:
 	@$(GO) test ./... -count=1
@@ -84,3 +84,8 @@ canon-check:
 
 clean:
 	@rm -rf $(BUILD)
+
+.PHONY: smoke-publication
+smoke-publication: ffi
+	@$(CC) $(CFLAGS) -I ffi -I $(BUILD) -o $(BUILD)/smoke_publication ffi/ctest/smoke_publication.c $(ARCHIVE) $(CLIBS)
+	@$(BUILD)/smoke_publication
