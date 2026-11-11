@@ -37,6 +37,7 @@ typedef lj_status_t (*lj_data_op)(lj_handle_t, lj_cstr, int64_t, char *, int64_t
 static const lj_data_op check_node_create   = ic_lj_node_create;
 static const lj_data_op check_event_plan    = ic_lj_event_plan;
 static const lj_data_op check_event_start   = ic_lj_event_start;
+static const lj_data_op check_events_publish = ic_lj_events_publish;
 static const lj_data_op check_event_append  = ic_lj_event_append;
 static const lj_data_op check_event_end     = ic_lj_event_end;
 static const lj_data_op check_event_entries = ic_lj_event_entries;
@@ -79,6 +80,7 @@ const void *const lj_header_agreement[] = {
     (const void *)&check_node_create,
     (const void *)&check_event_plan,
     (const void *)&check_event_start,
+    (const void *)&check_events_publish,
     (const void *)&check_event_append,
     (const void *)&check_event_end,
     (const void *)&check_event_entries,
