@@ -1,0 +1,10 @@
+.git
+build/
+data/
+logs/
+*.dat
+*.dat.tmp
+*.lock
+.env
+lumberjack
+lumberjack-bin

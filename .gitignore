@@ -9,3 +9,6 @@ logs/
 # Sidecar lock files guarding a state path (embedded/ffi runtimes). Matched by neither *.dat
 # nor *.dat.tmp.
 *.lock
+
+# Local environment for `lumberjack serve` / Docker; .env.example is the committed template.
+.env
