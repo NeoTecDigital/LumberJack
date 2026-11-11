@@ -104,7 +104,7 @@ func (p *personalSource) prepareCanonicalPairLocked(e *canonicalSourceEntry, act
 		return err
 	}
 	bindingRaw, _ := CanonicalDomainJSON(scope.descriptor.Binding)
-	record.History[historyKey] = core.PersonalMappingHistory{action, e.key.CommandID, digest, expected, result, pending.key, bindingRaw}
+	record.History[historyKey] = core.PersonalMappingHistory{Operation: action, CommandID: e.key.CommandID, StableSHA256: digest, Expected: expected, Result: result, ReceiptKey: pending.key, Binding: bindingRaw}
 	ledger.Mappings[e.mapping.MappingID] = record
 	ledger.Revision = sourceCommandKey(ledger)
 	e.scope, e.pending, e.ledger, e.result = scope, pending, ledger, result

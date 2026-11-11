@@ -91,7 +91,15 @@ func accessTargets(g accessGraph, grant core.AccessGrant) []string {
 	sort.Strings(ids)
 	return ids
 }
+
+// refreshAccessGrantsLocked recomputes every node's grants from the policies.
+//
+// With no policies and no grants left to clear there is nothing to recompute, and the walk of the
+// forest it would take is skipped: that is every write on a store that has never used /access.
 func (s *Server) refreshAccessGrantsLocked() {
+	if len(s.forest.AccessPolicies) == 0 && !s.grantsHeld {
+		return
+	}
 	g := s.accessGraphLocked()
 	for _, node := range g.nodes {
 		node.AccessGrants = nil
@@ -111,6 +119,11 @@ func (s *Server) refreshAccessGrantsLocked() {
 			node.AccessGrants[id] = grant
 		}
 	}
+	held := false
+	for _, node := range g.nodes {
+		held = held || len(node.AccessGrants) > 0
+	}
+	s.grantsHeld = held
 }
 func accessSources(node *core.Node, userID, except string, extra *core.AccessGrant) []map[string]interface{} {
 	sources := []map[string]interface{}{}

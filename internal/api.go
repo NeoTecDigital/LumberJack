@@ -81,10 +81,11 @@ func ListenAddr(process types.ProcessInfo) string {
 func newServerCore(config types.ServerConfig) *Server {
 	logger, logCloser := newServerLogger(config)
 	server := &Server{
-		forest:    core.NewForest("forest"),
-		logger:    logger,
-		logCloser: logCloser,
-		config:    config,
+		forest:     core.NewForest("forest"),
+		logger:     logger,
+		logCloser:  logCloser,
+		config:     config,
+		grantsHeld: true,
 	}
 	// The state directory is narrowed to DataDirMode ONCE, here at construction — every entrypoint
 	// funnels through this — instead of on every write. Entrypoints pre-create it at 0755 and
@@ -175,6 +176,13 @@ func (server *Server) startRuntime() {
 // Nothing is serving yet, so this is the one place the persist is reached without going through
 // changeForest: there is no concurrent request to hold the forest against.
 func (server *Server) installAdmin(adminUser core.User) error {
+	if len(server.forest.Users) > 0 {
+		// The store was opened over a log that already holds accounts — a tiered install that
+		// crashed before its first state file. Those accounts are the install; a second admin on
+		// top of them is not.
+		server.logger.Warn("The log already holds %d accounts; the admin account was not created again", len(server.forest.Users))
+		return nil
+	}
 	coreUser := core.User{
 		ID:           core.GenerateUserID(),
 		Username:     adminUser.Username,
@@ -206,6 +214,11 @@ func NewServer(config types.ServerConfig, adminUser core.User) (*Server, error) 
 
 	server.logger.Enter("NewServer")
 
+	if err := server.openStore(nil); err != nil {
+		server.logger.Exit("NewServer")
+		_ = server.Shutdown(context.Background())
+		return nil, err
+	}
 	if err := server.installAdmin(adminUser); err != nil {
 		// The span is closed HERE, before Shutdown, not with a deferred Exit. Shutdown closes the log
 		// sink, and a deferred Exit runs AFTER the return — so it would write END into a closed file
@@ -261,13 +274,15 @@ func NewCore(config types.ServerConfig) (*Server, error) {
 	dbPath := server.statePath()
 	info, err := os.Stat(dbPath)
 	switch {
-	case os.IsNotExist(err):
+	case os.IsNotExist(err) || (err == nil && info.Size() == 0):
+		if err := server.openStore(nil); err != nil {
+			_ = server.Shutdown(context.Background())
+			return nil, err
+		}
 		return server, nil
 	case err != nil:
 		_ = server.Shutdown(context.Background())
 		return nil, err
-	case info.Size() == 0:
-		return server, nil
 	}
 
 	if err := server.loadFromFile(dbPath); err != nil {
@@ -398,6 +413,10 @@ func (s *Server) registerRecordRoutes(router *mux.Router) {
 	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleGetAttachment)).Methods("GET")
 	router.HandleFunc("/attachments/{id}", s.authMiddleware(s.handleDeleteAttachment)).Methods("DELETE")
 	router.HandleFunc("/events/{eventId}/entries/{entryIndex}/attachments", s.authMiddleware(s.handleAddEntryAttachment)).Methods("POST")
+	// The object log. Raw bytes addressed by their BLAKE3, appended beside the state file and never
+	// rewritten with it. See api_objects.go for why the permission is the root's.
+	router.HandleFunc("/objects", s.authMiddleware(s.handlePutObject)).Methods("POST")
+	router.HandleFunc("/objects/{id}", s.authMiddleware(s.handleGetObject)).Methods("GET", "HEAD")
 	router.HandleFunc("/logs", s.authMiddleware(s.handleGetLogs)).Methods("GET")
 }
 
@@ -478,16 +497,20 @@ func (s *Server) shutdown(ctx context.Context) error {
 
 	// Wait for all workers to finish
 	s.apiQueue.wg.Wait()
+	s.closeObjects()
 
+	var err error
 	if s.server != nil {
 		s.logger.Info("Shutting down API server")
-		err := s.server.Shutdown(ctx)
-		s.closeLogSink()
-		return err
+		err = s.server.Shutdown(ctx)
 	}
-
+	// The store closes LAST, with nothing serving: the clean-shutdown snapshot takes the forest
+	// hold, and the log is closed only once no handler can append to it.
+	if storeErr := s.closeStore(); err == nil {
+		err = storeErr
+	}
 	s.closeLogSink()
-	return nil
+	return err
 }
 
 // closeLogSink releases the log file, if the logger opened one. Failing to close it is reported and

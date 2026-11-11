@@ -39,6 +39,10 @@ func (c *sourceCoordinator) beginOrdinaryWrite(ctx context.Context, key string) 
 	return &sourceOrdinaryPermit{coordinator: c, writer: writer, active: true}, nil
 }
 
+// fenced reports that this write holds the whole-forest evidence fence, whose outcome depends on
+// whether the forest changed. A legacy permit is released whatever its outcome.
+func (p *sourceOrdinaryPermit) fenced() bool { return p.writer != nil }
+
 func (p *sourceOrdinaryPermit) finish(known, changed bool) {
 	if p.writer != nil {
 		p.writer.finish(known, changed)

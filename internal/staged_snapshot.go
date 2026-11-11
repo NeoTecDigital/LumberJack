@@ -80,6 +80,11 @@ func (s *Server) stagedOverlayLocked() map[string]*core.Node {
 }
 
 func (s *Server) encodeSnapshotLocked(path string, updateLiveHash bool) (stateSnapshot, error) {
+	// Tiered mode writes the state file only through its cold writer; a whole snapshot meant for
+	// the state writer is refused before it is built. See refuseWholeStateWriterUnderTier.
+	if err := s.refuseWholeStateWriterUnderTier("a whole-state snapshot (owned scopes)"); err != nil {
+		return stateSnapshot{}, err
+	}
 	live, err := encodeState(s.forest)
 	if err != nil {
 		return stateSnapshot{}, err
@@ -184,36 +189,33 @@ func stagedNodePairs(id string, receipts map[string]json.RawMessage, pairs map[s
 	return nil
 }
 
-// Only the new owned profile gets UseNumber; legacy decoding remains unchanged.
-func restoreStagedNumbers(data []byte, document *stateDocument) error {
-	root := document.Nodes[document.Root]
-	if root != nil && root.Node != nil && root.PersonalBindings != nil {
+// Only the new owned profile gets UseNumber; legacy decoding remains unchanged. It works on the
+// node table as read, before it is linked, so it holds each node's original bytes to re-read.
+func restoreStagedNumbers(table *stateTable) error {
+	root := table.records[table.Root]
+	if root != nil && root.PersonalBindings != nil {
 		// This protected source profile preserves ALL original interface bags,
 		// including unrelated organizations, without changing legacy decoding.
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.UseNumber()
-		return decoder.Decode(document)
+		return restoreAllNumbers(table)
 	}
-	owned := false
-	for _, record := range document.Nodes {
-		owned = owned || record != nil && isStagedNode(record.Node)
-	}
-	if !owned {
-		return nil
-	}
-	var raw struct {
-		Nodes map[string]json.RawMessage `json:"nodes"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	for id, record := range document.Nodes {
-		if record == nil || !isStagedNode(record.Node) {
+	for id, record := range table.records {
+		if !isStagedNode(record.Node) {
 			continue
 		}
-		if err := restoreStagedNodeMetadata(raw.Nodes[id], record.Node); err != nil {
+		if err := restoreStagedNodeMetadata(table.Nodes[id], record.Node); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func restoreAllNumbers(table *stateTable) error {
+	for id := range table.records {
+		var record nodeRecord
+		if err := decodeStagedNumbers(table.Nodes[id], &record); err != nil {
+			return err
+		}
+		table.records[id] = &record
 	}
 	return nil
 }
@@ -309,9 +311,11 @@ func (p *personalSource) personalLedgerCandidateLocked(e *personalProvisionEntry
 		return nil, NativePersonalProvisionReceipt{}, sourceUnavailable()
 	}
 	i := e.intent
-	owner := SourceOwnerRef{e.candidate.RuntimeID, e.candidate.RootID, e.candidate.OwnerID}
+	owner := SourceOwnerRef{RuntimeID: e.candidate.RuntimeID, RootID: e.candidate.RootID, OwnerID: e.candidate.OwnerID}
 	revision := sourceCommandKey([]interface{}{personalRegistryRevision(current), personalStablePayload(i), bindingRevision})
-	r := NativePersonalProvisionReceipt{PersonalSourceRevision, i.CommandID, i.PrincipalID, i.Account, owner, bindingRevision, revision, i.EnrollmentSHA256, i.CommandSHA256, "applied"}
+	r := NativePersonalProvisionReceipt{ContractRevision: PersonalSourceRevision, CommandID: i.CommandID, PrincipalID: i.PrincipalID,
+		Account: i.Account, OwnerRef: owner, BindingRevision: bindingRevision, RegistryRevision: revision,
+		EnrollmentSHA256: i.EnrollmentSHA256, CommandSHA256: i.CommandSHA256, Effect: "applied"}
 	ledger.Bindings[i.Account.AccountID] = core.PersonalBindingRecord{PrincipalID: i.PrincipalID, Account: i.Account, OwnerRef: owner, BindingRevision: bindingRevision, AccountRegistryRevision: actor.AccountRegistryRevision, Enrollment: i.Enrollment, OwnerKind: "new"}
 	ledger.Receipts[personalReceiptKey(i.PrincipalID, i.Account.AccountID, i.CommandID)] = core.PersonalProvisionRecord{Payload: personalStablePayload(i), Receipt: r}
 	ledger.Revision = revision

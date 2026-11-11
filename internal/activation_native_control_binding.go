@@ -55,7 +55,7 @@ func (p *personalSource) captureNativeControl(request SourceEnvelope) (interface
 	}
 	time.AfterFunc(time.Duration((ref.ValidUntil-domainNow())*float64(time.Second)), func() { p.expireCapturedControl(id) })
 	p.controls[id] = held
-	p.entries[id] = &personalSourceEntry{canonical: e, owner: SourceOwnerRef{p.server.forest.ID, root, session.UserID}}
+	p.entries[id] = &personalSourceEntry{canonical: e, owner: SourceOwnerRef{RuntimeID: p.server.forest.ID, RootID: root, OwnerID: session.UserID}}
 	return ref, nil
 }
 func (p *personalSource) selectNativeRootLocked(session core.ApplicationSession, selected *string) (string, int64, error) {
@@ -68,7 +68,7 @@ func (p *personalSource) selectNativeRootLocked(session core.ApplicationSession,
 		if selected != nil && *selected != id {
 			continue
 		}
-		binding := core.PersonalBindingRecord{OwnerRef: SourceOwnerRef{p.server.forest.ID, id, session.UserID}, OwnerKind: "existing"}
+		binding := core.PersonalBindingRecord{OwnerRef: SourceOwnerRef{RuntimeID: p.server.forest.ID, RootID: id, OwnerID: session.UserID}, OwnerKind: "existing"}
 		if p.actualPersonalRootLocked(binding, map[string]*core.Node{id: node}) == nil {
 			roots = append(roots, id)
 		}
@@ -96,7 +96,7 @@ func (p *personalSource) currentNativeControlLocked(e *canonicalSourceEntry) err
 	if !valid || err != nil || !domainEqual(session, e.facts.session) || profile.CredentialEpoch != e.facts.profileEpoch {
 		return sourceDenied()
 	}
-	binding := core.PersonalBindingRecord{OwnerRef: SourceOwnerRef{p.server.forest.ID, e.facts.rootID, e.held.ownerID}, OwnerKind: "existing"}
+	binding := core.PersonalBindingRecord{OwnerRef: SourceOwnerRef{RuntimeID: p.server.forest.ID, RootID: e.facts.rootID, OwnerID: e.held.ownerID}, OwnerKind: "existing"}
 	index, err := stagedForestIndex(p.server.forest)
 	if err != nil || p.actualPersonalRootLocked(binding, index) != nil {
 		return sourceDenied()
@@ -157,7 +157,7 @@ func (p *personalSource) registerControlEntry(r SourceEnvelope, subject SourceSu
 		read.release()
 		return nil, sourceUnavailable()
 	}
-	p.entries[id] = &personalSourceEntry{canonical: entry, owner: SourceOwnerRef{p.server.forest.ID, entry.facts.rootID, entry.held.ownerID}}
+	p.entries[id] = &personalSourceEntry{canonical: entry, owner: SourceOwnerRef{RuntimeID: p.server.forest.ID, RootID: entry.facts.rootID, OwnerID: entry.held.ownerID}}
 	p.coordinator.noteSourceChange()
 	return entry, nil
 }

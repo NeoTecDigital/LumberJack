@@ -42,7 +42,11 @@ func TestDomainFixtureVerifyPreservation(t *testing.T) {
 	defer file.Close()
 	server := &Server{logger: types.NewLogger()}
 	server.stateWriter = newStateWriter(func(stateSnapshot) error { return fmt.Errorf("read-only fixture inspection cannot publish") })
-	forest, err := server.readState(file)
+	table, err := server.readState(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forest, err := linkTable(table)
 	if err != nil {
 		t.Fatal(err)
 	}

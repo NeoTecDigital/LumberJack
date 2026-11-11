@@ -204,7 +204,7 @@ func (p *personalSource) actualPersonalRoots(key enrollmentSessionKey) ([]Source
 		if entry.actor.PrincipalID != key.PrincipalID || entry.actor.SessionID != key.SessionID || entry.source != nil || entry.state == "released" {
 			continue
 		}
-		owner := SourceOwnerRef{entry.candidate.RuntimeID, entry.candidate.RootID, entry.candidate.OwnerID}
+		owner := SourceOwnerRef{RuntimeID: entry.candidate.RuntimeID, RootID: entry.candidate.RootID, OwnerID: entry.candidate.OwnerID}
 		roots = append(roots, SourceRootRef{"momentum", entry.grant.Scope, owner, p.epoch, p.config.HostID, nil, true})
 	}
 	if len(roots) > p.config.Bounds.MaxResources {
@@ -337,7 +337,7 @@ func sourceContainsRoot(roots []SourceRootRef, selected SourceRootRef) bool {
 func (p *personalSource) cancelPreparedRootsLocked(input sourceRootClose, key enrollmentSessionKey) []string {
 	completed := []string{}
 	for id, entry := range p.candidates {
-		owner := SourceOwnerRef{entry.candidate.RuntimeID, entry.candidate.RootID, entry.candidate.OwnerID}
+		owner := SourceOwnerRef{RuntimeID: entry.candidate.RuntimeID, RootID: entry.candidate.RootID, OwnerID: entry.candidate.OwnerID}
 		same := entry.actor.PrincipalID == key.PrincipalID && entry.actor.SessionID == key.SessionID && owner == input.RootRef.OwnerRef
 		noEffect := entry.state == "prepared_no_effect" && entry.source == nil && entry.write == nil && entry.pending == nil && entry.snapshot.seq == 0
 		if same && noEffect {

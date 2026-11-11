@@ -336,7 +336,7 @@ func (p *personalSource) openPersonalGuard(entry *personalProvisionEntry, input 
 	}
 	p.mu.Lock()
 	guard.actor, guard.grant, guard.provision, guard.guard = input.Actor, input.Grant, entry, true
-	guard.owner = SourceOwnerRef{entry.candidate.RuntimeID, entry.candidate.RootID, entry.candidate.OwnerID}
+	guard.owner = SourceOwnerRef{RuntimeID: entry.candidate.RuntimeID, RootID: entry.candidate.RootID, OwnerID: entry.candidate.OwnerID}
 	p.mu.Unlock()
 	return guard, nil
 }

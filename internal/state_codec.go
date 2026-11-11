@@ -88,10 +88,26 @@ func isStateBanner(banner []byte) bool {
 const stateVersion = 2
 
 // stateDocument is the whole forest: which node is the root, and every node exactly once.
+//
+// LogSequence is set only by tiered persistence: the newest hot-log record this document already
+// contains, so recovery replays the log from the record after it. It is INSIDE the document so it
+// is written atomically with the forest it describes. Snapshot mode leaves it zero and omitted,
+// which keeps that mode's bytes exactly what they were.
 type stateDocument struct {
-	Version int                    `json:"version"`
-	Root    string                 `json:"root"`
-	Nodes   map[string]*nodeRecord `json:"nodes"`
+	Version     int                    `json:"version"`
+	Root        string                 `json:"root"`
+	LogSequence uint64                 `json:"log_sequence,omitempty"`
+	Nodes       map[string]*nodeRecord `json:"nodes"`
+}
+
+// stateTable is a document read back with each node still as the bytes the file held, so a
+// tiered open can seed its change cache without encoding the forest a second time.
+type stateTable struct {
+	Version     int                        `json:"version"`
+	Root        string                     `json:"root"`
+	LogSequence uint64                     `json:"log_sequence,omitempty"`
+	Nodes       map[string]json.RawMessage `json:"nodes"`
+	records     map[string]*nodeRecord
 }
 
 // nodeRecord is one node, with its children named by id instead of nested inside it.
@@ -115,20 +131,49 @@ type nodeRecord struct {
 
 // encodeState serializes the whole forest, once per node.
 func encodeState(forest *core.Node) ([]byte, error) {
-	return encodeStateResolved(forest, nil)
+	return encodeStateAt(forest, 0)
 }
 
+// encodeStateAt serializes the whole forest and stamps it with the hot-log sequence it contains.
+func encodeStateAt(forest *core.Node, logSequence uint64) ([]byte, error) {
+	return encodeDocument(forest, logSequence, nil)
+}
+
+// encodeStateResolved serializes the forest with each node passed through resolve first, which is
+// how a staged overlay replaces the nodes it holds in the snapshot without touching the forest.
 func encodeStateResolved(forest *core.Node, resolve func(*core.Node) *core.Node) ([]byte, error) {
+	return encodeDocument(forest, 0, resolve)
+}
+
+func encodeDocument(forest *core.Node, logSequence uint64, resolve func(*core.Node) *core.Node) ([]byte, error) {
 	if forest == nil {
 		return nil, fmt.Errorf("cannot serialize a forest that is not there")
 	}
 
 	document := stateDocument{
-		Version: stateVersion,
-		Root:    forest.ID,
-		Nodes:   make(map[string]*nodeRecord),
+		Version:     stateVersion,
+		Root:        forest.ID,
+		LogSequence: logSequence,
+		Nodes:       make(map[string]*nodeRecord),
 	}
+	walkForestResolved(forest, resolve, func(node *core.Node, children []string) {
+		document.Nodes[node.ID] = &nodeRecord{Node: node, Children: children}
+	})
+	return json.Marshal(document)
+}
 
+// walkForest visits every node reachable from the root exactly once, shallowest first, with its
+// child ids sorted. It is the one definition of which nodes a serialization holds: the state file
+// and the change detection that feeds the hot log walk the same way, so they agree on what is in
+// the forest.
+func walkForest(forest *core.Node, visit func(node *core.Node, children []string)) {
+	walkForestResolved(forest, nil, visit)
+}
+
+// walkForestResolved is walkForest with each node passed through resolve, when there is one,
+// before it is visited or its children are queued.
+func walkForestResolved(forest *core.Node, resolve func(*core.Node) *core.Node, visit func(node *core.Node, children []string)) {
+	seen := map[string]bool{}
 	queue := []*core.Node{forest}
 	for len(queue) > 0 {
 		node := queue[0]
@@ -136,17 +181,15 @@ func encodeStateResolved(forest *core.Node, resolve func(*core.Node) *core.Node)
 		if resolve != nil {
 			node = resolve(node)
 		}
-		if _, written := document.Nodes[node.ID]; written {
+		if seen[node.ID] {
 			continue
 		}
+		seen[node.ID] = true
 
 		var children []string
 		children, queue = encodeStateChildren(node, queue)
-
-		document.Nodes[node.ID] = &nodeRecord{Node: node, Children: children}
+		visit(node, children)
 	}
-
-	return json.Marshal(document)
 }
 
 func encodeStateChildren(node *core.Node, queue []*core.Node) ([]string, []*core.Node) {
@@ -158,40 +201,62 @@ func encodeStateChildren(node *core.Node, queue []*core.Node) ([]string, []*core
 		children = append(children, child.ID)
 		queue = append(queue, child)
 	}
-	// Stable child order preserves unchanged-content hash comparisons.
+	// Sorted so that one forest has one serialization: ranging a Go map does not, and an
+	// unstable encoding makes the "nothing changed" hash comparison answer differently every
+	// time it is asked.
 	sort.Strings(children)
 	return children, queue
 }
 
 // decodeState rebuilds the forest from a flat node table, restoring the edges the ids stand for.
 func decodeState(data []byte) (*core.Node, error) {
-	var document stateDocument
-	if err := json.Unmarshal(data, &document); err != nil {
+	table, err := decodeTable(data)
+	if err != nil {
 		return nil, err
 	}
-	if err := restoreStagedNumbers(data, &document); err != nil {
-		return nil, err
-	}
+	return linkTable(table)
+}
 
-	root, present := document.Nodes[document.Root]
+// decodeTable reads the node table without linking it, keeping each node's bytes. The staged
+// profiles' numbers are restored here, so every load path, whichever store opens it, reads them
+// the same way. See restoreStagedNumbers.
+func decodeTable(data []byte) (*stateTable, error) {
+	var table stateTable
+	if err := json.Unmarshal(data, &table); err != nil {
+		return nil, err
+	}
+	table.records = make(map[string]*nodeRecord, len(table.Nodes))
+	for id, raw := range table.Nodes {
+		var record nodeRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return nil, fmt.Errorf("node %q: %w", id, err)
+		}
+		if record.Node == nil {
+			continue
+		}
+		table.records[id] = &record
+	}
+	if err := restoreStagedNumbers(&table); err != nil {
+		return nil, err
+	}
+	return &table, nil
+}
+
+// linkTable turns a table into the forest, restoring the edges the ids stand for.
+func linkTable(table *stateTable) (*core.Node, error) {
+	root, present := table.records[table.Root]
 	if !present || root == nil || root.Node == nil {
-		return nil, fmt.Errorf("the state file names %q as its root and does not carry it", document.Root)
+		return nil, fmt.Errorf("the state file names %q as its root and does not carry it", table.Root)
 	}
 
 	// The maps are built BEFORE any of them is filled: a child can be named by a parent that has
 	// not been read yet, which is the point of naming it by id.
-	for _, record := range document.Nodes {
-		if record == nil || record.Node == nil {
-			continue
-		}
+	for _, record := range table.records {
 		record.Node.Children = make(map[string]*core.Node, len(record.Children))
 	}
 
-	for _, record := range document.Nodes {
-		if record == nil || record.Node == nil {
-			continue
-		}
-		if err := decodeStateChildren(record, document.Nodes); err != nil {
+	for _, record := range table.records {
+		if err := decodeStateChildren(record, table.records); err != nil {
 			return nil, err
 		}
 	}
@@ -199,6 +264,8 @@ func decodeState(data []byte) (*core.Node, error) {
 	return root.Node, nil
 }
 
+// decodeStateChildren links one record's children. An edge to a node the file does not carry is
+// not an edge: dropping it is what keeps the graph traversable, so the file is refused instead.
 func decodeStateChildren(record *nodeRecord, nodes map[string]*nodeRecord) error {
 	for _, childID := range record.Children {
 		child, known := nodes[childID]
@@ -208,4 +275,32 @@ func decodeStateChildren(record *nodeRecord, nodes map[string]*nodeRecord) error
 		record.Node.Children[childID] = child.Node
 	}
 	return nil
+}
+
+// readNestedState reads a file written before the node table existed, and REJOINS it.
+//
+// Such a file writes a node once per path to it, so a node with two parents comes back as two
+// objects carrying one id — see core.Canonicalize. The rejoin is exact because every occurrence of
+// one id in such a file is a serialization of the same object.
+func (server *Server) readNestedState(data []byte) (*core.Node, error) {
+	var loadedForest core.Node
+	if err := json.Unmarshal(data, &loadedForest); err != nil {
+		server.logger.Failure("Failed to unmarshal data: %v", err)
+		return nil, fmt.Errorf("error validating data: %v", err)
+	}
+
+	if forks := core.Canonicalize(&loadedForest); forks > 0 {
+		server.logger.Info("Rejoined %d duplicated occurrences of shared nodes while loading the state file", forks)
+	}
+	return &loadedForest, nil
+}
+
+// tableFromForest is the node table of a forest that was read in another shape — the nested
+// legacy file, or the sealed one — so every load ends in one shape for the store to open.
+func tableFromForest(forest *core.Node) (*stateTable, error) {
+	data, err := encodeState(forest)
+	if err != nil {
+		return nil, err
+	}
+	return decodeTable(data)
 }

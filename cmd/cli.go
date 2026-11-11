@@ -296,8 +296,11 @@ func runServer(cmd *cobra.Command, args []string) {
 	processInfo.DatabasePath = filepath.Join(defaultLibDir, dbName)
 	processInfo.LogPath = defaultLogDir
 
+	persistence, sync := loadStoreBlocks()
 	serverConfig := types.ServerConfig{
-		Process: processInfo,
+		Process:     processInfo,
+		Persistence: persistence,
+		Sync:        sync,
 	}
 
 	server, err := internal.LoadServer(serverConfig)
@@ -481,6 +484,7 @@ func createConfig(cmd *cobra.Command, args []string) error {
 	// Create initial server to save admin info. THE DATABASE PATH IS THE ONE `start` READS —
 	// the directory made just above — or the admin created here is written to a file the server
 	// never opens, and the database comes up with the empty user of the spawn path instead.
+	persistence, sync := loadStoreBlocks()
 	serverConfig := types.ServerConfig{
 		Process: types.ProcessInfo{
 			Name:          dbName,
@@ -491,6 +495,8 @@ func createConfig(cmd *cobra.Command, args []string) error {
 			LogPath:       defaultLogDir,
 			DatabasePath:  filepath.Join(defaultLibDir, dbName),
 		},
+		Persistence: persistence,
+		Sync:        sync,
 	}
 
 	// Initialize server just to save admin info

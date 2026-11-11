@@ -64,6 +64,9 @@ type SourceControlRef struct {
 
 // This constructor never acts as Handle.actor, a native admin or systemDefault.
 func (s *Server) ConfigurePersonalSource(config PersonalSourceConfig) (map[string]interface{}, error) {
+	if err := s.refuseWholeStateWriterUnderTier("the personal source"); err != nil {
+		return nil, err
+	}
 	s.sourceFence().requireFencing()
 	raw, err := CanonicalDomainJSON(config)
 	if err != nil || validatePersonalSourceConfig(config) != nil {

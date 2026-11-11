@@ -46,6 +46,33 @@ To delete configuration:
 ./lumberjack delete
 ```
 
+### Configuration: `config.yaml`
+
+The CLI keeps its databases in `/etc/lumberjack/config.yaml`. Two optional blocks say how a
+forest reaches the disk; left out, both are the defaults, which is exactly what every earlier
+build did:
+
+```yaml
+persistence:
+  mode: snapshot          # default: the whole state file per write. "tiered": hot log + cold snapshot
+  hot_sync: commit        # when the hot log is synced to disk: commit | interval | none
+  hot_sync_interval_ms: 20
+  cold_every_commits: 2000
+  cold_every_seconds: 60
+sync:
+  role: single            # single | primary | replica — only single runs in this build
+  listen: ""              # primary: address replicas connect to
+  primary: ""             # replica: the primary's address
+  ack: local              # when a commit is acknowledged: local | one | quorum
+```
+
+**The embedded runtime reads the same two blocks from `<database_path>/config.yaml`**, beside the
+state file, when the config it was opened with leaves them empty. A host that opens a forest
+through `embedded.Open` or the C ABI opts into tiered persistence by writing that file. `lumberjack
+serve --data-dir DIR` reads `DIR/config.yaml` the same way. A block that names something this
+build does not do — a misspelt mode, `role: replica` — refuses to open rather than running as
+something else.
+
 ## The state file
 
 Everything the engine holds lives in one file, `<name>.dat`, in the configured database path. It is
@@ -143,12 +170,102 @@ other moment loses only writes that were never acknowledged. A write that fails 
 answered **500**, and the change stays in memory: the process is then serving a forest newer than
 its file, and it must be restarted, which drops back to the last state that was acknowledged.
 
+### Tiered persistence: `mode: tiered`
+
+Rewriting the whole file per write costs the size of the store, and the store grows with every
+write ever made because receipts and history accumulate. `mode: tiered` makes what a write puts on
+the disk the size of the change.
+
+- **Hot layer.** Every commit appends one record to an append-only log beside the state file,
+  `<name>.dat.log.<sequence>`: a sequence number, the nodes it changed (each encoded as the state
+  codec encodes a node), the ids it deleted, a length and a checksum. **A 200 means the record is
+  as durable as `hot_sync` asks**: `commit` syncs it before answering; `interval` answers once it
+  is written and syncs in the background every `hot_sync_interval_ms`; `none` leaves the sync to
+  the operating system. Concurrent commits share one write and one fsync. A record that fails to
+  reach the disk is retried ahead of the next commit, and no later commit is acknowledged until it
+  lands.
+- **Cold layer.** A background writer rewrites the full state file with the same atomic writer as
+  snapshot mode every `cold_every_commits` commits or `cold_every_seconds` seconds, and on a clean
+  shutdown. The document carries `log_sequence`, the last record it contains, so it is written
+  atomically with the forest. Segments are deleted only once a durable state file wholly covers
+  them. **The forest is held only for the encode**: a commit during a snapshot waits for one
+  encode of the forest, not for the hash, the gzip, the write or the fsyncs.
+- **Recovery.** Load the state file, replay the log past its sequence, in order. A torn tail in
+  the last segment — a record left short or unverifiable by a crash mid-write, with nothing
+  intact after it — is cut; it was never acknowledged. Anything else refuses to open with an error
+  naming the segment and the offset: a damaged record followed by an intact one, an intact record
+  out of sequence, or a log that begins past what the state file covers.
+- **A record is the change set the write produced**, found by comparing every node with its
+  last encoding: the nodes that are new or differ, whole, and the ids no longer reached. Correct for
+  every route whatever it changed; finding it costs one encode of the forest under the lock, and
+  the disk is written only the change. A log holding a *partial* node — one carrying
+  `entries_before` or `children_kept`, which only a build with pdl's graph engine wrote — is
+  refused at open rather than read as whole nodes.
+- **The change sequence survives a restart.** The mutation stream numbers from the log's last
+  record on open, so `/changes` and `/stream` cursors do not restart at one. A write that publishes
+  more than one mutation per record — a workspace command publishes two — can leave the restarted
+  numbering below what a client saw; the stream's epoch is what tells that client the process
+  restarted.
+- **An encrypted store refuses `mode: tiered`**, with an error that says why: the sealed state
+  file would have a plaintext log beside it.
+- **Owned scopes, the domain engine and the personal source refuse `mode: tiered`**: they publish
+  whole paired snapshots through the state writer, which the log and the cold writer do not carry.
+  Configuring either answers an error, and a state file holding an owned scope does not open tiered.
+
 The version the engine answers with is on `GET /health`, which needs no credentials:
 
 ```bash
 curl http://localhost:8080/health
 # {"status":"ok","version":"0.3.0-alpha"}
 ```
+
+### The object log
+
+Beside the state file is `<name>.objects/`, an **append-only, content-addressed** store for bytes
+that are history rather than working set: file contents, trees, commits. The state file holds the
+whole forest — rewritten on every mutation in snapshot mode, and on every cold snapshot in tiered
+mode — which is the right shape for the forest and the wrong shape for a record that only ever
+grows, and the object log is where that record goes. **Writing an object never rewrites `.dat`** or
+appends to its log, takes no forest lock, and announces nothing on `/stream`.
+
+An object is an immutable byte string. Its **id is the BLAKE3-256 of its bytes**, as lowercase hex —
+the same hash `ffi/canon` derives identities with — so the same content put twice is one object, an
+id names bytes and not a place, and a put of bytes already held is a no-op that answers the same id
+with `"existed": true`. **There is no delete.**
+
+The directory holds numbered segments, `00000001.seg`, `00000002.seg`, …, each beginning with the
+banner `LUMBERJACK-OBJECTS-1`. A record is the 32-byte id, a one-byte encoding flag, an 8-byte
+little-endian payload length, the payload, and a CRC-32C over all of it. A segment rolls over at
+256 MiB; a record is never split. **The index is derived, not stored**: every open rebuilds it by
+scanning the segments, so the segments are the truth and there is no index file to disagree with
+them.
+
+**A put is not acknowledged until the record is on the disk** — the segment is synced after every
+record, and a new segment and its directory entry are synced before the first record enters it,
+the same discipline the state writer keeps. Because of that, at most **one** record can ever be
+partial: the last one in the last segment. On open, a record the file does not have all of, or one
+whose CRC fails and after which there is nothing but the end of the file or zeros, is a **torn
+tail** — it was never acknowledged, and it is cut off. A record whose CRC fails and which is
+**followed by more records** is corruption of something that was acknowledged: it is **not** cut
+off, because the objects after it were acknowledged too. It is indexed as corrupt and `GET` answers
+`500` naming the object as corrupt rather than `404`. Every read **re-hashes** the bytes against the
+id, so a payload altered after the index was built is refused the same way.
+
+**The per-object cap is `max_object_bytes`** in the process configuration, **64 MiB** when unset,
+and deliberately far above the 10 MiB attachment limit. An oversized object is refused `413`
+naming the cap and nothing is stored.
+
+**Under an encrypted storage mode (`kms` or `local-test`), objects are sealed.** `<name>.objects/key`
+holds a store id and a master key wrapped by the same KMS or local-test wrapper that wraps the state
+file's keys; each object is sealed under its own random key with AES-GCM, that key sealed under the
+master, with the object id in the additional data — the shape `secure_storage.go` gives a resource.
+The plaintext is nowhere in the segment. **The id stays the BLAKE3 of the plaintext**, in the clear in
+the record header, because content addressing requires the same bytes to have the same id in every
+store; it follows that a sealed store discloses whether it holds a known file, which the sealed state
+file does not. Objects are not re-keyed per snapshot and carry no per-account grants: an appended
+record is never rewritten, and read access is the route's permission check. A plaintext object store
+under an encrypted mode, or a sealed one under none, is **refused** — there is no object migration in
+either direction, as there is none for the state file without the explicit opt-in.
 
 ## TODOS:
  - [ ] Improved Testing
@@ -316,6 +433,45 @@ number of bytes actually stored, not the size the upload declared.
   "uploaded_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+### Objects
+
+Raw bytes in, raw bytes out, addressed by their BLAKE3-256 — see *The object log* above for what is
+on the disk. The permission is the **forest root's**: an object belongs to no node, so `POST` asks
+for Write on the root and `GET`/`HEAD` for Read on it. A session granted only deeper than the root
+is refused `403`. A malformed id is `400`; an unknown one `404`; an object whose stored bytes no
+longer hash to their id is `500` and the message says so.
+
+#### Put Object
+The body is the object. The receipt's `size` is what was stored, and `existed` says the bytes were
+already there — in which case nothing was written.
+```bash
+curl -X POST http://localhost:8080/objects \
+  -H "Authorization: Bearer <token>" \
+  --data-binary @/path/to/file
+# {"id":"af13…","size":1048576,"existed":false}
+```
+
+#### Get Object
+Answers `application/octet-stream` with `Content-Length`, verified against the id before a byte is
+sent.
+```bash
+curl http://localhost:8080/objects/{id} -H "Authorization: Bearer <token>" -o file
+```
+
+#### Head Object
+The same headers and no body; the size without the read.
+```bash
+curl -I http://localhost:8080/objects/{id} -H "Authorization: Bearer <token>"
+```
+
+**Through the in-process `call` path** (`ic_lj_application_call`, `embedded.ApplicationCall`) the
+request and response are JSON envelopes whose `body` is a `[]byte`, which Go encodes as **standard
+base64**: a binary object goes up as base64 in the request `body` and comes back as base64 in the
+response `body`. The path's 64 MiB cap applies to the **decoded** bytes in each direction, so the
+effective per-object limit through `call` is the smaller of `max_object_bytes` and 64 MiB, and the
+envelope a C caller hands over is bounded by `LJ_MAX_IN_LEN` (256 MiB), which the base64 of a 64 MiB
+object fits inside.
 
 ### Node Management
 
@@ -598,7 +754,7 @@ All endpoints return standard HTTP status codes:
 - 403: Forbidden
 - 404: Not Found
 - 409: Conflict (a plan for an event id that has already started)
-- 413: Request Entity Too Large (an upload over the attachment size limit)
+- 413: Request Entity Too Large (an upload over the attachment size limit, or an object over `max_object_bytes`)
 - 500: Internal Server Error
 
 Error responses include a message:

@@ -97,10 +97,20 @@ type Server struct {
 	domainConfiguring bool
 	domain            *domainEngine
 	stagedScopes      map[string]*stagedScope
-	storageOnce       sync.Once
-	storage           *secureStorage
-	storageErr        error
-	storageRewrite    bool
+	// tier is tiered persistence when the config asks for it, and nil in snapshot mode, where the
+	// stateWriter above is what makes a change durable. See persistence.go.
+	tier *tier
+	// grantsHeld says some node may still carry access grants, so a refresh with no policies left
+	// must still run to clear them. It starts true, because a loaded forest's nodes may carry any.
+	grantsHeld bool
+	// objectStore is the append-only object log beside the state file, opened on first use. It is
+	// written OUTSIDE forestMutex and never rewrites `.dat`. See object_store.go.
+	objectStore    *objectStore
+	objectsMu      sync.Mutex
+	storageOnce    sync.Once
+	storage        *secureStorage
+	storageErr     error
+	storageRewrite bool
 	// mutations is the fan-out behind GET /stream. Published to AFTER a change is persisted and
 	// acknowledged, never before: announcing something that has not been written is the same lie
 	// as a 200 for it.

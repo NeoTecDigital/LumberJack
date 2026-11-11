@@ -64,7 +64,9 @@ func (u *nativeControlUnit) verified(k MappingCheckKey, s SourceSubjectEvidence,
 	if stage == "current" {
 		rev := "unit-real-sql-revision"
 		b := u.mapping.Binding
-		state = CanonicalState{true, &rev, &core.PersonalMappedGrant{b.PrincipalID, core.PersonalGrantScope{b.Account.AccountID, "momentum"}, b.Account, []string{"identity.read"}, "unit-base-current", "active"}}
+		state = CanonicalState{PrincipalRegistered: true, AccountRegistryRevision: &rev, PersonalGrant: &core.PersonalMappedGrant{PrincipalID: b.PrincipalID,
+			Scope: core.PersonalGrantScope{AccountID: b.Account.AccountID, Product: "momentum"}, Account: b.Account,
+			Capabilities: []string{"identity.read"}, Revision: "unit-base-current", State: "active"}}
 	}
 	now := domainNow()
 	until := min(s.ValidUntil, now+5)
@@ -90,7 +92,7 @@ func (u *nativeControlUnit) currentCallback(e mappingCallbackEnvelope, p map[str
 }
 func nativeUnitMapping(u *nativeControlUnit, root, id string) CanonicalResolvedMapping {
 	f := u.f
-	m := CanonicalResolvedMapping{MappingID: id, MappingRevision: "mapping-1", ReservationID: "human-reservation", ReservationRevision: "reservation-1", Issuer: f.actor.Evidence.Issuer, Subject: f.actor.Evidence.Subject, Binding: core.PersonalNativeBinding{f.actor.PrincipalID, f.grant.Account, SourceOwnerRef{f.server.forest.ID, root, "native-owner"}}, NativeAuthorityRef: f.config.SourceAuthorityRef, SourcePolicyRevision: f.config.SourcePolicyRevision}
+	m := CanonicalResolvedMapping{MappingID: id, MappingRevision: "mapping-1", ReservationID: "human-reservation", ReservationRevision: "reservation-1", Issuer: f.actor.Evidence.Issuer, Subject: f.actor.Evidence.Subject, Binding: core.PersonalNativeBinding{PrincipalID: f.actor.PrincipalID, Account: f.grant.Account, OwnerRef: SourceOwnerRef{RuntimeID: f.server.forest.ID, RootID: root, OwnerID: "native-owner"}}, NativeAuthorityRef: f.config.SourceAuthorityRef, SourcePolicyRevision: f.config.SourcePolicyRevision}
 	raw, _ := CanonicalDomainJSON(m)
 	var fields map[string]json.RawMessage
 	_ = DecodeDomainJSON(raw, &fields)
@@ -118,7 +120,7 @@ func nativeUnitAttach(t *testing.T, u *nativeControlUnit, receipt sourceConsentR
 	record := nativeUnitAssociation(u, receipt, "unit-association-"+u.mapping.MappingID)
 	association := record.AssociationID
 	// Original EXISTING enrollment ACK is a synthetic SQL fixture, not native authority.
-	enrollment := SourceEnrollment{"unit-existing-enrollment", "unit-enrollment-revision", core.PersonalEnrollmentSpec{Mode: "existing", ExistingIdentityRef: &association}}
+	enrollment := SourceEnrollment{CommandID: "unit-existing-enrollment", Revision: "unit-enrollment-revision", Enrollment: core.PersonalEnrollmentSpec{Mode: "existing", ExistingIdentityRef: &association}}
 	input := canonicalAttachInput{"unit-current-worker", u.f.actor.Evidence, record, enrollment, "unit-attach-" + u.mapping.MappingID, nil}
 	if _, err := u.f.p.attachCanonicalMapping(context.Background(), nativeUnitRequest(u, "mapping.attach", input)); err != nil {
 		t.Fatal(err)

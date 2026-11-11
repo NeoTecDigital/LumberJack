@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/NeoTecDigital/LumberJack/types"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/NeoTecDigital/LumberJack/types"
 	"golang.org/x/exp/rand"
 )
 
@@ -207,6 +207,18 @@ func loadConfig(dbName string) types.ProcessInfo {
 	}
 
 	return dbConfig
+}
+
+// loadStoreBlocks reads the persistence and sync blocks of the config viper already holds. Blocks
+// that are not there are left empty, and the server fills them from the database directory's own
+// config.yaml and then the defaults — the same resolution the embedded runtime uses.
+func loadStoreBlocks() (types.PersistenceConfig, types.SyncConfig) {
+	var config types.Config
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Printf("Error parsing config: %v\n", err)
+		os.Exit(1)
+	}
+	return config.Persistence, config.Sync
 }
 
 func updateProcessInfo(proc types.ProcessInfo) error {

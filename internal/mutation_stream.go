@@ -93,6 +93,16 @@ func newMutationStream() *mutationStream {
 	}
 }
 
+// seed starts the numbering past a sequence persistence already handed out, so the feed
+// continues after a restart rather than starting again at one. It only ever moves forward.
+func (stream *mutationStream) seed(sequence uint64) {
+	stream.mutex.Lock()
+	defer stream.mutex.Unlock()
+	if sequence > stream.sequence {
+		stream.sequence = sequence
+	}
+}
+
 // subscription is one connected client.
 type subscription struct {
 	id       int

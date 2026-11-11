@@ -117,28 +117,78 @@ func (server *Server) readForest(read func()) {
 // is lost, which is exactly what a 500 promised. Nothing acknowledged is ever lost — that is the
 // contract, and TestChangeForestReportsAPersistThatCouldNotLand pins it. (The state writer clears its
 // durable-hash on a failed flush, so the next persist WRITES rather than taking the unchanged skip.)
+//
+// IN TIERED MODE the same hold covers the mutation and the encoding of the CHANGE, and what
+// becomes durable before the answer is the log record rather than a whole state file. See
+// persistence.go.
+//
+// THIS IS THE ONE WRITE PATH. Every mutation, in either persistence, holds a source-fence permit
+// from BEFORE the forest is taken until its durable outcome is known, and runs under the hold
+// through runChangeLocked, which brackets it with the staged-scope protection, the access-grant
+// refresh and the hub's record of what changed. The permit's outcome is the persistence's: a change
+// refused under the hold had no effect when the forest still has the revision it had before; one
+// that could not be made durable is unknown to the fence; one that landed is finished.
 func (server *Server) changeForest(change func() error) error {
+	permit, before, err := server.beginForestWrite()
+	if err != nil {
+		return err
+	}
+	land, err := server.stageChange(change)
+	if err != nil {
+		permit.noEffect(permit.fenced() && before != "" && before == server.sourceForestRevision())
+		return err
+	}
+	if err := land(); err != nil {
+		permit.finish(false, true)
+		return err
+	}
+	permit.finish(true, true)
+	return nil
+}
+
+// beginForestWrite takes the source-fence permit an ordinary write holds, and answers the forest's
+// revision before the change when the fence will ask for it. Only a FENCED permit reads that
+// answer (a legacy one is released whatever it is told), so only a fenced write pays for encoding
+// the whole forest to name it.
+func (server *Server) beginForestWrite() (*sourceOrdinaryPermit, string, error) {
 	operationID, err := newDomainID()
 	if err != nil {
-		return sourceUnavailable()
+		return nil, "", sourceUnavailable()
 	}
 	permit, err := server.sourceFence().beginOrdinaryWrite(context.Background(), "ordinary-forest/"+operationID)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	before := server.sourceForestRevision()
+	if !permit.fenced() {
+		return permit, "", nil
+	}
+	return permit, server.sourceForestRevision(), nil
+}
+
+// stageChange makes the change under the exclusive hold, in whichever persistence holds the
+// forest, and answers what makes it durable with the hold released: the state file in snapshot
+// mode, the change's log record in tiered mode.
+func (server *Server) stageChange(change func() error) (func() error, error) {
+	if server.tier != nil {
+		seq, err := server.stageChangeLocked(change)
+		if err != nil {
+			return nil, err
+		}
+		return func() error { return server.landTiered(seq) }, nil
+	}
 	snapshot, err := server.applyChangeLocked(change)
 	if err != nil {
-		permit.noEffect(before != "" && before == server.sourceForestRevision())
-		return err
+		return nil, err
 	}
+	return func() error { return server.landSnapshot(snapshot) }, nil
+}
 
+// landSnapshot makes a snapshot durable, with no hold on the forest.
+func (server *Server) landSnapshot(snapshot stateSnapshot) error {
 	if err := server.commitState(snapshot); err != nil {
-		permit.finish(false, true)
 		server.logger.Failure("Failed to save state: %v", err)
 		return apiErrorf(http.StatusInternalServerError, "Failed to save state")
 	}
-	permit.finish(true, true)
 	return nil
 }
 
@@ -149,25 +199,9 @@ func (server *Server) changeForest(change func() error) error {
 func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
-	protected, err := server.captureStagedProtectionLocked()
-	if err != nil {
-		return stateSnapshot{}, err
-	}
-	var before *correspondenceSnapshot
-	if server.applicationHubEnabled.Load() {
-		before = server.captureCorrespondence()
-	}
 
-	changeErr := change()
-	if err := server.verifyStagedProtectionLocked(protected); err != nil {
-		return stateSnapshot{}, apiErrorf(http.StatusForbidden, "%v", err)
-	}
-	if changeErr != nil {
-		return stateSnapshot{}, changeErr
-	}
-	server.refreshAccessGrantsLocked()
-	if before != nil {
-		server.recordCompatibilityChanges(before)
+	if err := server.runChangeLocked(change); err != nil {
+		return stateSnapshot{}, err
 	}
 
 	snapshot, err := server.encodeStateLocked(server.statePath())
@@ -176,6 +210,35 @@ func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, err
 		return stateSnapshot{}, apiErrorf(http.StatusInternalServerError, "Failed to save state")
 	}
 	return snapshot, nil
+}
+
+// runChangeLocked runs a change and everything that brackets a change under the hold: the
+// staged-scope protection is captured before it and verified after it, the access grants are
+// refreshed, and the hub is told what changed, from a before-image of the forest. The caller holds
+// the forest exclusively. Both persistences come through here, so neither can make durable a
+// change the protection refused.
+func (server *Server) runChangeLocked(change func() error) error {
+	protected, err := server.captureStagedProtectionLocked()
+	if err != nil {
+		return err
+	}
+	var before *correspondenceSnapshot
+	if server.applicationHubEnabled.Load() {
+		before = server.captureCorrespondence()
+	}
+
+	changeErr := change()
+	if err := server.verifyStagedProtectionLocked(protected); err != nil {
+		return apiErrorf(http.StatusForbidden, "%v", err)
+	}
+	if changeErr != nil {
+		return changeErr
+	}
+	server.refreshAccessGrantsLocked()
+	if before != nil {
+		server.recordCompatibilityChanges(before)
+	}
+	return nil
 }
 
 // changeNode is the shape every mutating route has: find the node a path names, confirm the caller

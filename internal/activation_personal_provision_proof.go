@@ -302,7 +302,7 @@ func (p *personalSource) registerPersonalExecution(entry *personalProvisionEntry
 		return nil, sourceDenied()
 	}
 	c, i := entry.candidate, entry.intent
-	owner := SourceOwnerRef{c.RuntimeID, c.RootID, c.OwnerID}
+	owner := SourceOwnerRef{RuntimeID: c.RuntimeID, RootID: c.RootID, OwnerID: c.OwnerID}
 	ref := SourceLeaseRef{p.epoch, p.config.HostID, id, c.RequestID, sourceCommandKey(owner), i.Request.PayloadSHA256, c.SourceRevision, nil, entry.validUntil}
 	source := &personalSourceEntry{ref: ref, actor: entry.actor, grant: entry.grant, provision: entry, owner: owner}
 	phase := ProvisionLeaseRef{p.epoch, leaseID, c.PrincipalID, c.SessionID, i.Account.AccountID, c.RuntimeID, c.CandidateRef, c.RootID, c.OwnerID, i.CommandSHA256, i.RequestSHA256, c.SourceRevision, c.RegistryRevision, "execution"}

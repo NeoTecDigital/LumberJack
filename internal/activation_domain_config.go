@@ -15,6 +15,9 @@ import (
 )
 
 func (s *Server) ConfigureDomain(config DomainConfig, products map[string]DomainProduct, policy DomainPolicy) error {
+	if err := s.refuseWholeStateWriterUnderTier("the domain engine"); err != nil {
+		return err
+	}
 	s.sourceFence().requireFencing()
 	d, err := newDomainEngine(config, products, policy)
 	if err != nil {

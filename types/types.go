@@ -16,15 +16,26 @@ type ProcessInfo struct {
 	DashboardUp   bool   `json:"dashboard_up"`
 	LogPath       string `json:"log_path"`
 	DatabasePath  string `json:"database_path"`
+	// MaxObjectBytes caps one object in the object log beside the state file. Zero means the engine's
+	// default (internal.DefaultMaxObjectBytes, 64 MiB). It is a cap on the object, not on the request.
+	MaxObjectBytes int64 `json:"max_object_bytes,omitempty"`
 }
 
 type Config struct {
-	Version   string                 `yaml:"version"`
-	Databases map[string]ProcessInfo `yaml:"databases"`
+	Version   string                 `yaml:"version" mapstructure:"version"`
+	Databases map[string]ProcessInfo `yaml:"databases" mapstructure:"databases"`
+	// Persistence and Sync are the two blocks persistence.go describes. They apply to every
+	// database this config names; a block left out is the defaults, which is today's behaviour.
+	Persistence PersistenceConfig `yaml:"persistence" mapstructure:"persistence"`
+	Sync        SyncConfig        `yaml:"sync" mapstructure:"sync"`
 }
 
 type ServerConfig struct {
 	Organization string      `json:"organization"`
 	Phone        string      `json:"phone,omitempty"`
 	Process      ProcessInfo `json:"process"`
+	// Persistence and Sync are how this server's forest reaches the disk. Left empty they are
+	// filled from `<DatabasePath>/config.yaml` when the server opens, and then from the defaults.
+	Persistence PersistenceConfig `json:"persistence"`
+	Sync        SyncConfig        `json:"sync"`
 }
