@@ -42,11 +42,14 @@ func withoutJWTSecret(t *testing.T, body func()) {
 	body()
 }
 
-// coreConfig is a config with no HTTP or disk dependencies, enough to build a core-only server.
+// coreConfig is a config with no HTTP dependency, enough to build a core-only server. Its state
+// file lives in the suite's temporary directory (see TestMain), not the package directory:
+// StatePath joins DatabasePath and the name, and an empty DatabasePath put core_test.dat into the
+// source tree.
 func coreConfig() types.ServerConfig {
 	return types.ServerConfig{
 		Organization: "test_org",
-		Process:      types.ProcessInfo{Name: "core_test", ServerPort: "0"},
+		Process:      types.ProcessInfo{Name: "core_test", ServerPort: "0", DatabasePath: filepath.Dir(testDbFile)},
 	}
 }
 
