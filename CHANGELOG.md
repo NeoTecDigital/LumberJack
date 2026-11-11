@@ -46,6 +46,10 @@ exactly what every earlier build did.
   that already holds an owned scope does not open in it. Snapshot mode is unchanged.
 - **Every tiered commit holds the source-fence permit** and runs inside the staged-scope
   protection, the access-grant refresh and the hub's record, as every snapshot-mode write does.
+- **The application feed is unavailable in tiered mode.** Its durability check compares the forest
+  with the state writer's last durable snapshot, which tiered commits never update, so `/feed`, its
+  marks and preferences, refusal recording and reminders answer 503. A tiered counterpart (every
+  staged record durable and nothing in memory unstaged) is not defined yet.
 - **A failed write is retried, and nothing after it is acknowledged first.** A record that could
   not be appended goes back to the front of the queue; a later commit retries it ahead of its own
   record and is answered 5xx while it still fails. In either mode the store knows when the forest

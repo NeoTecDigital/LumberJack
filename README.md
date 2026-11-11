@@ -211,6 +211,9 @@ the disk the size of the change.
 - **Owned scopes, the domain engine and the personal source refuse `mode: tiered`**: they publish
   whole paired snapshots through the state writer, which the log and the cold writer do not carry.
   Configuring either answers an error, and a state file holding an owned scope does not open tiered.
+- **The application feed is unavailable in tiered mode**: its durability check compares the forest
+  with the last durable snapshot, which tiered commits never update, so `/feed`, refusal recording
+  and reminders answer 503.
 
 The version the engine answers with is on `GET /health`, which needs no credentials:
 
