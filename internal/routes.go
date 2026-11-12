@@ -30,14 +30,27 @@ type engineRoute struct {
 	access  routeAccess
 }
 
-// fixedRoutes are the engine's routes that are not catch-alls.
+// fixedRoutes are the engine's routes that are not catch-alls, in the order they are tried.
 func (s *Server) fixedRoutes() []engineRoute {
+	routes := s.publicRoutes()
+	routes = append(routes, s.recordRoutes()...)
+	routes = append(routes, s.queryRoutes()...)
+	return append(routes, s.accountRoutes()...)
+}
+
+// publicRoutes are the credential exchanges and the health probe.
+func (s *Server) publicRoutes() []engineRoute {
 	return []engineRoute{
 		// Public routes
 		{[]string{"GET"}, "/health", s.handleHealth, routePublic},
 		{[]string{"POST"}, "/login", s.handleLogin, routePublic},
 		{[]string{"POST"}, "/refresh", s.handleRefreshToken, routePublic},
+	}
+}
 
+// recordRoutes are the routes that WRITE to the forest, and the ones that read one thing back by name.
+func (s *Server) recordRoutes() []engineRoute {
+	return []engineRoute{
 		// Protected routes
 		//
 		// /users/create IS ONE OF THEM. It was public, which meant anyone who could reach the port could
@@ -85,6 +98,12 @@ func (s *Server) fixedRoutes() []engineRoute {
 		{[]string{"GET"}, "/access", s.handleAccess, routeSession},
 		{[]string{"POST"}, "/access/preview", s.handleAccess, routeSession},
 		{[]string{"POST"}, "/access/apply", s.handleAccess, routeSession},
+	}
+}
+
+// queryRoutes are the query layer, the listings built on it, sharing and the canvas edges.
+func (s *Server) queryRoutes() []engineRoute {
+	return []engineRoute{
 		// The query layer. One predicate grammar, two entry points, and the discovery routes that are
 		// thin wrappers over the first of them rather than a second implementation.
 		{[]string{"POST"}, "/query", s.handleQuery, routeSession},
@@ -97,7 +116,12 @@ func (s *Server) fixedRoutes() []engineRoute {
 		// order, and a catch-all registered first would swallow /nodes/link.
 		{[]string{"POST"}, "/nodes/link", s.handleLinkNode, routeSession},
 		{[]string{"DELETE"}, "/nodes/link", s.handleUnlinkNode, routeSession},
+	}
+}
 
+// accountRoutes are the user and settings routes.
+func (s *Server) accountRoutes() []engineRoute {
+	return []engineRoute{
 		// The user and settings routes.
 		{[]string{"GET"}, "/users", s.handleGetUsers, routeSession},
 		{[]string{"POST"}, "/users/assign", s.handleAssignUser, routeSession},

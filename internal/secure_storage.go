@@ -227,25 +227,9 @@ func (s *secureStorage) encodeAt(data []byte, level int) ([]byte, error) {
 		return nil, err
 	}
 	defer clear(master)
-	document := encryptedStateDocument{Root: table.Root, Accounts: map[string]wrappedStorageKey{}, Nodes: map[string]encryptedResource{}, Conversations: map[string]encryptedConversation{}}
-	for id, record := range table.records {
-		// Root is backend security state: it must not acquire a user's grant merely
-		// because that user administers account inventory. Conversations are separate.
-		users := []string{}
-		if id != table.Root {
-			for _, account := range forest.Users {
-				if record.Node.CheckPermission(account.ID, core.ReadPermission) {
-					users = append(users, account.ID)
-				}
-			}
-		}
-		// The root's record is sealed whole, its "conversations" slot inside it: the backend key
-		// opens it, and no account is granted the root (owner decision Q4(a)).
-		encrypted, err := s.sealResource(ctx, master, "node/"+id, []byte(table.Nodes[id]), users)
-		if err != nil {
-			return nil, err
-		}
-		document.Nodes[id] = encrypted
+	document := encryptedStateDocument{Root: table.Root, Accounts: map[string]wrappedStorageKey{}, Conversations: map[string]encryptedConversation{}}
+	if document.Nodes, err = s.sealNodes(ctx, master, table, forest); err != nil {
+		return nil, err
 	}
 	// Persist only extant accounts; revocation creates new resource keys on every
 	// snapshot and removes old grant wraps. Downloaded copies cannot be recalled.
@@ -277,6 +261,48 @@ func (s *secureStorage) encodeAt(data []byte, level int) ([]byte, error) {
 	return json.Marshal(encryptedStateEnvelope{Version: s.label.EnvelopeVersion(level), ID: s.id, Key: wrapped, Payload: payload})
 }
 
+// sealNodes seals every record of a table, each readable by the accounts the record grants read.
+//
+// Root is backend security state: it must not acquire a user's grant merely because that user
+// administers account inventory. The root's record is sealed whole, its "conversations" slot inside
+// it: the backend key opens it, and no account is granted the root (owner decision Q4(a)).
+func (s *secureStorage) sealNodes(ctx context.Context, master []byte, table *stateTable, forest *core.Node) (map[string]encryptedResource, error) {
+	sealed := make(map[string]encryptedResource, len(table.records))
+	for id, record := range table.records {
+		users := []string{}
+		if id != table.Root {
+			for _, account := range forest.Users {
+				if record.Node.CheckPermission(account.ID, core.ReadPermission) {
+					users = append(users, account.ID)
+				}
+			}
+		}
+		encrypted, err := s.sealResource(ctx, master, "node/"+id, []byte(table.Nodes[id]), users)
+		if err != nil {
+			return nil, err
+		}
+		sealed[id] = encrypted
+	}
+	return sealed, nil
+}
+
+// openNodes opens every sealed record with the backend key.
+func (s *secureStorage) openNodes(master []byte, sealed map[string]encryptedResource) (map[string]*nodeRecord, error) {
+	records := make(map[string]*nodeRecord, len(sealed))
+	for id, resource := range sealed {
+		body, err := s.openResource(master, "node/"+id, resource)
+		if err != nil {
+			return nil, err
+		}
+		node, children, err := core.DecodeRecord(body)
+		if err != nil || node.ID != id {
+			return nil, errors.New("encrypted node identity mismatch")
+		}
+		records[id] = &nodeRecord{Node: node, Children: children}
+	}
+	return records, nil
+}
+
 func (s *secureStorage) decode(data []byte) ([]byte, error) {
 	var envelope encryptedStateEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -304,17 +330,9 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 	if err = json.Unmarshal(inner, &document); err != nil {
 		return nil, errors.New("invalid encrypted state document")
 	}
-	flat := stateDocument{Version: stateVersion, Root: document.Root, Nodes: map[string]*nodeRecord{}}
-	for id, resource := range document.Nodes {
-		body, err := s.openResource(master, "node/"+id, resource)
-		if err != nil {
-			return nil, err
-		}
-		node, children, err := core.DecodeRecord(body)
-		if err != nil || node.ID != id {
-			return nil, errors.New("encrypted node identity mismatch")
-		}
-		flat.Nodes[id] = &nodeRecord{Node: node, Children: children}
+	flat := stateDocument{Version: stateVersion, Root: document.Root}
+	if flat.Nodes, err = s.openNodes(master, document.Nodes); err != nil {
+		return nil, err
 	}
 	root := flat.Nodes[flat.Root]
 	if root == nil {
@@ -361,34 +379,45 @@ func (server *Server) readEncryptedState(file *os.File) (*core.Node, bool, error
 		return nil, true, err
 	}
 	server.raiseStateLevel(storage.level)
-	if writeLabel(server.storageConfig()) == compat.LabelNeutral && storage.label != compat.LabelNeutral {
-		// The neutral label was asked for: every account key is wrapped again under it, and the next
-		// write is the store's first neutral envelope. The cut build cannot open it.
-		if err := storage.relabel(context.Background(), compat.LabelNeutral); err != nil {
-			return nil, true, err
-		}
-		server.storageRewrite = true
-	}
 	forest, err := decodeState(data)
 	if err != nil {
 		return nil, true, err
 	}
-	if server.storageConfig().RewrapKeys {
-		for id, key := range storage.accounts {
-			raw, err := storage.accountKey(context.Background(), id)
-			if err != nil {
-				return nil, true, err
-			}
-			key.key = raw
-			key.wrapped, err = storage.wrapper.Wrap(context.Background(), raw, storage.aad("account/"+id))
-			if err != nil {
-				return nil, true, err
-			}
-			storage.accounts[id] = key
+	if err := server.rewrapOnOpen(storage); err != nil {
+		return nil, true, err
+	}
+	return forest, true, nil
+}
+
+// rewrapOnOpen wraps the account keys again when the configuration asks for it at open: under the
+// neutral label when that is asked for and the store is legacy — the next write is then the
+// store's first neutral envelope, which the cut build cannot open — and under the store's own
+// label when a rewrap is asked for. Either way the store is written back before it serves.
+func (server *Server) rewrapOnOpen(storage *secureStorage) error {
+	config := server.storageConfig()
+	if writeLabel(config) == compat.LabelNeutral && storage.label != compat.LabelNeutral {
+		if err := storage.relabel(context.Background(), compat.LabelNeutral); err != nil {
+			return err
 		}
 		server.storageRewrite = true
 	}
-	return forest, true, nil
+	if !config.RewrapKeys {
+		return nil
+	}
+	for id, key := range storage.accounts {
+		raw, err := storage.accountKey(context.Background(), id)
+		if err != nil {
+			return err
+		}
+		key.key = raw
+		key.wrapped, err = storage.wrapper.Wrap(context.Background(), raw, storage.aad("account/"+id))
+		if err != nil {
+			return err
+		}
+		storage.accounts[id] = key
+	}
+	server.storageRewrite = true
+	return nil
 }
 
 func (server *Server) prepareEncryptedState(data []byte) ([]byte, bool, error) {
