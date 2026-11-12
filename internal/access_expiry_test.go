@@ -90,7 +90,7 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 		t.Fatal("project expiry incorrectly revoked independent conversation membership")
 	}
 	workTestCommand(t, s, owner, workCommand{Command: "log", Path: path, ClientID: "private-now", Content: "Protected after expiry"}, 200)
-	deadline := time.After(time.Second)
+	deadline := time.After(streamWait)
 	resync := false
 	for !resync {
 		select {

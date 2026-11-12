@@ -44,7 +44,7 @@ func TestStreamRevokedSessionStopsBeforeDelivering(t *testing.T) {
 	s.publish(mutation(mutationMetadataSet, s.forest.Name))
 	select {
 	case <-reader.done:
-	case <-time.After(time.Second):
+	case <-time.After(streamWait):
 		t.Fatal("revoked stream remained open")
 	}
 }

@@ -222,7 +222,7 @@ func TestAccessReviewedUnlinkResynchronizesRevokedReader(t *testing.T) {
 	if rec := serveRoute(t, s, "DELETE", "/nodes/link", "admin", request); rec.Code != 200 {
 		t.Fatalf("unlink failed %d: %s", rec.Code, rec.Body.String())
 	}
-	deadline := time.After(time.Second)
+	deadline := time.After(streamWait)
 	for {
 		select {
 		case line := <-reader.lines:

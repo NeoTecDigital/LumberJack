@@ -85,6 +85,11 @@ func (r *streamReader) close() {
 	<-r.done
 }
 
+// streamWait bounds how long a stream test waits for something that must arrive. It is a failure
+// deadline, not a latency claim: under machine load one second was not enough for a delivery that
+// does happen. The latency check and the silentFor windows keep their own, shorter bounds.
+const streamWait = 10 * time.Second
+
 // nextEvent reads the next mutation off the stream, ignoring comments and blank lines.
 func (r *streamReader) nextEvent(t *testing.T, within time.Duration) mutationEvent {
 	t.Helper()
@@ -205,7 +210,7 @@ func TestStreamNamesTheEntryThatWasAdded(t *testing.T) {
 	}
 
 	for index := 0; index < 3; index++ {
-		event := reader.nextEvent(t, time.Second)
+		event := reader.nextEvent(t, streamWait)
 		if event.Type != mutationEntryAdded {
 			t.Fatalf("type: got %q, want %q", event.Type, mutationEntryAdded)
 		}
@@ -253,7 +258,7 @@ func TestStreamSurvivesAReconnect(t *testing.T) {
 	waitForSubscriber(t, server)
 
 	post(t, server.handleStartEvent, userID, map[string]interface{}{"path": path, "event_id": "before"})
-	seen := first.nextEvent(t, time.Second)
+	seen := first.nextEvent(t, streamWait)
 	if seen.EventID != "before" {
 		t.Fatalf("The first event was %s, want before", seen.EventID)
 	}
@@ -273,7 +278,7 @@ func TestStreamSurvivesAReconnect(t *testing.T) {
 
 	replayed := []mutationEvent{}
 	for len(replayed) < 4 {
-		replayed = append(replayed, resumed.nextEvent(t, time.Second))
+		replayed = append(replayed, resumed.nextEvent(t, streamWait))
 	}
 
 	for index, event := range replayed {
@@ -292,7 +297,7 @@ func TestStreamSurvivesAReconnect(t *testing.T) {
 
 	// And the resumed connection is live, not just a replay.
 	post(t, server.handleStartEvent, userID, map[string]interface{}{"path": path, "event_id": "after"})
-	if live := resumed.nextEvent(t, time.Second); live.EventID != "after" {
+	if live := resumed.nextEvent(t, streamWait); live.EventID != "after" {
 		t.Errorf("The resumed stream went dead: got %+v", live)
 	}
 }
@@ -310,13 +315,13 @@ func TestStreamSaysWhenItCannotCatchAClientUp(t *testing.T) {
 	stale := openStream(t, base, userID, "1")
 	defer stale.close()
 
-	if !readsComment(t, stale, "caught_up=false", time.Second) {
+	if !readsComment(t, stale, "caught_up=false", streamWait) {
 		t.Error("A client resuming from before the buffer was not told it had missed events")
 	}
 
 	fresh := openStream(t, base, userID, "")
 	defer fresh.close()
-	if !readsComment(t, fresh, "caught_up=true", time.Second) {
+	if !readsComment(t, fresh, "caught_up=true", streamWait) {
 		t.Error("A client that never claimed a position was told it had missed events")
 	}
 }
@@ -341,7 +346,7 @@ func TestASlowClientDoesNotStallThePublisher(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(streamWait):
 		t.Fatal("The publisher blocked on a client that was not reading")
 	}
 }
@@ -351,7 +356,7 @@ func TestASlowClientDoesNotStallThePublisher(t *testing.T) {
 func waitForSubscriber(t *testing.T, server *Server) {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(streamWait)
 	for time.Now().Before(deadline) {
 		server.mutations.mutex.Lock()
 		connected := len(server.mutations.subscribers)
@@ -450,7 +455,7 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 	waitForSubscriber(t, server)
 
 	attachmentID := uploadAttachment(t, server, userID, path, "notes.txt", "the contents")
-	added := reader.nextEvent(t, time.Second)
+	added := reader.nextEvent(t, streamWait)
 	if added.Type != mutationAttachmentAdded {
 		t.Errorf("type: got %q, want %q", added.Type, mutationAttachmentAdded)
 	}
@@ -482,7 +487,7 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 			entryFile.Code, http.StatusOK, entryFile.Body.String())
 	}
 
-	onEntry := reader.nextEvent(t, time.Second)
+	onEntry := reader.nextEvent(t, streamWait)
 	if onEntry.Type != mutationAttachmentAdded {
 		t.Errorf("type: got %q, want %q", onEntry.Type, mutationAttachmentAdded)
 	}
@@ -493,7 +498,7 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 	if code := deleteAttachment(t, server, userID, path, attachmentID); code != http.StatusOK {
 		t.Fatalf("DELETE /attachments: got %d, want %d", code, http.StatusOK)
 	}
-	removed := reader.nextEvent(t, time.Second)
+	removed := reader.nextEvent(t, streamWait)
 	if removed.Type != mutationAttachmentRemoved {
 		t.Errorf("type: got %q, want %q", removed.Type, mutationAttachmentRemoved)
 	}
@@ -513,12 +518,12 @@ func TestStreamDoesNotRevealPrivateResourceIdentities(t *testing.T) {
 	workTestCommand(t, server, owner, workCommand{Command: "log", Path: path, ClientID: "private-log", Content: "Secret"}, 200)
 	reader.silentFor(t, 50*time.Millisecond)
 	grantID := reviewedAccessGrant(t, server, owner, path, "viewer", 0, "item")
-	event := reader.nextEvent(t, time.Second)
+	event := reader.nextEvent(t, streamWait)
 	if event.NodePath != path {
 		t.Fatal("newly shared work was not announced")
 	}
 	reviewedAccessRevoke(t, server, owner, path, grantID)
-	deadline := time.After(time.Second)
+	deadline := time.After(streamWait)
 	resync := false
 refresh:
 	for {
