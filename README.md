@@ -3,6 +3,46 @@
 ## Overview
 The LumberJack API provides a hierarchical event tracking system where nodes can have multiple parents and events can be tracked across different organizational paths.
 
+## A generic store, and the seams products build on
+
+LumberJack is the generic store: the forest, events and entries, queries, the object log, the
+session registry, `/access` sharing, the hub's outbox, and storage encryption. Product code — the
+domain engine and its products, Momentum's personal source, workspace and second factor, and
+Activity's runtime — is not in it. Each product is preserved, whole and unchanged, on its own
+`product/*` branch with a `HANDOFF.md` that says what it used and how to rebuild it
+(`docs/keep-move.md`).
+
+What a product builds on is public:
+
+- **`core`** — the data model: `Node`, `Event`, `Entry`, `User`, `AccessGrant`, `Outbox`,
+  `OutboxChange`, `OutboundMessage`, and the record codec.
+- **`extension`** — the seams: `Extension`/`Spec`/`Instance` and `Host` (one write path,
+  `Host.Change`); `PermitProvider` and `WriteHook` around every write; `VisibilityFilter` and
+  ownership markers; `RouteProvider` for HTTP and application routes; `RequestAuthenticator`,
+  `SecondFactor` and `Sessions`; `OutboxListener` and `OutboxEntitlement`; `Configurable` for
+  `application_configure` parts; per-forest slots (`SlotSpec`, `ReadTx.Slot`, `Tx.SetSlot`).
+- **`embedded.OpenWith(config, principal, extensions...)`** — the set is fixed for the life of a
+  runtime; a second open of the same path with a different set is refused.
+- **`ffi/abi`** and **`ffi/gen`** — a product's C archive is a superset of the generic one: the
+  generated base wrappers, its own exports, and `abi.Register` in `init`.
+
+The design is `docs/extension-api.md`; what the implementation did differently is its §11.
+
+**Signing in without a second factor.** A store with no `SecondFactor` registered signs a user in
+with a password. An account that was enrolled in a second factor before the split — `mfa_enabled`
+on the user, or its id under the root's preserved `account_security` — is refused with
+`401 second factor required` until a product that implements one is linked. `MOMENTUM_REQUIRE_MFA`
+is no longer read.
+
+**Data a missing product owns is kept.** Keys a product wrote on a record (`personal_bindings`,
+`conversations`, `account_security`, `mfa_challenges`, `admitted_commands`, the outbox's `feed`) are
+kept as the bytes the file held and written back in place. A node carrying an ownership marker is
+hidden from every generic read, and an ordinary write that would change its subtree is refused 403.
+
+**The C ABI** exports the nineteen base functions `ffi/lumberjack.h` declares, and no others
+(`make nm-check`). The ABI version is still 2. A caller that used an `ic_lj_domain_*`,
+`ic_lj_personal_source_*` or `ic_lj_native_*` export links its product's archive instead.
+
 ## Installation & Usage
 
 ### Using as a Package
@@ -138,6 +178,33 @@ build opens it as before.
 
 **Rollback past the first reference is restoring a backup taken before it was written.**
 
+### Storage encryption: configuration and sealing labels
+
+A store is sealed when its storage mode is `kms` or `local-test`. The configuration is explicit in
+`ServerConfig.Storage`; when that is not set, as for the CLI and the C ABI, it is read from the
+environment:
+
+| Variable | Meaning |
+|---|---|
+| `LUMBERJACK_STORAGE_MODE` | `kms`, `local-test`, or empty for plaintext |
+| `LUMBERJACK_STORAGE_KMS_KEY` | the Cloud KMS CryptoKey resource, for `kms` |
+| `LUMBERJACK_STORAGE_LOCAL_KEY_FILE` | a private 32-byte key file, for `local-test` |
+| `LUMBERJACK_STORAGE_MIGRATE_LEGACY` | `1` lets a plaintext store be sealed on open |
+| `LUMBERJACK_STORAGE_REWRAP_KEYS` | `1` wraps every account key again on open |
+| `LUMBERJACK_STORAGE_WRITE_LABEL` | `legacy` (the default) or `neutral` |
+| `LUMBERJACK_ADMIN_RECONCILE` | `1` lets `application_configure` reset the configured admin's password |
+
+The `CORRESPONDER_STORAGE_*` and `CORRESPONDER_ADMIN_RECONCILE` names are still read, for this
+release only, when the new name is not set; each use is logged as deprecated.
+
+**Sealing labels.** Every store sealed so far carries the legacy label (envelope versions 3 and 4,
+object key file version 1, object record flag 1), and that stays the default for this release.
+`LUMBERJACK_STORAGE_WRITE_LABEL=neutral` writes the product-free label instead: envelope 5 or 6,
+key file version 2 for a new object store, flag 2 for new objects. The first neutral write wraps
+every account key again under the new label. It is a one-way door: a build from before the split
+refuses a neutral envelope and does not serve a flag-2 object. A store read under the neutral label
+stays neutral. Both labels are read forever.
+
 ### Migrating an existing database
 
 Files written by any earlier build have **no banner**, and they are still read: the loader
@@ -203,17 +270,14 @@ the disk the size of the change.
   refused at open rather than read as whole nodes.
 - **The change sequence survives a restart.** The mutation stream numbers from the log's last
   record on open, so `/changes` and `/stream` cursors do not restart at one. A write that publishes
-  more than one mutation per record — a workspace command publishes two — can leave the restarted
-  numbering below what a client saw; the stream's epoch is what tells that client the process
-  restarted.
+  more than one mutation per record can leave the restarted numbering below what a client saw; the
+  stream's epoch is what tells that client the process restarted.
 - **An encrypted store refuses `mode: tiered`**, with an error that says why: the sealed state
   file would have a plaintext log beside it.
-- **Owned scopes, the domain engine and the personal source refuse `mode: tiered`**: they publish
-  whole paired snapshots through the state writer, which the log and the cold writer do not carry.
-  Configuring either answers an error, and a state file holding an owned scope does not open tiered.
-- **The application feed is unavailable in tiered mode**: its durability check compares the forest
-  with the last durable snapshot, which tiered commits never update, so `/feed`, refusal recording
-  and reminders answer 503.
+- **A store holding an owned scope written before the split refuses `mode: tiered`**: the
+  products that own it run under snapshot persistence only, so a store handed back to them must not
+  have acquired a hot log. An extension that declares `Persistence: SnapshotOnly` is refused under
+  tiered persistence at Open.
 
 The version the engine answers with is on `GET /health`, which needs no credentials:
 

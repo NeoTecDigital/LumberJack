@@ -1,8 +1,9 @@
 <!-- Written by Richard Christopher, Copyright 2026 NeoTec, LLC -->
 # Public extension API
 
-Status: design for owner review, against `main` at `d18f3e7`. No source has changed. The
-classification it serves is in [keep-move.md](keep-move.md).
+Status: design for owner review, against `main` at `d18f3e7`; the classification it serves is in
+[keep-move.md](keep-move.md). Implemented on `finalize/split`, steps P3b-0 to P3b-10 (§8); where the
+implementation differs from the text, §11 says so and why.
 
 ## 1. Scope
 

@@ -6,6 +6,57 @@ All notable changes to Lumberjack. The version the engine answers with is on `GE
 
 ## Unreleased
 
+### The split: a generic store with public extension seams
+
+LumberJack is now the generic store, and the seams a product rebuilds on are public. Product code
+has left `main`; each product is preserved whole on its own branch, with a `HANDOFF.md`:
+`product/manifest-domain` (the domain engine, its products, the owned-scope engine and the source
+fence), `product/momentum-personal`, `product/momentum-workspace`, `product/momentum-auth` and
+`product/activity-runtime` (with the Raft packages). See `docs/keep-move.md` and
+`docs/extension-api.md`.
+
+- **Public packages.** `core` (was `internal/core`) is the data model and the record codec.
+  `extension` is the seams: `Extension`, `Host` and its one write path `Host.Change`,
+  `PermitProvider`, `WriteHook`, `VisibilityFilter`, `RouteProvider`, `RequestAuthenticator`,
+  `SecondFactor`, `Sessions`, `OutboxListener`, `OutboxEntitlement`, `Configurable`, and
+  per-forest slots. `embedded.OpenWith(config, principal, extensions...)` attaches a fixed set per
+  runtime. `ffi/abi` and `ffi/gen` build product C archives.
+- **Routes removed** with their products: `/workspace`, `/workspace/commands`, `/conversations*`,
+  `/feed*`, `/assets/index`, `/mfa/*`, `/auth/*`, `/account/*`, `/users/mfa`, `/session/mfa`,
+  `/session/admit`, `/activation/probe`. A product registers its routes through `RouteProvider`.
+- **Signing in (breaking).** With no `SecondFactor` registered a password login issues a session;
+  `MOMENTUM_REQUIRE_MFA` is no longer read. An account already enrolled in a second factor —
+  `mfa_enabled`, or its id under the root's preserved `account_security` — is refused
+  `401 second factor required`, and the refusal is not counted against it.
+- **`application_configure` parts.** `username`, `password` and `secret` are the engine's; every
+  other part goes to the extension that declared it. A part no extension declared — `activation` or
+  `admission` on the generic archive — is refused `LJ_INVALID`.
+- **C ABI.** The generic archive exports exactly the nineteen base functions; the fourteen
+  `ic_lj_domain_*`, `ic_lj_personal_source_*` and `ic_lj_native_*` exports are in product archives.
+  `LJ_ABI_VERSION` stays 2. The archive is about 37.7 MB (was 50.5 MB).
+- **Outbox.** `CorrespondenceState`/`CorrespondenceChange` are `core.Outbox`/`core.OutboxChange`;
+  the JSON is unchanged. A change records `direct` when its recipients were chosen for it;
+  `/notifications` shows a record that is direct, a share, subscribed to, or vouched for by an
+  `OutboxEntitlement`.
+- **Storage configuration.** `ServerConfig.Storage` is explicit; without it the engine reads
+  `LUMBERJACK_STORAGE_*`, and for this release the deprecated `CORRESPONDER_STORAGE_*` names.
+  `LUMBERJACK_ADMIN_RECONCILE` replaces `CORRESPONDER_ADMIN_RECONCILE` (also still read).
+  `lumberjack serve` defaults to `--admin-org LumberJack --admin-email admin@lumberjack.local`.
+- **Sealing labels.** Legacy stays the write default; `LUMBERJACK_STORAGE_WRITE_LABEL=neutral`
+  writes envelope 5/6, object key file 2 and object flag 2, which a build from before the split
+  refuses. Both are read.
+- **State files.** A store written by the builds that carried product fields round-trips byte for
+  byte: an unchanged node is written back as the bytes it was read from, keys nobody now types are
+  kept as their bytes and written in their old place, and every number keeps its literal (`1.50`
+  stays `1.50` — which also fixes an encrypted store rounding numbers on every write). A store that
+  reached the STATE-3 banner keeps it. An encrypted store's `conversations` section is read into the
+  root and sealed inside it from then on. Nodes carrying the legacy owned-scope marker are hidden
+  from generic reads and guarded against ordinary writes, and such a store does not open tiered.
+- **Checks.** `internal/compat/testdata` holds state files written by the cut build;
+  `make rollback-check` has the cut build open what this build writes from them, and
+  `make product-archive-example` builds and drives a product archive.
+
+
 ### Tiered persistence
 
 What a write puts on the disk is now the size of the change, not the size of the store. Opt in
