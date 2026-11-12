@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
@@ -19,24 +20,23 @@ const encryptedStateMagic = "LUMBERJACK-ENCRYPTED-STATE-3\n"
 
 // The envelope version does for an encrypted file what stateMagicReferences does for a plain one: a
 // build from before references refuses any version but 3 and so cannot open a forest holding one.
-const encryptedStateVersion = 3
-const encryptedStateVersionReferences = 4
-
-func encryptedStateVersionFor(data []byte) int {
-	if stateHoldsACLReferences(data) {
-		return encryptedStateVersionReferences
-	}
-	return encryptedStateVersion
-}
+// The version also names the sealing label (compat.Label): 3 and 4 are the legacy label, 5 and 6 the
+// neutral one, and the cut build refuses 5 and 6 (docs/extension-api.md §7.5).
 
 type storageAccountKey struct {
 	key     []byte
 	wrapped wrappedStorageKey
 }
+
+// secureStorage seals one store. label is the one its envelope was read under, and the one it is
+// written under: legacy for a new store in this release, so a store keeps the label it has. level
+// is the state level its envelope version carried at the last decode.
 type secureStorage struct {
 	wrapper  storageKeyWrapper
 	id       string
 	accounts map[string]storageAccountKey
+	label    compat.Label
+	level    int
 }
 type encryptedStateEnvelope struct {
 	Version int               `json:"version"`
@@ -78,7 +78,7 @@ func (server *Server) storageCodec() (*secureStorage, error) {
 	return server.storage, server.storageErr
 }
 func (s *secureStorage) aad(purpose string) []byte {
-	return []byte("momentum/storage/v3/" + s.id + "/" + purpose)
+	return []byte(s.label.StatePrefix() + s.id + "/" + purpose)
 }
 func (s *secureStorage) accountKey(ctx context.Context, id string) ([]byte, error) {
 	account, exists := s.accounts[id]
@@ -136,16 +136,25 @@ func (s *secureStorage) openResource(master []byte, id string, resource encrypte
 	return storageOpen(key, resource.Payload, s.aad("resource/"+id))
 }
 
-// The immutable flat snapshot is decoded outside the forest lock. Its own graph
-// supplies effective permissions; no live map is consulted during network I/O.
+// encode seals a plaintext document at the level the document itself requires.
 func (s *secureStorage) encode(data []byte) ([]byte, error) {
+	return s.encodeAt(data, stateLevelFor(data))
+}
+
+// encodeAt seals a plaintext document under the store's label at a state level.
+//
+// The immutable flat snapshot is decoded outside the forest lock. Its own graph
+// supplies effective permissions; no live map is consulted during network I/O. Each node is sealed
+// as the bytes the document holds for it, never re-encoded from a decode, so its numbers are the
+// literals it was written with.
+func (s *secureStorage) encodeAt(data []byte, level int) ([]byte, error) {
 	ctx := context.Background()
-	forest, err := decodeState(data)
+	table, err := decodeTable(data)
 	if err != nil {
 		return nil, err
 	}
-	var flat stateDocument
-	if err = json.Unmarshal(data, &flat); err != nil {
+	forest, err := linkTable(table)
+	if err != nil {
 		return nil, err
 	}
 	master, err := storageRandomKey()
@@ -153,23 +162,20 @@ func (s *secureStorage) encode(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer clear(master)
-	document := encryptedStateDocument{Root: flat.Root, Accounts: map[string]wrappedStorageKey{}, Nodes: map[string]encryptedResource{}, Conversations: map[string]encryptedConversation{}}
-	for id, node := range flat.Nodes {
+	document := encryptedStateDocument{Root: table.Root, Accounts: map[string]wrappedStorageKey{}, Nodes: map[string]encryptedResource{}, Conversations: map[string]encryptedConversation{}}
+	for id, record := range table.records {
 		// Root is backend security state: it must not acquire a user's grant merely
 		// because that user administers account inventory. Conversations are separate.
 		users := []string{}
-		if id != flat.Root {
+		if id != table.Root {
 			for _, account := range forest.Users {
-				if node.CheckPermission(account.ID, core.ReadPermission) {
+				if record.Node.CheckPermission(account.ID, core.ReadPermission) {
 					users = append(users, account.ID)
 				}
 			}
 		}
-		body, err := json.Marshal(node)
-		if err != nil {
-			return nil, err
-		}
-		if id == flat.Root {
+		body := []byte(table.Nodes[id])
+		if id == table.Root {
 			var fields map[string]json.RawMessage
 			if err = json.Unmarshal(body, &fields); err != nil {
 				return nil, err
@@ -256,7 +262,7 @@ func (s *secureStorage) encode(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(encryptedStateEnvelope{Version: encryptedStateVersionFor(data), ID: s.id, Key: wrapped, Payload: payload})
+	return json.Marshal(encryptedStateEnvelope{Version: s.label.EnvelopeVersion(level), ID: s.id, Key: wrapped, Payload: payload})
 }
 
 func (s *secureStorage) decode(data []byte) ([]byte, error) {
@@ -264,10 +270,11 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, errors.New("invalid encrypted state envelope")
 	}
-	if (envelope.Version != encryptedStateVersion && envelope.Version != encryptedStateVersionReferences) || len(envelope.ID) != 64 {
+	label, level, known := compat.EnvelopeLabel(envelope.Version)
+	if !known || len(envelope.ID) != 64 {
 		return nil, errors.New("unsupported encrypted state format")
 	}
-	s.id = envelope.ID
+	s.id, s.label, s.level = envelope.ID, label, level
 	master, err := s.wrapper.Unwrap(context.Background(), envelope.Key, s.aad("snapshot"))
 	if err != nil {
 		return nil, err
@@ -292,7 +299,7 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 			return nil, err
 		}
 		var node nodeRecord
-		if err = json.Unmarshal(body, &node); err != nil || node.Node == nil || node.ID != id {
+		if err = decodeExact(body, &node); err != nil || node.Node == nil || node.ID != id {
 			return nil, errors.New("encrypted node identity mismatch")
 		}
 		flat.Nodes[id] = &node
@@ -310,7 +317,7 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 			return nil, err
 		}
 		var conversation core.Conversation
-		if err = json.Unmarshal(body, &conversation); err != nil || conversation.ID != id {
+		if err = decodeExact(body, &conversation); err != nil || conversation.ID != id {
 			return nil, errors.New("encrypted conversation identity mismatch")
 		}
 		for _, messageID := range saved.Order {
@@ -319,7 +326,7 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 				return nil, err
 			}
 			var message core.ConversationMessage
-			if err = json.Unmarshal(body, &message); err != nil || message.ID != messageID {
+			if err = decodeExact(body, &message); err != nil || message.ID != messageID {
 				return nil, errors.New("encrypted message identity mismatch")
 			}
 			conversation.Messages = append(conversation.Messages, message)
@@ -359,6 +366,7 @@ func (server *Server) readEncryptedState(file *os.File) (*core.Node, bool, error
 	if err != nil {
 		return nil, true, err
 	}
+	server.raiseStateLevel(storage.level)
 	forest, err := decodeState(data)
 	if err != nil {
 		return nil, true, err
@@ -389,7 +397,7 @@ func (server *Server) prepareEncryptedState(data []byte) ([]byte, bool, error) {
 	if storage == nil {
 		return nil, false, nil
 	}
-	sealed, err := storage.encode(data)
+	sealed, err := storage.encodeAt(data, server.raiseStateLevel(stateLevelFor(data)))
 	if err != nil {
 		return nil, true, fmt.Errorf("encrypted storage write refused: %w", err)
 	}

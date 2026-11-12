@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -36,6 +37,17 @@ func sample() candidate {
 		},
 		Timestamp: at(10),
 	}
+}
+
+// withMetadata is a candidate with one metadata value replaced.
+func withMetadata(item candidate, key string, value interface{}) candidate {
+	metadata := make(map[string]interface{}, len(item.Metadata))
+	for name, held := range item.Metadata {
+		metadata[name] = held
+	}
+	metadata[key] = value
+	item.Metadata = metadata
+	return item
 }
 
 func TestPredicateMatch(t *testing.T) {
@@ -135,6 +147,12 @@ func TestPredicateMatch(t *testing.T) {
 			name:  "a JSON number compares as the text a caller typed",
 			where: &whereClause{Metadata: map[string]string{"floor": "3"}},
 			item:  sample(),
+			want:  true,
+		},
+		{
+			name:  "a reloaded number (json.Number) compares as its literal",
+			where: &whereClause{Metadata: map[string]string{"floor": "3"}},
+			item:  withMetadata(sample(), "floor", json.Number("3")),
 			want:  true,
 		},
 		{

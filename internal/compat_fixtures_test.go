@@ -258,9 +258,12 @@ func compatReencode(t *testing.T, document []byte) []byte {
 	return compatEncode(t, forest, table.LogSequence)
 }
 
-// The cut build's re-encoding of every plaintext fixture is pinned, and it is a fixed point: what
-// it writes back re-encodes to itself. This is the baseline §7.8.1 is measured against.
-func TestCompatPlainFixturesReencodeAsTheCutBuildDid(t *testing.T) {
+// A plaintext store re-encodes to the identical document, so its header hash is unchanged and the
+// writer's unchanged-skip does not even rewrite it (§7.8.1). The cut build did not: it re-marshalled
+// receipts a product stored as structs with their keys sorted (ReencodeSHA256 records what it wrote).
+// This build writes an unchanged node back as the bytes it was read from. The re-encoding is also a
+// fixed point.
+func TestCompatPlainFixturesReencodeByteIdentically(t *testing.T) {
 	for _, entry := range compatManifest(t) {
 		if entry.Kind != "plain" && entry.Kind != "tiered-snapshot" {
 			continue
@@ -274,10 +277,10 @@ func TestCompatPlainFixturesReencodeAsTheCutBuildDid(t *testing.T) {
 				t.Fatalf("document or banner differs from the manifest")
 			}
 			again := compatReencode(t, document)
-			if got := compatSHA(again); got != entry.ReencodeSHA256 {
-				t.Fatalf("re-encoding %s, the cut build wrote %s", got, entry.ReencodeSHA256)
+			if !bytes.Equal(again, document) {
+				t.Fatalf("re-encoding drifted at byte %d", compatFirstDifference(again, document))
 			}
-			if fixed := compatReencode(t, again); !bytes.Equal(fixed, again) {
+			if fixed := compatReencode(t, compatReencode(t, again)); !bytes.Equal(fixed, again) {
 				t.Fatalf("re-encoding is not a fixed point: drifts at byte %d", compatFirstDifference(fixed, again))
 			}
 		})

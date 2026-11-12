@@ -2,7 +2,6 @@
 package internal
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -187,59 +186,6 @@ func stagedNodePairs(id string, receipts map[string]json.RawMessage, pairs map[s
 		pairs[stagedPairKey(pair.ScopeID, key)] = pair
 	}
 	return nil
-}
-
-// Only the new owned profile gets UseNumber; legacy decoding remains unchanged. It works on the
-// node table as read, before it is linked, so it holds each node's original bytes to re-read.
-func restoreStagedNumbers(table *stateTable) error {
-	root := table.records[table.Root]
-	if root != nil && root.PersonalBindings != nil {
-		// This protected source profile preserves ALL original interface bags,
-		// including unrelated organizations, without changing legacy decoding.
-		return restoreAllNumbers(table)
-	}
-	for id, record := range table.records {
-		if !isStagedNode(record.Node) {
-			continue
-		}
-		if err := restoreStagedNodeMetadata(table.Nodes[id], record.Node); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func restoreAllNumbers(table *stateTable) error {
-	for id := range table.records {
-		var record nodeRecord
-		if err := decodeStagedNumbers(table.Nodes[id], &record); err != nil {
-			return err
-		}
-		table.records[id] = &record
-	}
-	return nil
-}
-
-func restoreStagedNodeMetadata(raw json.RawMessage, node *core.Node) error {
-	var fields struct {
-		Metadata json.RawMessage `json:"metadata"`
-		Receipts json.RawMessage `json:"command_receipts"`
-	}
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return err
-	}
-	if len(fields.Metadata) != 0 {
-		if err := decodeStagedNumbers(fields.Metadata, &node.Metadata); err != nil {
-			return err
-		}
-	}
-	return decodeStagedNumbers(fields.Receipts, &node.CommandReceipts)
-}
-
-func decodeStagedNumbers(raw json.RawMessage, target interface{}) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	return decoder.Decode(target)
 }
 
 // Personal enrollment composes its private ledger into the SAME snapshot and

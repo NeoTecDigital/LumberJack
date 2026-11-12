@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/gorilla/mux"
@@ -272,9 +273,14 @@ func TestNodeMetadataMerges(t *testing.T) {
 	if !present {
 		t.Fatalf("The layout did not survive the restart: %v", node.Metadata)
 	}
+	// A reload reads numbers as the literals the file holds (json.Number), so a number written as 10
+	// comes back as the literal 10.
 	for key, want := range layout {
+		if number, isNumber := want.(float64); isNumber {
+			want = json.Number(strconv.FormatFloat(number, 'f', -1, 64))
+		}
 		if restored[key] != want {
-			t.Errorf("Layout %s came back as %v, want %v", key, restored[key], want)
+			t.Errorf("Layout %s came back as %#v, want %#v", key, restored[key], want)
 		}
 	}
 }

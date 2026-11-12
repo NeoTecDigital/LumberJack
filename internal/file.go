@@ -91,10 +91,12 @@ func (server *Server) readState(file *os.File) (*stateTable, error) {
 		}
 		server.storageRewrite = true
 	}
-	flat, err := hasStateMagic(file)
+	level, err := stateMagicLevel(file)
 	if err != nil {
 		return nil, err
 	}
+	flat := level != 0
+	server.raiseStateLevel(level)
 
 	data, err := server.readSealedPayload(file)
 	if err != nil {
@@ -117,24 +119,24 @@ func (server *Server) readState(file *os.File) (*stateTable, error) {
 	return tableFromForest(forest)
 }
 
-// hasStateMagic reports whether the file begins with the banner, leaving the reader positioned
-// after it when it does and back at the start when it does not.
+// stateMagicLevel reports the level of the banner the file begins with, or 0 when it has none,
+// leaving the reader positioned after it when it does and back at the start when it does not.
 //
 // A file SHORTER than the banner is an old file, not a broken one: the old shape's first bytes are
 // a 32-byte hash and a gzip stream, and the smallest of those is well under this length.
-func hasStateMagic(file *os.File) (bool, error) {
+func stateMagicLevel(file *os.File) (int, error) {
 	banner := make([]byte, len(stateMagic))
 	_, err := io.ReadFull(file, banner)
 	switch {
 	case err == nil && isStateBanner(banner):
-		return true, nil
+		return stateBannerLevel(banner), nil
 	case err == nil, err == io.EOF, err == io.ErrUnexpectedEOF:
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			return false, err
+			return 0, err
 		}
-		return false, nil
+		return 0, nil
 	default:
-		return false, err
+		return 0, err
 	}
 }
 
@@ -378,7 +380,7 @@ func (server *Server) writeStateTempFile(path string, hash, jsonData []byte) err
 	// format cannot ignore it: that build reads the first 32 bytes as the hash and opens a gzip
 	// stream at offset 32, so it fails on the gzip header rather than reading a document it does
 	// not understand and rewriting the file without the parts it dropped. See state_codec.go.
-	if _, err := file.WriteString(stateBannerFor(jsonData)); err != nil {
+	if _, err := file.WriteString(server.stateBannerFor(jsonData)); err != nil {
 		server.logger.Failure("Failed to write the state banner to temporary file: %v", err)
 		return err
 	}

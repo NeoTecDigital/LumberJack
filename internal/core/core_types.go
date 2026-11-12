@@ -153,10 +153,13 @@ type Node struct {
 	// a replay window.
 	AdmittedCommands map[string]int64 `json:"admitted_commands,omitempty"`
 	mutex            sync.RWMutex     `json:"-"`
-	CreatedBy        string           `json:"created_by,omitempty"`
-	CreatedAt        time.Time        `json:"created_at,omitempty"`
-	ModifiedBy       string           `json:"modified_by,omitempty"`
-	ModifiedAt       time.Time        `json:"modified_at,omitempty"`
+	// loaded is the record bytes the state file held for this node, when they differ from this
+	// build's encoding of it. See node_loaded.go.
+	loaded     *loadedRecord
+	CreatedBy  string    `json:"created_by,omitempty"`
+	CreatedAt  time.Time `json:"created_at,omitempty"`
+	ModifiedBy string    `json:"modified_by,omitempty"`
+	ModifiedAt time.Time `json:"modified_at,omitempty"`
 }
 
 // Add to existing types

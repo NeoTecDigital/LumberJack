@@ -173,7 +173,7 @@ func (store *objectStore) flagMatches(flag byte) bool {
 	if store.sealer == nil {
 		return flag == objectPlain
 	}
-	return flag == objectSealed
+	return flag == objectSealed || flag == objectSealedNeutral
 }
 
 // indexWhole registers a verified record. The first record for an id wins; a later one carrying the
@@ -182,7 +182,7 @@ func (store *objectStore) indexWhole(header objectRecordHeader, segment uint32, 
 	if existing, ok := store.index[header.id]; ok && !existing.corrupt {
 		return
 	}
-	store.index[header.id] = objectLocation{segment: segment, offset: payloadStart, length: header.length}
+	store.index[header.id] = objectLocation{segment: segment, offset: payloadStart, length: header.length, flag: header.flag}
 }
 
 // indexCorrupt registers a record that cannot be served, unless a whole copy of the same id is

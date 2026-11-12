@@ -2,10 +2,14 @@ package internal
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
@@ -66,21 +70,63 @@ const stateMagicReferences = "LUMBERJACK-STATE-3\nthis file is a flat node table
 // A reference always marshals to this byte sequence: its keys sort contractRevision first, and text
 // inside a JSON string cannot match because its quotes are escaped. A record whose own structured
 // data carried this exact pair would also select the new banner, which errs toward refusing a rollback.
-var stateACLReferenceMark = []byte(`"contractRevision":"` + domainACLReferenceRevision + `"`)
+// The mark is a constant of the compatibility table, so the engine needs no domain code to see it.
+var stateACLReferenceMark = []byte(compat.ReferenceMark)
 
 func stateHoldsACLReferences(data []byte) bool {
 	return bytes.Contains(data, stateACLReferenceMark)
 }
 
-func stateBannerFor(data []byte) string {
+// stateLevelFor is the level a document requires on its own: references need the STATE-3 banner.
+func stateLevelFor(data []byte) int {
 	if stateHoldsACLReferences(data) {
+		return compat.StateLevelReferences
+	}
+	return compat.StateLevelTable
+}
+
+// stateBannerAt is the banner a level is written under.
+func stateBannerAt(level int) string {
+	if level >= compat.StateLevelReferences {
 		return stateMagicReferences
 	}
 	return stateMagic
 }
 
+// stateBannerLevel is the level a banner was written at, or 0 for no banner.
+func stateBannerLevel(banner []byte) int {
+	switch string(banner) {
+	case stateMagicReferences:
+		return compat.StateLevelReferences
+	case stateMagic:
+		return compat.StateLevelTable
+	}
+	return 0
+}
+
 func isStateBanner(banner []byte) bool {
-	return string(banner) == stateMagic || string(banner) == stateMagicReferences
+	return stateBannerLevel(banner) != 0
+}
+
+// raiseStateLevel records that the store is at least at level, and answers the level to write at:
+// level = max(level read at open, what this document requires). It never goes down, so a store that
+// once needed STATE-3 keeps refusing the build before references after the last one is removed —
+// stricter than the cut build, which dropped back to STATE-2 (docs/extension-api.md §7.3).
+func (server *Server) raiseStateLevel(level int) int {
+	for {
+		held := int(server.stateLevel.Load())
+		if held >= level {
+			return held
+		}
+		if server.stateLevel.CompareAndSwap(int32(held), int32(level)) {
+			return level
+		}
+	}
+}
+
+// stateBannerFor is the banner a document is written under by this store.
+func (server *Server) stateBannerFor(data []byte) string {
+	return stateBannerAt(server.raiseStateLevel(stateLevelFor(data)))
 }
 
 // stateVersion is recorded inside the document as well, for a human reading a decompressed file and
@@ -127,6 +173,58 @@ type stateTable struct {
 type nodeRecord struct {
 	*core.Node
 	Children []string `json:"children"`
+}
+
+// plainNodeRecord is nodeRecord without its MarshalJSON, which is this build's own encoding.
+type plainNodeRecord nodeRecord
+
+// MarshalJSON writes a record back as the bytes it was loaded from when the node is unchanged since
+// the load, and in this build's own encoding otherwise. See core/node_loaded.go.
+func (record *nodeRecord) MarshalJSON() ([]byte, error) {
+	encoded, err := json.Marshal((*plainNodeRecord)(record))
+	if err != nil || record.Node == nil || !record.Node.HasLoadedRecord() {
+		return encoded, err
+	}
+	if raw, unchanged := record.Node.LoadedRecord(func() [32]byte { return sha256.Sum256(encoded) }); unchanged {
+		return raw, nil
+	}
+	return encoded, nil
+}
+
+// decodeExact decodes JSON with every number held in an interface value kept as the literal it was
+// written as (json.Number), and refuses trailing data the way json.Unmarshal does. Every interface
+// bag on a node — metadata, event and entry metadata, command receipts — is read this way, so 1.50
+// stays 1.50 and an integer past 2^53 is not rounded (docs/extension-api.md §7.2).
+func decodeExact(raw []byte, target interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("invalid character after top-level value")
+	}
+	return nil
+}
+
+// decodeNodeRecord reads one node record number-exactly. When this build would not write the same
+// bytes back for the record, the node keeps the bytes it was read from (see MarshalJSON).
+func decodeNodeRecord(raw []byte) (*nodeRecord, error) {
+	var record nodeRecord
+	if err := decodeExact(raw, &record); err != nil {
+		return nil, err
+	}
+	if record.Node == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal((*plainNodeRecord)(&record))
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(encoded, raw) {
+		record.Node.KeepLoadedRecord(append([]byte(nil), raw...), sha256.Sum256(encoded))
+	}
+	return &record, nil
 }
 
 // encodeState serializes the whole forest, once per node.
@@ -217,9 +315,8 @@ func decodeState(data []byte) (*core.Node, error) {
 	return linkTable(table)
 }
 
-// decodeTable reads the node table without linking it, keeping each node's bytes. The staged
-// profiles' numbers are restored here, so every load path, whichever store opens it, reads them
-// the same way. See restoreStagedNumbers.
+// decodeTable reads the node table without linking it, keeping each node's bytes. Every node is read
+// number-exactly, so every load path, whichever store opens it, reads numbers the same way.
 func decodeTable(data []byte) (*stateTable, error) {
 	var table stateTable
 	if err := json.Unmarshal(data, &table); err != nil {
@@ -227,17 +324,13 @@ func decodeTable(data []byte) (*stateTable, error) {
 	}
 	table.records = make(map[string]*nodeRecord, len(table.Nodes))
 	for id, raw := range table.Nodes {
-		var record nodeRecord
-		if err := json.Unmarshal(raw, &record); err != nil {
+		record, err := decodeNodeRecord(raw)
+		if err != nil {
 			return nil, fmt.Errorf("node %q: %w", id, err)
 		}
-		if record.Node == nil {
-			continue
+		if record != nil {
+			table.records[id] = record
 		}
-		table.records[id] = &record
-	}
-	if err := restoreStagedNumbers(&table); err != nil {
-		return nil, err
 	}
 	return &table, nil
 }
@@ -284,7 +377,7 @@ func decodeStateChildren(record *nodeRecord, nodes map[string]*nodeRecord) error
 // one id in such a file is a serialization of the same object.
 func (server *Server) readNestedState(data []byte) (*core.Node, error) {
 	var loadedForest core.Node
-	if err := json.Unmarshal(data, &loadedForest); err != nil {
+	if err := decodeExact(data, &loadedForest); err != nil {
 		server.logger.Failure("Failed to unmarshal data: %v", err)
 		return nil, fmt.Errorf("error validating data: %v", err)
 	}

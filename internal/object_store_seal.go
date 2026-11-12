@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 )
 
 // Objects under an encrypted storage mode.
@@ -34,17 +36,21 @@ import (
 // known file, which a sealed state file does not. That is inherent in the design and not a defect of
 // this implementation.
 //
+// THE LABEL. A key file at version 1 seals under the legacy label, version 2 under the neutral one,
+// and a record's flag says which label its payload was sealed under: flag 1 the key file's, flag 2
+// the neutral one. Both are read forever; a store writes the flag its key file names
+// (docs/extension-api.md §7.5).
+//
 // On the disk: `<name>.objects/key` holds the store id and the wrapped master. Each sealed payload is
 //
 //	[60] key      storageSeal(master, object key, aad "key/<id>")     — 12 nonce + 32 + 16 tag
 //	[n+28] body   storageSeal(object key, plaintext, aad "object/<id>") — 12 nonce + n + 16 tag
 
 const (
-	objectKeyFileName     = "key"
-	objectSealedKeySize   = 12 + 32 + 16
-	objectSealedOverhead  = objectSealedKeySize + 12 + 16
-	objectKeyFileVersion  = 1
-	objectSealerAADPrefix = "momentum/objects/v1/"
+	objectKeyFileName    = "key"
+	objectSealedKeySize  = 12 + 32 + 16
+	objectSealedOverhead = objectSealedKeySize + 12 + 16
+	objectKeyFileVersion = compat.ObjectKeyFileLegacy
 )
 
 // objectKeyEnvelope is the key file. The id is random and in the clear, as the encrypted state
@@ -55,27 +61,51 @@ type objectKeyEnvelope struct {
 	Key     wrappedStorageKey `json:"key"`
 }
 
+// objectSealer holds a store's master. label is its key file's, and writeFlag the record flag new
+// records are sealed under.
 type objectSealer struct {
-	id     string
-	master []byte
+	id        string
+	master    []byte
+	label     compat.Label
+	writeFlag byte
+}
+
+// objectSealerFor is the sealer of a key file version, or false for a version no build wrote.
+func objectSealerFor(version int, id string) (*objectSealer, bool) {
+	switch version {
+	case compat.ObjectKeyFileLegacy:
+		return &objectSealer{id: id, label: compat.LabelLegacy, writeFlag: objectSealed}, true
+	case compat.ObjectKeyFileNeutral:
+		return &objectSealer{id: id, label: compat.LabelNeutral, writeFlag: objectSealedNeutral}, true
+	}
+	return nil, false
 }
 
 func (s *objectSealer) aad(purpose string) []byte {
-	return []byte(objectSealerAADPrefix + s.id + "/" + purpose)
+	return []byte(s.label.ObjectsPrefix() + s.id + "/" + purpose)
 }
 
-// seal is one object's payload under one fresh key.
+// recordAAD is the additional data of a record's payload: under the key file's label for flag 1,
+// under the neutral label for flag 2.
+func (s *objectSealer) recordAAD(flag byte, purpose string) []byte {
+	if flag == objectSealedNeutral {
+		return []byte(compat.LabelNeutral.ObjectsPrefix() + s.id + "/" + purpose)
+	}
+	return s.aad(purpose)
+}
+
+// seal is one object's payload under one fresh key, under the store's write flag.
 func (s *objectSealer) seal(id objectID, plaintext []byte) ([]byte, error) {
 	key, err := storageRandomKey()
 	if err != nil {
 		return nil, err
 	}
 	defer clear(key)
-	wrapped, err := storageSeal(s.master, key, s.aad("key/"+id.hex()))
+	wrapped, err := storageSeal(s.master, key, s.recordAAD(s.writeFlag, "key/"+id.hex()))
 	if err != nil {
 		return nil, err
 	}
-	body, err := storageSeal(key, plaintext, s.aad("object/"+id.hex()))
+	body, err := storageSeal(key, plaintext, s.recordAAD(s.writeFlag, "object/"+id.hex()))
 	if err != nil {
 		return nil, err
 	}
@@ -84,16 +114,16 @@ func (s *objectSealer) seal(id objectID, plaintext []byte) ([]byte, error) {
 
 // open is the reverse. GCM authenticates both layers, so a payload that was altered, or that belongs
 // to another id, fails here before the plaintext hash is ever consulted.
-func (s *objectSealer) open(id objectID, payload []byte) ([]byte, error) {
+func (s *objectSealer) open(id objectID, flag byte, payload []byte) ([]byte, error) {
 	if len(payload) < objectSealedOverhead {
 		return nil, errors.New("sealed object payload is too short")
 	}
-	key, err := storageOpen(s.master, payload[:objectSealedKeySize], s.aad("key/"+id.hex()))
+	key, err := storageOpen(s.master, payload[:objectSealedKeySize], s.recordAAD(flag, "key/"+id.hex()))
 	if err != nil {
 		return nil, err
 	}
 	defer clear(key)
-	return storageOpen(key, payload[objectSealedKeySize:], s.aad("object/"+id.hex()))
+	return storageOpen(key, payload[objectSealedKeySize:], s.recordAAD(flag, "object/"+id.hex()))
 }
 
 // openObjectSealer decides the store's mode from the disk and the configuration together, and
@@ -120,10 +150,13 @@ func openObjectSealer(dir string, storage *secureStorage, hasSegments bool) (*ob
 		return nil, errors.New("encrypted object store requires configured storage encryption")
 	}
 	var envelope objectKeyEnvelope
-	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Version != objectKeyFileVersion || len(envelope.ID) != 64 {
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.ID) != 64 {
 		return nil, errors.New("unsupported object store key format")
 	}
-	sealer := &objectSealer{id: envelope.ID}
+	sealer, known := objectSealerFor(envelope.Version, envelope.ID)
+	if !known {
+		return nil, errors.New("unsupported object store key format")
+	}
 	sealer.master, err = storage.wrapper.Unwrap(context.Background(), envelope.Key, sealer.aad("master"))
 	if err != nil {
 		return nil, fmt.Errorf("object store key: %w", err)
@@ -142,7 +175,8 @@ func createObjectSealer(dir, path string, storage *secureStorage) (*objectSealer
 	if err != nil {
 		return nil, err
 	}
-	sealer := &objectSealer{id: hex.EncodeToString(id), master: master}
+	sealer, _ := objectSealerFor(objectKeyFileVersion, hex.EncodeToString(id))
+	sealer.master = master
 	wrapped, err := storage.wrapper.Wrap(context.Background(), master, sealer.aad("master"))
 	if err != nil {
 		return nil, fmt.Errorf("object store key: %w", err)

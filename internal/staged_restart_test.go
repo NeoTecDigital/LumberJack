@@ -30,8 +30,10 @@ func TestStagedRestartRepublishesAndPreservesUnknownJSON(t *testing.T) {
 	if _, err := restarted.readOwnedScope("owned-scope", stagedTestAllow); err == nil {
 		t.Fatal("restart configured public/native admission implicitly")
 	}
-	if _, ok := restarted.forest.Metadata["legacy-number"].(float64); !ok {
-		t.Fatal("new owned decoder changed legacy number decoding")
+	// Every node is read number-exactly now, owned or not (docs/extension-api.md §7.2): the legacy
+	// node's integer past 2^53 keeps its literal instead of being rounded to a float.
+	if got := restarted.forest.Metadata["legacy-number"]; got != json.Number("9007199254740993") {
+		t.Fatalf("restart changed the legacy number to %#v", got)
 	}
 	if err := restarted.configureStagedScope(stagedTestBinding(), stagedTestBounds()); err != nil {
 		t.Fatal(err)

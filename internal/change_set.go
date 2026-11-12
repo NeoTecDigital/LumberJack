@@ -116,7 +116,7 @@ func applyChangeSet(table *stateTable, seq uint64, data []byte) error {
 // mergeLogNode replaces what the table holds for one node with the node a record carries.
 func mergeLogNode(table *stateTable, seq uint64, id string, raw json.RawMessage) error {
 	var incoming logNode
-	if err := json.Unmarshal(raw, &incoming); err != nil || incoming.Node == nil {
+	if err := decodeExact(raw, &incoming); err != nil || incoming.Node == nil {
 		return fmt.Errorf("log record %d: node %q: %v", seq, id, err)
 	}
 	if incoming.ChildrenKept || incoming.EntriesBefore != 0 {

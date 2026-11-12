@@ -41,7 +41,7 @@ func populatedNode(t *testing.T) *core.Node {
 	node.Users = []core.User{{ID: "user-id", Username: "auditor"}}
 	node.Entries = []core.Entry{{Content: "an entry", UserID: "user-id", Timestamp: stamp}}
 	node.Attachments = map[string]core.Attachment{"hash": {ID: "hash", Name: "file.bin", Size: 3, Data: []byte{1, 2, 3}}}
-	node.Metadata = map[string]interface{}{CanvasMetadataKey: map[string]interface{}{"x": 1.0}}
+	node.Metadata = map[string]interface{}{CanvasMetadataKey: map[string]interface{}{"x": json.Number("1")}}
 	node.CommandReceipts = map[string]interface{}{"user-id:command-id": map[string]interface{}{"digest": "verified"}}
 	node.Correspondence = &core.CorrespondenceState{Delivered: 1}
 	node.ApplicationSessions = map[string]core.ApplicationSession{"hash": {UserID: "user-id", ExpiresAt: 1}}

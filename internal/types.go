@@ -100,6 +100,10 @@ type Server struct {
 	// tier is tiered persistence when the config asks for it, and nil in snapshot mode, where the
 	// stateWriter above is what makes a change durable. See persistence.go.
 	tier *tier
+
+	// stateLevel is the state file's level (compat.StateLevel*): the level read at open, raised by
+	// every write that needs more, never lowered. It selects the banner and the envelope version.
+	stateLevel atomic.Int32
 	// grantsHeld says some node may still carry access grants, so a refresh with no policies left
 	// must still run to clear them. It starts true, because a loaded forest's nodes may carry any.
 	grantsHeld bool

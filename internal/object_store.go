@@ -12,6 +12,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/types"
 	"lukechampine.com/blake3"
 )
@@ -35,7 +36,7 @@ import (
 // with objectSegmentMagic. Each record after it is:
 //
 //	[32] id        BLAKE3-256 of the PLAINTEXT
-//	[1]  flag      objectPlain or objectSealed
+//	[1]  flag      objectPlain, objectSealed or objectSealedNeutral
 //	[8]  length    little-endian, bytes of payload that follow
 //	[n]  payload   the bytes, or their AES-GCM sealing (object_store_seal.go)
 //	[4]  crc32c    little-endian, over id || flag || length || payload
@@ -56,7 +57,10 @@ const (
 	objectFileMode     = stateFileMode
 
 	objectPlain  byte = 0
-	objectSealed byte = 1
+	objectSealed byte = compat.ObjectRecordLegacy
+	// objectSealedNeutral is a record sealed under the neutral label. The cut build indexes it as
+	// corrupt and never serves it, which fails closed.
+	objectSealedNeutral byte = compat.ObjectRecordNeutral
 )
 
 // objectSegmentLimit is where a segment stops growing and the next one begins. A record is never
@@ -106,6 +110,7 @@ type objectLocation struct {
 	offset  int64 // of the payload, past the header
 	length  int64 // of the stored payload
 	corrupt bool  // the record failed its CRC on open; a read answers ErrObjectCorrupt
+	flag    byte  // the record's flag: which label a sealed payload is under
 }
 
 // objectReceipt is what a put answers: the id, the size of the PLAINTEXT, and whether the bytes were
@@ -290,7 +295,7 @@ func (store *objectStore) encode(id objectID, data []byte) ([]byte, byte, error)
 	if err != nil {
 		return nil, 0, fmt.Errorf("object sealing refused: %w", err)
 	}
-	return sealed, objectSealed, nil
+	return sealed, store.sealer.writeFlag, nil
 }
 
 // appendRecord writes one record to the tail and syncs it. A write that fails part-way is cut back
@@ -318,7 +323,7 @@ func (store *objectStore) appendRecord(id objectID, flag byte, payload []byte) (
 		return objectLocation{}, fmt.Errorf("object append: %w", err)
 	}
 	store.tailSize = start + recordLen
-	return objectLocation{segment: store.tailID, offset: start + objectHeaderSize, length: int64(len(payload))}, nil
+	return objectLocation{segment: store.tailID, offset: start + objectHeaderSize, length: int64(len(payload)), flag: flag}, nil
 }
 
 func encodeObjectHeader(id objectID, flag byte, length int64) []byte {
@@ -352,7 +357,7 @@ func (store *objectStore) get(id objectID) ([]byte, error) {
 	}
 	data := payload
 	if store.sealer != nil {
-		if data, err = store.sealer.open(id, payload); err != nil {
+		if data, err = store.sealer.open(id, location.flag, payload); err != nil {
 			return nil, fmt.Errorf("object %s: %w", id.hex(), ErrObjectCorrupt)
 		}
 	}

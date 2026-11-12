@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -180,6 +181,9 @@ func metadataText(value interface{}) string {
 		return typed
 	case nil:
 		return ""
+	case json.Number:
+		// A reloaded number is the literal the state file holds, which is what a caller typed.
+		return typed.String()
 	case float64:
 		// %v on a float64 prints 3 as "3" and 3.5 as "3.5", which is what a caller typed.
 		return strings.TrimSuffix(fmt.Sprintf("%v", typed), ".0")
