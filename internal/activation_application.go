@@ -24,8 +24,6 @@ func (s *Server) dispatchApplication(req *http.Request, out *applicationWriter) 
 	switch {
 	case path == "/session" && method == "POST":
 		s.handleApplicationSession(out, req)
-	case path == "/session/mfa" && method == "POST":
-		s.handleApplicationSessionMFA(out, req)
 	case path == "/session" && (method == "GET" || method == "DELETE"):
 		s.authMiddleware(s.handleApplicationSession)(out, req)
 	case path == "/session/activity" && method == "POST":

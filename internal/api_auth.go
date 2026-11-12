@@ -102,17 +102,10 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	server.logger.Enter("handleLogin")
 	defer server.logger.Exit("handleLogin")
 
-	var credentials struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		// PhoneLast4 is the pre-send ownership gate for an MFA account: the last four digits of the
-		// caller's own number, proving they hold the phone a code would be sent to before one is sent.
-		// It is read only when the account has MFA on, and ignored otherwise — so a password-only login
-		// is decoded and answered exactly as it was before this field existed.
-		PhoneLast4 string `json:"phone_last4"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+	// Body fields the engine does not read (a second factor's phone_last4, say) travel with the
+	// login as its extras, for the SecondFactor that reads them.
+	username, password, login, err := decodeLogin(r, "bearer")
+	if err != nil {
 		server.logger.Failure("Invalid request: %v", err)
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
@@ -124,28 +117,25 @@ func (server *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// near-misses people type, which include each other's passwords often enough to matter.
 	server.logger.Info("Attempting login")
 
-	// One credential check, shared with /session — including the lockout counter, the dummy compare
-	// that keeps an unknown account from answering faster than a real one, and the ownership gate.
-	// A mismatch on ANY of them is the same 401 with the same body: no oracle for existence, for
-	// lock state, or for whether the account carries a second factor.
-	foundUser, err := server.authenticateCredential(credentials.Username, credentials.Password, credentials.PhoneLast4)
+	// One credential check, shared with /session — including the lockout counter and the dummy
+	// compare that keeps an unknown account from answering faster than a real one. A mismatch on
+	// either is the same 401 with the same body: no oracle for existence or for lock state.
+	foundUser, err := server.authenticateCredential(username, password)
 	if err != nil {
 		server.logger.Failure("Credential refused")
 		writeAPIError(w, err)
 		return
 	}
 
-	// SECOND FACTOR, when the account carries one. The password and the ownership gate are both
-	// proven by the check above. A match mints a code, stores only its hash, queues the code for
-	// delivery, and answers a challenge the caller must complete at /mfa/verify. NOTHING here returns
-	// the code.
-	challenge, err := server.beginAccountLogin(foundUser, credentials.PhoneLast4)
+	// SECOND FACTOR, when one is registered and the account needs it: its challenge is answered in
+	// place of a session. Without one, an enrolled account fails closed. See extension_login.go.
+	challenge, err := server.passwordVerified(r.Context(), foundUser, login)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	if challenge != nil {
-		securityJSON(w, challenge)
+		writeChallenge(w, challenge)
 		return
 	}
 
@@ -189,27 +179,6 @@ func (server *Server) findUserByName(username string) *core.User {
 		}
 	})
 	return found
-}
-
-// phoneLast4Matches reports whether last4 is exactly the final four DIGITS of phone.
-//
-// It compares digits only, so a stored number's formatting — spaces, dashes, a leading "+1" — does
-// not decide the gate. It refuses anything but four digits, and refuses a phone carrying fewer than
-// four, so an account with no usable number cannot be walked past by an empty or short guess.
-func phoneLast4Matches(phone, last4 string) bool {
-	if len(last4) != 4 {
-		return false
-	}
-	for _, r := range last4 {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	digits := digitsOnly(phone)
-	if len(digits) < 4 {
-		return false
-	}
-	return digits[len(digits)-4:] == last4
 }
 
 // Add new handler for token refresh
@@ -292,7 +261,7 @@ func (server *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		profile = newUserView(*user)
-		profile.MFAEnabled = len(securityMethods(server.forest.AccountSecurity[userID], user)) != 0
+		profile.MFAEnabled = server.secondFactorEnrolledLocked(*user)
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)

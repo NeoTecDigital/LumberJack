@@ -65,7 +65,7 @@ func spendAPasswordCompare(password string) {
 // authenticateCredential is the whole check. It returns the account on success and errInvalidCredentials
 // on every failure; the caller decides what a verified credential earns — a token pair at /login, an
 // application session at /session, or a second-factor challenge at either.
-func (server *Server) authenticateCredential(username, password, phoneLast4 string) (*core.User, error) {
+func (server *Server) authenticateCredential(username, password string) (*core.User, error) {
 	user := server.findUserByName(username)
 	if user == nil {
 		spendAPasswordCompare(password)
@@ -100,19 +100,8 @@ func (server *Server) authenticateCredential(username, password, phoneLast4 stri
 		return nil, errInvalidCredentials()
 	}
 
-	// The ownership gate counts too. It is a guess against a four-digit space, which is a far smaller
-	// space than the password — so leaving it uncounted would make it the cheapest thing to attack on
-	// the account, and the one that triggers an SMS on success.
-	if user.MFAEnabled && phoneLast4 != "" && !phoneLast4Matches(user.Phone, phoneLast4) {
-		server.recordLoginFailure(user.ID)
-		return nil, errInvalidCredentials()
-	}
-
-	hasFactor := false
-	server.readForest(func() { hasFactor = len(securityMethods(server.forest.AccountSecurity[user.ID], user)) != 0 })
-	if !requireAccountMFA() && !hasFactor {
-		server.clearLoginFailures(user.ID)
-	}
+	// The budget is cleared once the login needs nothing more (passwordVerified), not here: a second
+	// factor's step still has to be earned before a failed one stops counting.
 	return user, nil
 }
 

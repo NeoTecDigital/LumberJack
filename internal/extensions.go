@@ -30,6 +30,8 @@ type extensionSet struct {
 	// The capabilities the instances implement, type-asserted once at attach.
 	authenticators []extension.RequestAuthenticator
 	configurables  map[string]extension.Configurable // by config part
+	secondFactor   extension.SecondFactor            // at most one
+	listeners      []extension.OutboxListener
 }
 
 // ExtensionSetIdentity names an extension set: its names in registration order. A runtime is shared
@@ -207,6 +209,15 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 func (set *extensionSet) capabilities(spec extension.Spec, instance extension.Instance) error {
 	if authenticator, ok := instance.(extension.RequestAuthenticator); ok {
 		set.authenticators = append(set.authenticators, authenticator)
+	}
+	if factor, ok := instance.(extension.SecondFactor); ok {
+		if set.secondFactor != nil {
+			return fmt.Errorf("%w: %s is a second SecondFactor; at most one is registered", ErrExtensionSet, spec.Name)
+		}
+		set.secondFactor = factor
+	}
+	if listener, ok := instance.(extension.OutboxListener); ok {
+		set.listeners = append(set.listeners, listener)
 	}
 	configurable, ok := instance.(extension.Configurable)
 	if len(spec.ConfigParts) > 0 && !ok {

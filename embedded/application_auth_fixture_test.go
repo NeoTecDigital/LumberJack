@@ -7,12 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
-
-	"github.com/pquerna/otp/totp"
 )
 
-// Application fixtures use the production MFA policy and an isolated encrypted
+// Application fixtures use an isolated encrypted
 // store. The same key remains available across each fixture's restart sequence.
 func isolatedApplicationSecurity(t *testing.T) {
 	t.Helper()
@@ -29,38 +26,27 @@ func isolatedApplicationSecurity(t *testing.T) {
 	t.Setenv("CORRESPONDER_STORAGE_MIGRATE_LEGACY", "0")
 	t.Setenv("CORRESPONDER_STORAGE_REWRAP_KEYS", "0")
 	t.Setenv("CORRESPONDER_ADMIN_RECONCILE", "0")
-	t.Setenv("MOMENTUM_REQUIRE_MFA", "true")
 }
 
-func applicationMFALogin(t *testing.T, h *Handle, username, password string) string {
+// applicationLogin signs in through the application transport's /login and answers the session
+// token. A generic build registers no second factor, so a password is the whole exchange.
+func applicationLogin(t *testing.T, h *Handle, username, password string) string {
 	t.Helper()
-	call := func(target string, body map[string]string) map[string]interface{} {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		answer, err := h.ApplicationCall(ApplicationRequest{Method: "POST", Target: target, Headers: map[string]string{"Content-Type": "application/json"}, Body: encoded})
-		if err != nil || answer.Status != 200 {
-			t.Fatalf("%s: error %v, status %d", target, err, answer.Status)
-		}
-		var result map[string]interface{}
-		if err := json.Unmarshal(answer.Body, &result); err != nil {
-			t.Fatal(err)
-		}
-		return result
-	}
-	challenge := call("/login", map[string]string{"username": username, "password": password})
-	if challenge["mfa_required"] != true || challenge["method"] != "totp_enroll" || challenge["session_token"] != nil {
-		t.Fatal("fresh account must complete enrollment before receiving a session")
-	}
-	code, err := totp.GenerateCode(challenge["secret"].(string), time.Now())
+	encoded, err := json.Marshal(map[string]string{"username": username, "password": password})
 	if err != nil {
 		t.Fatal(err)
 	}
-	verified := call("/mfa/verify", map[string]string{"challenge": challenge["challenge"].(string), "code": code})
-	token, ok := verified["session_token"].(string)
+	answer, err := h.ApplicationCall(ApplicationRequest{Method: "POST", Target: "/login", Headers: map[string]string{"Content-Type": "application/json"}, Body: encoded})
+	if err != nil || answer.Status != 200 {
+		t.Fatalf("/login: error %v, status %d", err, answer.Status)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(answer.Body, &result); err != nil {
+		t.Fatal(err)
+	}
+	token, ok := result["session_token"].(string)
 	if !ok || token == "" {
-		t.Fatal("verified enrollment did not return a session")
+		t.Fatal("a password login did not return a session")
 	}
 	return token
 }

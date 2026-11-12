@@ -38,7 +38,7 @@ func TestApplicationNeverBorrowsTheBootstrapPrincipal(t *testing.T) {
 	if got := call("GET", "/workspace", "", nil); got.Status != 401 {
 		t.Fatalf("anonymous: %d", got.Status)
 	}
-	token := applicationMFALogin(t, handle, "operator", password)
+	token := applicationLogin(t, handle, "operator", password)
 	if got := call("GET", "/workspace", token, nil); got.Status != 200 {
 		t.Fatalf("workspace: %s", got.Body)
 	}

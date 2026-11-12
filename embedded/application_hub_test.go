@@ -51,7 +51,7 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 		return result
 	}
 	login := func(username string) string {
-		return applicationMFALogin(t, h, username, password)
+		return applicationLogin(t, h, username, password)
 	}
 	token := login("operator")
 	call("POST", "/users/create", token, map[string]string{"username": "bob", "password": password, "email": "bob@example.test"})

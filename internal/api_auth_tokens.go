@@ -45,6 +45,12 @@ func (s *Server) signedSessionPair(user *core.User, key string) (*TokenPair, err
 	if !valid || session.UserID != user.ID {
 		return nil, apiErrorf(401, "Session expired or signed out")
 	}
+	return s.signSessionPair(user, key, session)
+}
+
+// signSessionPair signs the session and refresh JWTs for a registered session. It reads nothing from
+// the forest, so it may run under a hold.
+func (s *Server) signSessionPair(user *core.User, key string, session core.ApplicationSession) (*TokenPair, error) {
 	issue := func(kind string, expiry int64) (string, error) {
 		claims := TokenClaims{UserID: user.ID, Username: user.Username, TokenType: kind, SessionID: key, CredentialEpoch: session.CredentialEpoch, StandardClaims: jwt.StandardClaims{IssuedAt: time.Now().Unix(), ExpiresAt: expiry}}
 		return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.jwtConfig.SecretKey)

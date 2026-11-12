@@ -154,10 +154,9 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 	if target.Path == "/stream" {
 		return applicationError(400, "Use the Corresponder change dispatcher")
 	}
-	// /session/mfa joins the credential exchange in this exemption for the same reason /session is in
-	// it: a change-delivery backlog must not be able to strand a caller halfway through a login it has
-	// already started, holding a challenge that expires in five minutes.
-	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/session/mfa" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
+	// The credential exchanges are exempt: a change-delivery backlog must not be able to strand a
+	// caller halfway through a login it has already started.
+	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
 		full := false
 		s.readForest(func() { full = s.forest.Correspondence != nil && len(s.forest.Correspondence.Pending) >= 4096 })
 		if full {

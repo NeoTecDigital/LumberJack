@@ -15,6 +15,7 @@ type Host interface {
 	Read(fn func(ReadTx) error) error                                          // shared hold
 	Change(ctx context.Context, op WriteOp, fn func(Tx) error) (Commit, error) // the one write path
 	Publish(kind, path string)                                                 // mutation stream; call only after Change returned
+	Sessions() Sessions
 	Logger() types.Logger
 }
 
@@ -30,6 +31,7 @@ type ReadTx interface {
 // Tx is a ReadTx under the exclusive hold of one change.
 type Tx interface {
 	ReadTx
+	EnqueueOutbound(m core.OutboundMessage) error // the external outbox, in the same snapshot as the change
 }
 
 // WriteOp names a write for the permit provider and the hooks.

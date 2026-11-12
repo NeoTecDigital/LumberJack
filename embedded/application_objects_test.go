@@ -26,7 +26,7 @@ func TestApplicationCallCarriesObjectsAsBase64(t *testing.T) {
 	if err := handle.ConfigureApplication("operator", password, key); err != nil {
 		t.Fatal(err)
 	}
-	token := applicationMFALogin(t, handle, "operator", password)
+	token := applicationLogin(t, handle, "operator", password)
 
 	body := make([]byte, 300000)
 	if _, err := rand.Read(body); err != nil {

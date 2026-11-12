@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/extension"
 )
 
 // Called while committing a command, so the work and its pending delivery are
@@ -239,11 +240,11 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 		// "outcome" IS WHAT SEPARATES A DELIVERY FROM A SWEEP. This op clears an item for two
 		// unrelated reasons — a carrier took it, or its window closed unsent — and until the field
 		// existed both were the same call, so the second could not be told apart from the first.
-		// A delivery marks the challenge "sent", which is how a waiting client learns to stop
-		// asking; an expiry marks nothing, because its challenge expired with it and "sent" on a
-		// dead challenge is a delivery that did not happen. AN OMITTED OUTCOME IS A DELIVERY: that
-		// was this op's only meaning before the field, so the dispatcher's delivered path and every
-		// existing caller keep working unchanged.
+		// A delivery is reported to every OutboxListener — a second factor marks its challenge "sent",
+		// which is how a waiting client learns to stop asking; an expiry is reported to nobody, because
+		// its challenge expired with it and "sent" on a dead challenge is a delivery that did not
+		// happen. AN OMITTED OUTCOME IS A DELIVERY: that was this op's only meaning before the field,
+		// so the dispatcher's delivered path and every existing caller keep working unchanged.
 		err := s.changeForest(func() error {
 			state := s.correspondenceState()
 			item, found := state.Outbound[request.ID]
@@ -252,8 +253,8 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 				return nil
 			}
 			delete(state.Outbound, request.ID)
-			if request.Outcome == "" || request.Outcome == deliverySent {
-				s.markChallengeDelivery(outboundChallengeID(item), deliverySent, "", request.Attempts)
+			if request.Outcome == "" || request.Outcome == string(extension.OutboundSent) {
+				s.outboundSettledLocked(item, extension.OutboundOutcome{State: extension.OutboundSent, Attempts: request.Attempts})
 			}
 			result = map[string]interface{}{"acked": true}
 			return nil
@@ -271,10 +272,10 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 		//
 		// The item is still DELETED. It holds a plaintext code beside a phone number, and an item
 		// nothing will send again is only that pair sitting in the state file. What changes is the
-		// record left behind: the challenge keeps the verdict, the coarse failure class and the
-		// attempt count, so /mfa/delivery can tell the client and an operator can tell an
-		// unconfigured provider from a carrier outage. The challenge itself SURVIVES — a resend is
-		// exactly the thing the client should offer next, and it needs something to resend into.
+		// record left behind: every OutboxListener is told the verdict, the coarse failure class and
+		// the attempt count, so the owner of the item (a second factor's challenge) can tell its client
+		// and an operator can tell an unconfigured provider from a carrier outage. "recorded" says
+		// whether a listener recorded it against something it owns.
 		err := s.changeForest(func() error {
 			state := s.correspondenceState()
 			item, found := state.Outbound[request.ID]
@@ -283,8 +284,8 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 				return nil
 			}
 			delete(state.Outbound, request.ID)
-			recorded := s.markChallengeDelivery(outboundChallengeID(item), deliveryFailed,
-				request.ErrorClass, request.Attempts)
+			recorded := s.outboundSettledLocked(item, extension.OutboundOutcome{State: extension.OutboundFailed,
+				ErrorClass: request.ErrorClass, Attempts: request.Attempts})
 			result = map[string]interface{}{"recorded": recorded, "cleared": true}
 			return nil
 		})
@@ -369,4 +370,19 @@ func (s *Server) handleApplicationNotifications(w http.ResponseWriter, r *http.R
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
 	})
+}
+
+// outboundSettledLocked tells every OutboxListener an outbound item's fate, under the exclusive hold
+// of the hub op that settled it, and answers whether any of them recorded it.
+func (s *Server) outboundSettledLocked(item core.OutboundMessage, outcome extension.OutboundOutcome) bool {
+	if s.extensions == nil {
+		return false
+	}
+	recorded := false
+	for _, listener := range s.extensions.listeners {
+		if listener.OutboundSettledLocked(forestTx{server: s}, item, outcome) {
+			recorded = true
+		}
+	}
+	return recorded
 }

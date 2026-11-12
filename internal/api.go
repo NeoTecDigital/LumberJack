@@ -349,21 +349,6 @@ func (s *Server) routes() *mux.Router {
 	router.HandleFunc("/health", s.handleHealth).Methods("GET")
 	router.HandleFunc("/login", s.handleLogin).Methods("POST")
 	router.HandleFunc("/refresh", s.handleRefreshToken).Methods("POST")
-	// The second-factor pair. Public for the same reason /login is: the caller holds an "mfa_pending"
-	// challenge, not a session, so demanding a session here is circular. Each handler validates its
-	// own challenge bearer from the body — authMiddleware would reject that bearer as not a session,
-	// which is why these sit OUTSIDE it, beside the credential exchange they belong to.
-	router.HandleFunc("/mfa/verify", s.handleMfaVerify).Methods("POST")
-	router.HandleFunc("/mfa/start", s.handleMfaStart).Methods("POST")
-	// The pair's read, public for the same reason and holding the same credential. It answers
-	// whether the code for a challenge has gone out yet, which a client cannot learn any other way:
-	// the forward-dispatcher runs in another process and a give-up used to leave no trace at all.
-	// It submits no code, so it can spend no guess — see handleMfaDelivery.
-	router.HandleFunc("/mfa/delivery", s.handleMfaDelivery).Methods("POST")
-	router.HandleFunc("/auth/factor", s.handleAccountAuthentication).Methods("POST")
-	router.HandleFunc("/auth/webauthn/finish", s.handleAccountAuthentication).Methods("POST")
-	router.HandleFunc("/auth/qr", s.handleAccountAuthentication).Methods("POST")
-	router.HandleFunc("/auth/qr/poll", s.handleAccountAuthentication).Methods("POST")
 
 	s.registerRecordRoutes(router)
 	s.registerQueryRoutes(router)
@@ -461,18 +446,9 @@ func (s *Server) registerQueryRoutes(router *mux.Router) {
 
 // registerAccountRoutes registers the user and settings routes.
 func (s *Server) registerAccountRoutes(router *mux.Router) {
-	router.HandleFunc("/account/security", s.authMiddleware(s.handleAccountSecurity)).Methods("GET")
-	router.HandleFunc("/account/security", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
-	router.HandleFunc("/account/webauthn/begin", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
-	router.HandleFunc("/account/webauthn/finish", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
-	router.HandleFunc("/account/qr/approve", s.authMiddleware(s.handleAccountSecurity)).Methods("POST")
 	router.HandleFunc("/users", s.authMiddleware(s.handleGetUsers)).Methods("GET")
 	router.HandleFunc("/users/assign", s.authMiddleware(s.handleAssignUser)).Methods("POST")
 	router.HandleFunc("/users/profile", s.authMiddleware(s.handleGetUserProfile)).Methods("GET")
-	// Second-factor enrolment. BEHIND the middleware and, inside the handler, behind AdminPermission,
-	// for the same reason /users/create is: pointing an account's codes at a phone is an
-	// administrative act, and a self-service version of it turns a stolen session into a takeover.
-	router.HandleFunc("/users/mfa", s.authMiddleware(s.handleSetUserMfa)).Methods("POST")
 	router.HandleFunc("/settings/", s.authMiddleware(s.handleGetServerSettings)).Methods("GET")
 	router.HandleFunc("/settings/update", s.authMiddleware(s.handleUpdateServerSettings)).Methods("POST")
 }

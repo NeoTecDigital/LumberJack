@@ -26,9 +26,6 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	// Existing data/handler fixtures exercise password-only setup explicitly.
-	// Security tests opt back into mandatory enrollment with t.Setenv.
-	os.Setenv("MOMENTUM_REQUIRE_MFA", "false")
 	// The server FAILS CLOSED without a signing key, so the suite has to supply one the way a
 	// deployment does.
 	if err := os.Setenv("LUMBERJACK_JWT_SECRET", "test-signing-key-not-a-deployment-key"); err != nil {

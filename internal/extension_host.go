@@ -46,6 +46,10 @@ func (host *extensionHost) Publish(kind, path string) {
 	host.server.publish(mutation(kind, path))
 }
 
+func (host *extensionHost) Sessions() extension.Sessions {
+	return extensionSessions{server: host.server}
+}
+
 func (host *extensionHost) Logger() types.Logger { return host.server.logger }
 
 // extensionError maps an extension's *Error to the engine's own status error.
@@ -87,4 +91,21 @@ func (tx forestTx) NodeByPath(path string) (*core.Node, error) {
 
 func (tx forestTx) Permits(node *core.Node, userID string, want core.Permission) bool {
 	return node != nil && node.CheckPermission(userID, want)
+}
+
+// EnqueueOutbound adds an item to the external outbox in the same snapshot as the change. An id
+// already queued is refused, so an item cannot silently replace another.
+func (tx forestTx) EnqueueOutbound(message core.OutboundMessage) error {
+	if message.ID == "" {
+		return &extension.Error{Status: http.StatusBadRequest, Message: "an outbound item needs an id"}
+	}
+	state := tx.server.correspondenceState()
+	if state.Outbound == nil {
+		state.Outbound = map[string]core.OutboundMessage{}
+	}
+	if _, queued := state.Outbound[message.ID]; queued {
+		return &extension.Error{Status: http.StatusConflict, Message: "outbound item " + message.ID + " is already queued"}
+	}
+	state.Outbound[message.ID] = message
+	return nil
 }

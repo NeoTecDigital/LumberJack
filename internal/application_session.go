@@ -57,11 +57,6 @@ func (s *Server) registeredSessionLocked(key string, now int64) (core.Applicatio
 	if err != nil || profile.LockedUntil > now || applicationSessionDeadline(session) <= now || !epochIsCurrent(session.CredentialEpoch, profile.CredentialEpoch) {
 		return core.ApplicationSession{}, false
 	}
-	// A delegated session's factors were the account authority's to check, and the signature says
-	// they were. Nothing else skips this, and nothing but the admission route sets the flag.
-	if requireAccountMFA() && !session.Delegated && (session.MFAAt <= 0 || len(securityMethods(s.forest.AccountSecurity[session.UserID], profile)) == 0) {
-		return core.ApplicationSession{}, false
-	}
 	return session, true
 }
 
@@ -88,33 +83,51 @@ func (s *Server) mintApplicationSession(userID string) (string, int64, error) {
 }
 
 func (s *Server) mintApplicationSessionAtEpoch(userID string, expected *int64) (string, int64, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", 0, apiErrorf(500, "Session unavailable")
+	token, err := newSessionToken()
+	if err != nil {
+		return "", 0, err
 	}
-	token := "ms_" + hex.EncodeToString(raw)
-	var expiresAt int64
-	err := s.changeForest(func() error {
-		profile, err := s.forest.GetUserProfile(userID)
-		if err != nil || profile.LockedUntil > time.Now().Unix() || (expected != nil && !epochIsCurrent(*expected, profile.CredentialEpoch)) {
-			return apiErrorf(401, "Account unavailable")
-		}
-		now := time.Now().Unix()
-		s.sweepApplicationSessionsLocked(userID, now)
-		expiresAt = now + applicationSessionTTL
-		// STAMPED UNDER THE SAME HOLD THAT READ IT. The epoch is taken from the profile above and
-		// written here without the lock being released in between, so an enrolment landing at the same
-		// moment either precedes this whole block — and the session is born stale — or follows it, and
-		// retires the session on its next request. There is no ordering in which it survives.
-		s.forest.ApplicationSessions[s.sessionHash(token)] = core.ApplicationSession{
-			UserID: userID, CreatedAt: now, LastActiveAt: now, ExpiresAt: expiresAt, CredentialEpoch: profile.CredentialEpoch, MFAAt: now,
-		}
-		return nil
+	var session core.ApplicationSession
+	err = s.changeForest(func() error {
+		var err error
+		session, err = s.registerSessionLocked(userID, expected, token)
+		return err
 	})
 	if err != nil {
 		return "", 0, err
 	}
-	return token, min(expiresAt, time.Now().Unix()+applicationSessionIdleTTL), nil
+	return token, min(session.ExpiresAt, time.Now().Unix()+applicationSessionIdleTTL), nil
+}
+
+// newSessionToken is a fresh ms_ bearer.
+func newSessionToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", apiErrorf(500, "Session unavailable")
+	}
+	return "ms_" + hex.EncodeToString(raw), nil
+}
+
+// registerSessionLocked stores a bearer's hash as a session of the account, under the exclusive
+// hold, refusing an account that is gone, shut, or no longer on the epoch the caller verified it
+// under.
+//
+// STAMPED UNDER THE SAME HOLD THAT READ IT. The epoch is taken from the profile and written without
+// the lock being released in between, so an enrolment landing at the same moment either precedes
+// this whole block — and the session is born stale — or follows it, and retires the session on its
+// next request. There is no ordering in which it survives.
+func (s *Server) registerSessionLocked(userID string, expected *int64, token string) (core.ApplicationSession, error) {
+	profile, err := s.forest.GetUserProfile(userID)
+	if err != nil || profile.LockedUntil > time.Now().Unix() || (expected != nil && !epochIsCurrent(*expected, profile.CredentialEpoch)) {
+		return core.ApplicationSession{}, apiErrorf(401, "Account unavailable")
+	}
+	now := time.Now().Unix()
+	s.sweepApplicationSessionsLocked(userID, now)
+	session := core.ApplicationSession{
+		UserID: userID, CreatedAt: now, LastActiveAt: now, ExpiresAt: now + applicationSessionTTL, CredentialEpoch: profile.CredentialEpoch, MFAAt: now,
+	}
+	s.forest.ApplicationSessions[s.sessionHash(token)] = session
+	return session, nil
 }
 
 // sweepApplicationSessionsLocked drops what has expired and makes room for one more of userID's.
@@ -153,43 +166,30 @@ func (s *Server) handleApplicationActivity(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleBrowserSession(w http.ResponseWriter, r *http.Request, activity bool) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if r.Method == "POST" && !activity {
-		var input struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-			// PhoneLast4 is the pre-send ownership gate, read exactly as /login reads it: the last four
-			// digits of the number a code would go to, proving the caller holds the phone before one is
-			// sent. It is consulted only when the account carries MFA, and ignored otherwise.
-			PhoneLast4 string `json:"phone_last4"`
-		}
-		if json.NewDecoder(r.Body).Decode(&input) != nil {
+		username, password, login, err := decodeLogin(r, "browser")
+		if err != nil {
 			http.Error(w, "Invalid credentials", 400)
 			return
 		}
-		// The SAME credential check /login runs — lockout counter, constant-cost unknown-user compare
-		// and ownership gate included. Two implementations of one security decision is two places the
-		// weaker one is the real one, and this door used to be the weaker one.
-		user, err := s.authenticateCredential(input.Username, input.Password, input.PhoneLast4)
+		// The SAME credential check /login runs — lockout counter and constant-cost unknown-user
+		// compare included. Two implementations of one security decision is two places the weaker one
+		// is the real one, and this door used to be the weaker one.
+		user, err := s.authenticateCredential(username, password)
 		if err != nil {
 			writeAPIError(w, err)
 			return
 		}
-		// THE BYPASS THIS CLOSES. This route minted a session for any account whose password verified,
-		// MFA or not — /login had the second factor and /session did not, so the whole gate was optional
-		// for every browser client. A verified password on an MFA account now answers a CHALLENGE and
-		// nothing else: no token in the body, no session in the store, nothing to authenticate with
-		// until /session/mfa verifies a code.
-		//
-		// A missing or wrong last-four is refused with the SAME 401 a wrong password gets, so the
-		// surface carries no MFA-status oracle: a caller holding a stolen password cannot learn whether
-		// the account has a second factor, or anything about the number, and triggers no delivery. That
-		// uniformity is why the CLIENT always shows the last-four field.
-		challenge, err := s.beginAccountLogin(user, input.PhoneLast4)
+		// THE BYPASS THIS CLOSES. This route once minted a session for any account whose password
+		// verified, second factor or not. It now asks the same question /login does: a registered
+		// SecondFactor's challenge is answered in place of a session, and without one an enrolled
+		// account fails closed.
+		challenge, err := s.passwordVerified(r.Context(), user, login)
 		if err != nil {
 			writeAPIError(w, err)
 			return
 		}
 		if challenge != nil {
-			securityJSON(w, challenge)
+			writeChallenge(w, challenge)
 			return
 		}
 
@@ -243,41 +243,6 @@ func (s *Server) handleBrowserSession(w http.ResponseWriter, r *http.Request, ac
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
-	})
-}
-
-// handleApplicationSessionMFA is POST /session/mfa: the second half of the exchange /session now
-// stops halfway through. It takes the challenge the first step handed back and the code that reached
-// the phone, and mints the session the first step withheld — answering the SAME shape /session
-// answered in one step, so the relay sets its cookie from one place either way.
-//
-// It carries NO principal, for the same reason /mfa/verify does not: the session is what this step
-// exists to obtain, so demanding one is circular. The challenge bearer IS the authority, and
-// consumeMFAChallenge validates it — signature, type, liveness, attempt budget and a constant-time
-// code compare — before this ever sees a user. authMiddleware would refuse that bearer as not a
-// session, which is why the dispatch in application.go routes here directly.
-func (s *Server) handleApplicationSessionMFA(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Challenge string `json:"challenge"`
-		Code      string `json:"code"`
-	}
-	if json.NewDecoder(r.Body).Decode(&input) != nil {
-		http.Error(w, "Invalid request", 400)
-		return
-	}
-	user, err := s.consumeMFAChallenge(input.Challenge, input.Code)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	token, expiresAt, err := s.mintApplicationSessionAtEpoch(user.ID, &user.CredentialEpoch)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": user.ID, "username": user.Username, "expires_at": expiresAt, "token": token, "absolute_expires_at": time.Now().Unix() + applicationSessionTTL,
 	})
 }
 
