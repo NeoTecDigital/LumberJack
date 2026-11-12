@@ -66,25 +66,6 @@ func activationJSONKey(decoder *json.Decoder, delimiter json.Delim, keys map[str
 	return nil
 }
 
-func DecodeActivationConfig(body []byte) (ActivationConfig, error) {
-	var config ActivationConfig
-	if err := strictActivationJSON(body, &config); err != nil {
-		return config, err
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(body, &fields) != nil {
-		return config, fmt.Errorf("invalid Activation config")
-	}
-	for _, name := range []string{"verifierEndpoint", "channelToken", "audience", "issuer", "timeoutMs",
-		"maxProofBytes", "maxBodyBytes", "maxResponseBytes", "maxLifetimeSeconds", "syntheticLoopbackOnly"} {
-		if _, ok := fields[name]; !ok {
-			return config, fmt.Errorf("missing required Activation config")
-		}
-	}
-	// localHumanPreview is optional; strict decoding accepts only the typed bool.
-	return config, ValidateActivationConfig(config)
-}
-
 func (scope *activationScope) UnmarshalJSON(body []byte) error {
 	var wire struct {
 		AccountID   string          `json:"accountId"`

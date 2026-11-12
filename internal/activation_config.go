@@ -115,19 +115,3 @@ func newActivationVerifier(config ActivationConfig) (*activationVerifier, error)
 	config.VerifierEndpoint = endpoint.String()
 	return &activationVerifier{config: config, client: client}, nil
 }
-
-func ValidateActivationConfig(config ActivationConfig) error {
-	_, err := newActivationVerifier(config)
-	return err
-}
-
-func (s *Server) ConfigureActivation(config ActivationConfig) error {
-	verifier, err := newActivationVerifier(config)
-	if err != nil {
-		return err
-	}
-	if !s.activation.CompareAndSwap(nil, verifier) {
-		return fmt.Errorf("Activation already configured")
-	}
-	return nil
-}

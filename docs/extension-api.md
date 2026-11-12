@@ -810,3 +810,17 @@ It costs one extra step each.
 | Q10 | `CORRESPONDER_STORAGE_*`, `CORRESPONDER_ADMIN_RECONCILE` | (a) explicit config plus `LUMBERJACK_*`, old names as deprecated aliases for one release; (b) rename hard | (a) |
 | Q11 | Raft (`replication/`, `peertransport/`, `businessruntime/`) leaves with Activity | (a) yes; a future generic replication is designed fresh; (b) keep `replication/` | (a). It encodes Activity admissions and products |
 | Q12 | `ms_` bearer prefix | (a) keep as an opaque wire constant; (b) mint a new prefix and accept both | (a). It is wire-visible, and the stored session key is its hash |
+
+## 11. Deviations
+
+What the implementation (`finalize/split`) does differently from the text above, and why. Each keeps
+the invariants of §5.
+
+| # | Step | Design said | Done instead | Why |
+|---|---|---|---|---|
+| D1 | P3b-0 | each product branch adds `PRODUCT-INVENTORY.md` | the file is `HANDOFF.md` | the owner's execution brief names it so; the content is the inventory §3 of keep-move.md asks for, plus the rebuild steps |
+| D2 | P3b-0, P3b-1 | "today's code re-encodes each plaintext fixture byte-identically" | it does not: 3 of 5 plaintext fixtures drift. A product stores a receipt as a Go struct, the load reads it back as a map, and the map re-marshals with its keys sorted. The P3b-0 test pins what the cut build wrote back (`reencode_sha256` in `MANIFEST.jsonl`). P3b-1 makes the byte identity true: a node whose encoding is unchanged since load is written back as the bytes it was read from (`core/node_loaded.go`, `nodeRecord.MarshalJSON`) | §7.1's result, "an untouched store re-encodes to identical document bytes", is what the fixtures gate on; without this the legacy order table alone cannot deliver it for typed values inside `command_receipts` |
+| D3 | P3b-1 | label read side only; writes stay legacy | a store keeps the label its envelope or key file was read under; a new store is written legacy | a neutral (v5/v6, key file v2) store written back as legacy would need every account wrap re-wrapped and would reopen the rollback door the neutral label closed. The opt-in switch for legacy stores is P3b-9 |
+| D4 | P3b-3 | remove all 2,570 Activity lines | `activation_config.go`, `activation_protocol.go` and `activation_json.go` stay until P3b-7, trimmed of Activity's engine API (`ConfigureActivation`, `ValidateActivationConfig`, `DecodeActivationConfig`); `application_business_scope.go` stays until P3b-5 | the domain engine builds its verifier from `ActivationConfig`, `activationVerifier.validActor` and `strictActivationJSON`, and the workspace's message operations read `AuthenticatedContentScope`. Removing them first would mean editing product code; they leave with their last user |
+| D5 | P3b-3 | – | `endApplicationSessionLocked` (sign-out ends a delegated session's family) moved from `application_session_admit.go` to `application_session.go` | it is the generic session registry's, and `/session` DELETE calls it |
+| D6 | P3b-3 | an undeclared part is refused | a part whose value is `null` counts as present | the cut build refused a `null` part too; ignoring it would be the silent path §4.7 rules out |

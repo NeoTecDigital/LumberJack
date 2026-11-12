@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/NeoTecDigital/LumberJack/internal"
 )
@@ -11,6 +12,13 @@ type ApplicationResponse = internal.ApplicationResponse
 // ConfigureApplication switches this runtime from trusted-library bootstrap to
 // authenticated application use. All old handles also lose implicit system access.
 func (h *Handle) ConfigureApplication(username, password, secret string) error {
+	return h.ConfigureApplicationParts(username, password, secret, nil)
+}
+
+// ConfigureApplicationParts is ConfigureApplication with the parts of application_configure that
+// belong to extensions. Each present part goes to the extension that declared it before the
+// application opens; a part no extension declared is refused (internal.ErrUndeclaredPart).
+func (h *Handle) ConfigureApplicationParts(username, password, secret string, parts map[string]json.RawMessage) error {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	if err := h.ensureOpen(); err != nil {
@@ -18,6 +26,9 @@ func (h *Handle) ConfigureApplication(username, password, secret string) error {
 	}
 	if h.runtime.application.Load() {
 		return fmt.Errorf("application already configured")
+	}
+	if err := h.runtime.server.ConfigureParts(parts); err != nil {
+		return err
 	}
 	if err := h.runtime.server.ConfigureApplication(username, password, secret); err != nil {
 		return err

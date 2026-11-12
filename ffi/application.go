@@ -23,8 +23,8 @@ func ic_lj_application_configure(h C.lj_handle_t, req C.lj_cstr, n C.int64_t) (s
 	if bad != statusOK {
 		return bad
 	}
-	var config applicationConfiguration
-	if json.Unmarshal(body, &config) != nil {
+	config, err := decodeApplicationConfiguration(body)
+	if err != nil {
 		return statusCodec
 	}
 	if err := configureApplication(handle, config); err != nil {

@@ -20,7 +20,7 @@ CANON_CORPUS ?= ../../crates/intercessor/tests/corpus/canon_corpus.json
 # failure without them is an undefined symbol three steps away from its cause.
 CLIBS   := -lpthread -ldl -lresolv
 
-.PHONY: all test ffi activity-shared header-check nm-check smoke smoke-lock smoke-panic canon-check clean
+.PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check clean
 
 all: test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check
 
@@ -36,11 +36,6 @@ $(BUILD):
 ffi: | $(BUILD)
 	@CGO_ENABLED=1 $(GO) build -buildmode=c-archive -trimpath -o $(ARCHIVE) ./ffi
 	@echo "  archive: $$(stat -c%s $(ARCHIVE)) bytes"
-
-# Activity uses the same maintained source as the workspace archive. Provenance
-# records the source commit separately; VCS worktree state must not change bytes.
-activity-shared: | $(BUILD)
-	@CGO_ENABLED=1 $(GO) build -trimpath -buildvcs=false -buildmode=c-shared -ldflags=-buildid= -o $(BUILD)/libactivity.so ./ffi
 
 # ffi/lumberjack.h is the specification; cgo's header is an artefact. Compiling a unit that
 # includes both is what makes a divergence a compile error instead of a diff nobody reads.

@@ -301,3 +301,19 @@ func (s *Server) renewApplicationSession(key string) (core.ApplicationSession, e
 	}
 	return session, nil
 }
+
+// endApplicationSessionLocked forgets a session. A delegated one takes the rest of its family with
+// it: renewal leaves the previous lease running for a stream still using it, so sign-out has to end
+// every lease its source session holds or it would end only the newest.
+func (s *Server) endApplicationSessionLocked(key string) {
+	session, exists := s.forest.ApplicationSessions[key]
+	delete(s.forest.ApplicationSessions, key)
+	if !exists || !session.Delegated {
+		return
+	}
+	for other, held := range s.forest.ApplicationSessions {
+		if held.Delegated && held.UserID == session.UserID && held.SourceSession == session.SourceSession {
+			delete(s.forest.ApplicationSessions, other)
+		}
+	}
+}

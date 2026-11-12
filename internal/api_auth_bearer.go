@@ -12,7 +12,7 @@ import (
 )
 
 // Extracted without changing native ms_/HMAC/MFA/epoch/registry semantics.
-func (server *Server) serveLegacyAuth(next http.HandlerFunc, w http.ResponseWriter, r *http.Request) {
+func (server *Server) serveBearerAuth(next http.HandlerFunc, w http.ResponseWriter, r *http.Request) {
 	tokenString := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if strings.HasPrefix(tokenString, "ms_") {
 		server.serveApplicationSession(next, w, r, tokenString)

@@ -7,14 +7,6 @@ import (
 	"strings"
 )
 
-func activationInputHeaders(input ApplicationRequest) http.Header {
-	headers := make(http.Header)
-	for key, value := range input.Headers {
-		headers.Add(key, value)
-	}
-	return headers
-}
-
 func makeApplicationRequest(input ApplicationRequest) (*http.Request, error) {
 	req, err := http.NewRequest(input.Method, "http://embedded"+input.Target, bytes.NewReader(input.Body))
 	if err != nil {
@@ -34,16 +26,12 @@ func (s *Server) dispatchApplication(req *http.Request, out *applicationWriter) 
 		s.handleApplicationSession(out, req)
 	case path == "/session/mfa" && method == "POST":
 		s.handleApplicationSessionMFA(out, req)
-	case path == "/session/admit" && method == "POST":
-		s.handleSessionAdmit(out, req)
 	case path == "/session" && (method == "GET" || method == "DELETE"):
 		s.authMiddleware(s.handleApplicationSession)(out, req)
 	case path == "/session/activity" && method == "POST":
 		s.authMiddleware(s.handleApplicationActivity)(out, req)
 	case path == "/principal" && method == "GET":
-		s.authMiddleware(s.handleAuthenticatedPrincipal)(out, req)
-	case path == "/activation/probe":
-		s.authMiddleware(s.handleActivationProbe)(out, req)
+		s.authMiddleware(s.handlePrincipal)(out, req)
 	case path == "/notifications" && (method == "GET" || method == "POST"):
 		s.authMiddleware(s.handleApplicationNotifications)(out, req)
 	case path == "/feed" && (method == "GET" || method == "PATCH"):

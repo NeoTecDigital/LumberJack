@@ -10,6 +10,9 @@ import (
 )
 
 // Mirrors the private backend-owned native-callback/0.1 schema. No actor is submitted.
+// activationEmptyDigest is the sha256 of an empty body.
+const activationEmptyDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 type activationCheck struct {
 	Proof      string `json:"proof"`
 	Phase      string `json:"phase"`

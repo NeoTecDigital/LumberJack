@@ -141,8 +141,8 @@ func (w *applicationWriter) Write(body []byte) (int, error) {
 // ApplicationCall authenticates using the credential on this request. The
 // principal on an embedded service handle is never used for application data.
 func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
-	if invalidActivationHeaders(input.Headers) {
-		return activationApplicationError(401, "unauthenticated")
+	if s.malformedHeaders(input.Headers) {
+		return applicationError(401, "unauthenticated")
 	}
 	if len(input.Body) > applicationLimit {
 		return applicationError(413, "Request too large")
@@ -151,18 +151,13 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 	if err != nil || !strings.HasPrefix(input.Target, "/") || target.Host != "" || target.Scheme != "" {
 		return applicationError(400, "Invalid target")
 	}
-	activationHeaders := activationInputHeaders(input)
-	if isActivationRequest(activationHeaders) && (input.Method != "GET" || input.Target != "/principal" && input.Target != "/activation/probe") {
-		return activationApplicationError(403, "access_denied")
-	}
 	if target.Path == "/stream" {
 		return applicationError(400, "Use the Corresponder change dispatcher")
 	}
 	// /session/mfa joins the credential exchange in this exemption for the same reason /session is in
 	// it: a change-delivery backlog must not be able to strand a caller halfway through a login it has
-	// already started, holding a challenge that expires in five minutes. /session/admit is the same
-	// exchange, holding an admission that expires in one.
-	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/session/mfa" && target.Path != "/session/admit" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
+	// already started, holding a challenge that expires in five minutes.
+	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/session/mfa" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
 		full := false
 		s.readForest(func() { full = s.forest.Correspondence != nil && len(s.forest.Correspondence.Pending) >= 4096 })
 		if full {

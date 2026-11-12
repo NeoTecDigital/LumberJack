@@ -343,14 +343,14 @@ type TokenClaims struct {
 // The session guard the routes are wrapped in, and the pair of tokens a login hands out. They live
 // beside the routes that issue and consume them rather than in a helpers bucket.
 
-// Update the auth middleware to handle user_id from token claims
+// authMiddleware is the session guard: every registered RequestAuthenticator, in registration
+// order, then the engine's own bearer check. See extension_auth.go.
 func (server *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if isActivationRequest(r.Header) {
-			server.serveActivation(next, w, r)
+		if server.serveExtensionAuth(next, w, r) {
 			return
 		}
-		server.serveLegacyAuth(next, w, r)
+		server.serveBearerAuth(next, w, r)
 	}
 }
 

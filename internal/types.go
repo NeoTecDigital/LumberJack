@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/core"
-	"github.com/NeoTecDigital/LumberJack/internal/admission"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 
@@ -67,8 +66,6 @@ type Server struct {
 	nativeControl     atomic.Pointer[nativeControlRuntime]
 	sourceCoordinator atomic.Pointer[sourceCoordinator]
 	personalSource    atomic.Pointer[personalSource]
-	activation        atomic.Pointer[activationVerifier]
-	sessionAdmission  atomic.Pointer[admission.Verifier]
 	forest            *core.Node
 	cache             *Cache
 	apiQueue          *APIQueue

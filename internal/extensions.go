@@ -26,6 +26,10 @@ var engineConfigParts = []string{"username", "password", "secret"}
 type extensionSet struct {
 	specs     []extension.Spec
 	instances []extension.Instance // attach order
+
+	// The capabilities the instances implement, type-asserted once at attach.
+	authenticators []extension.RequestAuthenticator
+	configurables  map[string]extension.Configurable // by config part
 }
 
 // ExtensionSetIdentity names an extension set: its names in registration order. A runtime is shared
@@ -178,7 +182,7 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 	if err != nil {
 		return err
 	}
-	set := &extensionSet{specs: specs}
+	set := &extensionSet{specs: specs, configurables: map[string]extension.Configurable{}}
 	for index, ext := range exts {
 		instance, err := ext.Attach(&extensionHost{server: server, name: specs[index].Name})
 		if err == nil && instance == nil {
@@ -189,8 +193,28 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 			return fmt.Errorf("%w: %s did not attach: %v", ErrExtensionSet, specs[index].Name, err)
 		}
 		set.instances = append(set.instances, instance)
+		if err := set.capabilities(specs[index], instance); err != nil {
+			_ = set.close(context.Background())
+			return err
+		}
 	}
 	server.extensions = set
+	return nil
+}
+
+// capabilities records what one attached instance implements. An instance that declared config
+// parts must be able to receive them.
+func (set *extensionSet) capabilities(spec extension.Spec, instance extension.Instance) error {
+	if authenticator, ok := instance.(extension.RequestAuthenticator); ok {
+		set.authenticators = append(set.authenticators, authenticator)
+	}
+	configurable, ok := instance.(extension.Configurable)
+	if len(spec.ConfigParts) > 0 && !ok {
+		return fmt.Errorf("%w: %s declares config parts and cannot be configured", ErrExtensionSet, spec.Name)
+	}
+	for _, part := range spec.ConfigParts {
+		set.configurables[part] = configurable
+	}
 	return nil
 }
 
