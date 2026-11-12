@@ -15,12 +15,14 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/extension"
 	"github.com/NeoTecDigital/LumberJack/internal"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -39,6 +41,13 @@ type Runtime struct {
 	epoch          uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
 	refs           int      // open handles over this runtime; guarded by registryMu
 	closed         chan struct{}
+
+	// extensions names the extension set the runtime was opened with (internal.ExtensionSetIdentity);
+	// extended is whether it holds any. closing is set, under registryMu, when an extended runtime
+	// starts to close, so an Open of the same path waits for the close to finish.
+	extensions string
+	extended   bool
+	closing    chan struct{}
 	// systemDefault is set when this runtime opened an EMPTY forest and took the default `system`
 	// user. Every handle over it then acts as system; on a forest with real users it is false and each
 	// handle acts as its own principal.
@@ -82,6 +91,17 @@ var (
 // is Adopted. The principal is bound here and for the life of the handle: an embedder acts as one
 // identity per handle, and holds as many handles as it acts as identities.
 func Open(config Config, principal string) (*Handle, error) {
+	return OpenWith(config, principal)
+}
+
+// ErrExtensionConflict refuses an Open of a path whose runtime is already open with a different
+// extension set: the set is fixed for the life of a runtime.
+var ErrExtensionConflict = errors.New("lumberjack: the state file is open with a different extension set")
+
+// OpenWith is Open with an extension set. The set is validated and each extension attached once,
+// after the state is loaded and before the first write or request (docs/extension-api.md §3). A
+// second OpenWith of the same path shares the runtime only with the same set, in the same order.
+func OpenWith(config Config, principal string, exts ...extension.Extension) (*Handle, error) {
 	config, err := canonicalConfig(config)
 	if err != nil {
 		return nil, err
@@ -91,22 +111,31 @@ func Open(config Config, principal string) (*Handle, error) {
 		return nil, err
 	}
 	registryMu.Lock()
-	for configuredOpenWait(registry[key]) != nil {
-		wait := configuredOpenWait(registry[key])
+	for wait := runtimeOpenWait(registry[key]); wait != nil; wait = runtimeOpenWait(registry[key]) {
 		registryMu.Unlock()
 		<-wait
 		registryMu.Lock()
 	}
 	defer registryMu.Unlock()
 	if rt, ok := registry[key]; ok {
+		if rt.extensions != internal.ExtensionSetIdentity(exts) {
+			return nil, ErrExtensionConflict
+		}
 		rt.refs++
 		return rt.newHandle(principal), nil
 	}
-	return openRuntimeLocked(config, key, principal)
+	return openRuntimeLocked(config, key, principal, exts)
 }
 
-func openRuntimeLocked(config Config, key, principal string) (*Handle, error) {
-	// Canonical path/flock precede construction; legacy system bootstrap remains unchanged.
+// runtimeOpenWait is what an Open of a closing runtime's path waits on, or nil to proceed.
+func runtimeOpenWait(rt *Runtime) chan struct{} {
+	if rt != nil && rt.closing != nil {
+		return rt.closing
+	}
+	return configuredOpenWait(rt)
+}
+
+func openRuntimeLocked(config Config, key, principal string, exts []extension.Extension) (*Handle, error) {
 	lock, err := acquireLock(key)
 	if err != nil {
 		return nil, err
@@ -116,14 +145,23 @@ func openRuntimeLocked(config Config, key, principal string) (*Handle, error) {
 		releaseLock(lock)
 		return nil, err
 	}
+	if len(exts) > 0 {
+		if err := server.AttachExtensions(exts); err != nil {
+			_ = server.Shutdown(context.Background())
+			releaseLock(lock)
+			return nil, err
+		}
+	}
 	systemDefault, err := server.EnsureSystemUser()
 	if err != nil {
+		_ = server.CloseExtensions(context.Background())
 		_ = server.Shutdown(context.Background())
 		releaseLock(lock)
 		return nil, err
 	}
 	rt := &Runtime{server: server, path: key, lock: lock, epoch: newEpoch(), refs: 1,
-		closed: make(chan struct{}), systemDefault: systemDefault}
+		closed: make(chan struct{}), systemDefault: systemDefault,
+		extensions: internal.ExtensionSetIdentity(exts), extended: len(exts) > 0}
 	registry[key] = rt
 	return rt.newHandle(principal), nil
 }
@@ -162,6 +200,11 @@ func (rt *Runtime) close() error {
 	if rt.refs > 0 {
 		registryMu.Unlock()
 		return nil
+	}
+	if rt.extended {
+		rt.closing = make(chan struct{})
+		registryMu.Unlock()
+		return rt.closeExtendedRuntime()
 	}
 	if rt.domainLifetime != nil || rt.sourceLifetime != nil {
 		wait := make(chan struct{})
@@ -206,4 +249,24 @@ func canonicalPath(config Config) (string, error) {
 // across a restart is not resumed against a fresh, unrelated numbering.
 func newEpoch() uint64 {
 	return uint64(time.Now().UnixNano())
+}
+
+// closeExtendedRuntime closes a runtime that holds extensions, with registryMu released
+// (docs/extension-api.md §3): each instance closes in reverse attach order, then the server shuts
+// down, then the flock goes, and only then does the path leave the registry and a waiting Open
+// proceed.
+func (rt *Runtime) closeExtendedRuntime() error {
+	err := rt.server.CloseExtensions(context.Background())
+	if shutdownErr := rt.server.Shutdown(context.Background()); err == nil {
+		err = shutdownErr
+	}
+	if lockErr := releaseLock(rt.lock); err == nil {
+		err = lockErr
+	}
+	registryMu.Lock()
+	delete(registry, rt.path)
+	close(rt.closed)
+	close(rt.closing)
+	registryMu.Unlock()
+	return err
 }

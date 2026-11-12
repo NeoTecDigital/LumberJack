@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 const aclFixtureOwner = "unit-verified-momentum-human"

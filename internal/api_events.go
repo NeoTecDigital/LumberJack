@@ -19,7 +19,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // planEventRequest is the body of POST /events/plan.

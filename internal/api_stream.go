@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // GET /stream — server-sent events, one per mutation.

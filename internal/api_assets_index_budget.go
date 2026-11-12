@@ -1,7 +1,7 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package internal
 
-import "github.com/NeoTecDigital/LumberJack/internal/core"
+import "github.com/NeoTecDigital/LumberJack/core"
 
 // Each request admits at most 10,000 examined descriptors, including denied
 // nodes, ACL records, edges, empty entries/events, messages, edits and refs.

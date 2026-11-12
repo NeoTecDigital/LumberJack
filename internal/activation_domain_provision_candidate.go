@@ -4,7 +4,7 @@ package internal
 import (
 	"crypto/sha256"
 	"fmt"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func validateEnrollmentDescriptor(descriptor stagedDescriptor) error {

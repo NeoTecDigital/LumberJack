@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // /aggregate against HAND-COMPUTED fixtures.

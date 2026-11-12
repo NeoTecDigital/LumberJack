@@ -4,8 +4,8 @@ package internal
 import (
 	"encoding/base64"
 	"encoding/json"
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/ciphertext"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"time"
 )
 

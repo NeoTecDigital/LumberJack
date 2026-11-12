@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Called while committing a command, so the work and its pending delivery are

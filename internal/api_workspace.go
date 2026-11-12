@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 type workCommand struct {

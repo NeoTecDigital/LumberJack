@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func encryptedDocumentForTest(t *testing.T, codec *secureStorage, forest *core.Node) encryptedStateDocument {

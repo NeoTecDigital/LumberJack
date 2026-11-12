@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // What nodeRecord's EMBEDDING buys, asserted rather than assumed.

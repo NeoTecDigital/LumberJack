@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // THE SILENT DIVERGENCE THIS ENDS. ConfigureApplication reads an admin username and password out of

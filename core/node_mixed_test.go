@@ -13,7 +13,7 @@ import (
 // — was therefore structurally illegal. NodeType is now an advisory default VIEW hint and nothing
 // refuses a legal operation on the strength of it.
 //
-// OBSERVED RED with the four guards in place (go test ./internal/core/ -run HoldsChildrenAndEvents):
+// OBSERVED RED with the four guards in place (go test ./core/ -run HoldsChildrenAndEvents):
 //
 //	--- FAIL: TestANodeHoldsChildrenAndEventsAtOnce (0.00s)
 //	    node_mixed_test.go:29: add a child to a node that records an event: cannot add a child to leaf node holder

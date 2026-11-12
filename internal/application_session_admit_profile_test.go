@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/admission"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // The profile an admission carries: the digest binds it, and it is what the account is called.

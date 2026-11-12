@@ -2,7 +2,7 @@ package internal
 
 import (
 	"fmt"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 	"strings"
 )
 

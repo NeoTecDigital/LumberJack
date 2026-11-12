@@ -14,7 +14,7 @@ import (
 
 	"github.com/golang-jwt/jwt"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 

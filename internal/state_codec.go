@@ -9,8 +9,8 @@ import (
 	"io"
 	"sort"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/compat"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // What the state file holds, and why it is not the forest as JSON.

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func publicationFixture(t *testing.T) (*Server, string, string, string) {

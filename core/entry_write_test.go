@@ -16,7 +16,7 @@ import (
 // route can name the entry it just created without reading it back by an index that has already
 // moved.
 //
-// OBSERVED RED before AddEntry set the two fields (go test ./internal/core/ -run AddEntry):
+// OBSERVED RED before AddEntry set the two fields (go test ./core/ -run AddEntry):
 //
 //	entry_write_test.go:NN: AddEntry stored parent_id %q, want "reply-to-abc"  (got "")
 //	entry_write_test.go:NN: AddEntry stored rank %q, want "a1"                  (got "")
@@ -51,7 +51,7 @@ func TestAddEntryStoresParentAndRank(t *testing.T) {
 // supplied, rewrites it — which is a reorder and a reparent written as data. An absent (nil) rank or
 // parent is left alone.
 //
-// OBSERVED RED before PatchEntry set rank and parent (go test ./internal/core/ -run PatchEntry):
+// OBSERVED RED before PatchEntry set rank and parent (go test ./core/ -run PatchEntry):
 //
 //	entry_write_test.go:NN: PatchEntry left rank %q, want "b7"                  (got "a1")
 //	entry_write_test.go:NN: PatchEntry left parent_id %q, want "new-parent"     (got "reply-to-abc")
@@ -126,7 +126,7 @@ func TestPatchEntryOnAnAbsentIDReportsNotFound(t *testing.T) {
 // order is a lexicographic STRING sort — the engine stores and returns the opaque key so the client
 // can order by it. Created out of rank order on purpose, so a sort that did nothing would fail.
 //
-// OBSERVED RED before AddEntry stored the rank (go test ./internal/core/ -run SortByRank):
+// OBSERVED RED before AddEntry stored the rank (go test ./core/ -run SortByRank):
 //
 //	entry_write_test.go:NN: entries ordered by rank came back [m a z], want [a m z]
 func TestEntriesUnderOneHolderSortByRank(t *testing.T) {

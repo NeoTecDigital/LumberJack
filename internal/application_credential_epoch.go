@@ -2,7 +2,7 @@
 package internal
 
 import (
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // WHEN THE RULES FOR AN ACCOUNT CHANGE, WHAT WAS ISSUED UNDER THE OLD ONES HAS TO STOP.

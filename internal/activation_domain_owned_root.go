@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // DomainOwnedRootSpec is a protected host's explicit request for one product root: the account

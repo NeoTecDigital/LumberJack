@@ -12,8 +12,8 @@ import (
 	"io"
 	"os"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/compat"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 const encryptedStateMagic = "LUMBERJACK-ENCRYPTED-STATE-3\n"

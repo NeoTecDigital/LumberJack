@@ -115,8 +115,40 @@ func (writer *stateWriter) behind() bool {
 // The caller may be satisfied by another caller's flush. That is not a weakening: a newer snapshot
 // is a later state of the same forest, so it contains this snapshot's change by construction.
 func (writer *stateWriter) commit(snapshot stateSnapshot) error {
-	_, err := writer.commitRequired(snapshot, nil)
+	_, err := writer.commitStamped(snapshot)
 	return err
+}
+
+// writerStamp is where a committed snapshot's contents are durable: the sequence of the snapshot on
+// the disk (this one or a newer one holding it), that snapshot's payload hash, and the state file.
+type writerStamp struct {
+	seq  uint64
+	hash []byte
+	path string
+}
+
+// commitStamped is commit answering where the change landed.
+func (writer *stateWriter) commitStamped(snapshot stateSnapshot) (writerStamp, error) {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+
+	if err := writer.awaitLocked(snapshot); err != nil {
+		return writerStamp{}, err
+	}
+	return writer.stampLocked(snapshot), nil
+}
+
+// stampLocked is the durable stamp once a snapshot is durable. A snapshot the unchanged-skip did not
+// write is durable as the file that was already there, which a load leaves without a path.
+func (writer *stateWriter) stampLocked(snapshot stateSnapshot) writerStamp {
+	stamp := writerStamp{seq: writer.durableSeq, hash: writer.durableHash, path: writer.durablePath}
+	if stamp.path == "" {
+		stamp.path = snapshot.path
+	}
+	if stamp.hash == nil {
+		stamp.hash = snapshot.hash
+	}
+	return stamp
 }
 
 // commitPaired requires a witness from the actual successful published job.
@@ -124,30 +156,32 @@ func (writer *stateWriter) commitPaired(snapshot stateSnapshot, pair stagedPair)
 	if pair.ScopeID == "" || !matchingStagedPair(snapshot.pairs, pair) {
 		return stagedDurableStamp{}, fmt.Errorf("snapshot lacks the required encoded pair")
 	}
-	return writer.commitRequired(snapshot, &pair)
-}
-
-func (writer *stateWriter) commitRequired(snapshot stateSnapshot, pair *stagedPair) (stagedDurableStamp, error) {
 	writer.mutex.Lock()
 	defer writer.mutex.Unlock()
 
+	if err := writer.awaitLocked(snapshot); err != nil {
+		return stagedDurableStamp{}, err
+	}
+	return writer.pairedStamp(snapshot.path, &pair)
+}
+
+// awaitLocked stages the snapshot and flushes until it, or a newer snapshot holding it, is durable.
+// The caller holds writer.mutex; flush releases it around the disk write.
+func (writer *stateWriter) awaitLocked(snapshot stateSnapshot) error {
 	target := writer.stage(snapshot)
 	for {
 		if writer.durableSeq >= target {
-			return writer.pairedStamp(snapshot.path, pair)
+			return nil
 		}
 		if writer.failedSeq >= target {
-			return stagedDurableStamp{}, writer.failedErr
+			return writer.failedErr
 		}
 		if writer.flushing {
 			writer.settled.Wait()
 			continue
 		}
 		if writer.pending == nil {
-			// Neither durable, nor failed, nor staged, nor in flight. The bookkeeping above is
-			// wrong, and waiting here would hang the request for ever; a caller is told its write
-			// did not happen rather than told nothing.
-			return stagedDurableStamp{}, fmt.Errorf("state writer lost snapshot %d", target)
+			return fmt.Errorf("state writer lost snapshot %d", target)
 		}
 		writer.flush()
 	}

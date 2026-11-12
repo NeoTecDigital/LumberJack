@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Walking the forest, which is a MULTI-PARENT DAG and not a tree.

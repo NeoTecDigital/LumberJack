@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 type personalSource struct {

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 type ApplicationRequest struct {

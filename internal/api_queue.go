@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // errServerShuttingDown answers a queued read that raced the worker pool's teardown.

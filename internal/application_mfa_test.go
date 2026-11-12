@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // addMFAUser plants a user with a known password, a formatted phone and MFA on, and returns the copy

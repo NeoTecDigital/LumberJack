@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func TestFactorSwitchPreservesChallengeBudget(t *testing.T) {

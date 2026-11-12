@@ -3,7 +3,7 @@ package internal
 import (
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // The query surface's request shapes, and the ONE record the predicate evaluator sees.

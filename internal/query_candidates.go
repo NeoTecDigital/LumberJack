@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Flattening a node, an event, an entry and a time span into the one record everything downstream

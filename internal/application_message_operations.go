@@ -3,7 +3,7 @@ package internal
 
 import (
 	"encoding/json"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 	"net/http"
 	"strings"
 )

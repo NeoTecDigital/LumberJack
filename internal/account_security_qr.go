@@ -8,7 +8,7 @@ import (
 	"image/png"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
 )

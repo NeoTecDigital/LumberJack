@@ -4,7 +4,7 @@ package internal
 import (
 	"strings"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func (s *Server) changeConversationMembership(c *core.Conversation, user string, in conversationInput) (interface{}, error) {

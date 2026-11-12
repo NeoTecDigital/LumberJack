@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 )

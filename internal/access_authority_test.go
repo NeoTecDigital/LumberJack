@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func accessTestCall(t *testing.T, s *Server, user, route string, request interface{}, status int) map[string]interface{} {

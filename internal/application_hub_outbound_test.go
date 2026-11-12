@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // The outbound pair on the trusted ApplicationHub: the read that lists the external outbox

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // The change set: what one hot-log record carries, how a commit's is found, and how recovery

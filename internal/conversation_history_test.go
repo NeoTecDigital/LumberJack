@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func conversationListed(t *testing.T, s *Server, token, id string) map[string]interface{} {

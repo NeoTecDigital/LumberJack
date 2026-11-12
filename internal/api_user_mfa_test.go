@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // ENROLMENT IS ADMINISTRATIVE. Nothing self-serves a second factor here: an account's phone and its

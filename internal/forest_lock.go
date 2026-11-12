@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/extension"
 )
 
 // The one lock over the forest, and the shapes every route uses to take it.
@@ -129,21 +130,29 @@ func (server *Server) readForest(read func()) {
 // refused under the hold had no effect when the forest still has the revision it had before; one
 // that could not be made durable is unknown to the fence; one that landed is finished.
 func (server *Server) changeForest(change func() error) error {
+	_, err := server.changeForestCommit(change)
+	return err
+}
+
+// changeForestCommit is changeForest answering where the change became durable: the snapshot the
+// state writer published (this one, or a newer one holding it), or the hot-log record in tiered mode.
+func (server *Server) changeForestCommit(change func() error) (extension.Commit, error) {
 	permit, before, err := server.beginForestWrite()
 	if err != nil {
-		return err
+		return extension.Commit{}, err
 	}
 	land, err := server.stageChange(change)
 	if err != nil {
 		permit.noEffect(permit.fenced() && before != "" && before == server.sourceForestRevision())
-		return err
+		return extension.Commit{}, err
 	}
-	if err := land(); err != nil {
+	commit, err := land()
+	if err != nil {
 		permit.finish(false, true)
-		return err
+		return extension.Commit{}, err
 	}
 	permit.finish(true, true)
-	return nil
+	return commit, nil
 }
 
 // beginForestWrite takes the source-fence permit an ordinary write holds, and answers the forest's
@@ -168,28 +177,34 @@ func (server *Server) beginForestWrite() (*sourceOrdinaryPermit, string, error) 
 // stageChange makes the change under the exclusive hold, in whichever persistence holds the
 // forest, and answers what makes it durable with the hold released: the state file in snapshot
 // mode, the change's log record in tiered mode.
-func (server *Server) stageChange(change func() error) (func() error, error) {
+func (server *Server) stageChange(change func() error) (func() (extension.Commit, error), error) {
 	if server.tier != nil {
 		seq, err := server.stageChangeLocked(change)
 		if err != nil {
 			return nil, err
 		}
-		return func() error { return server.landTiered(seq) }, nil
+		return func() (extension.Commit, error) {
+			return extension.Commit{Tiered: true, Seq: seq, Path: server.statePath()}, server.landTiered(seq)
+		}, nil
 	}
 	snapshot, err := server.applyChangeLocked(change)
 	if err != nil {
 		return nil, err
 	}
-	return func() error { return server.landSnapshot(snapshot) }, nil
+	return func() (extension.Commit, error) { return server.landSnapshot(snapshot) }, nil
 }
 
-// landSnapshot makes a snapshot durable, with no hold on the forest.
-func (server *Server) landSnapshot(snapshot stateSnapshot) error {
-	if err := server.commitState(snapshot); err != nil {
+// landSnapshot makes a snapshot durable, with no hold on the forest, and answers where it landed.
+func (server *Server) landSnapshot(snapshot stateSnapshot) (extension.Commit, error) {
+	stamp, err := server.stateWriter.commitStamped(snapshot)
+	if err != nil {
 		server.logger.Failure("Failed to save state: %v", err)
-		return apiErrorf(http.StatusInternalServerError, "Failed to save state")
+		return extension.Commit{}, apiErrorf(http.StatusInternalServerError, "Failed to save state")
 	}
-	return nil
+	server.logger.Debug("Saved changes to file: %s", snapshot.path)
+	commit := extension.Commit{Seq: stamp.seq, Path: stamp.path}
+	copy(commit.SHA256[:], stamp.hash)
+	return commit, nil
 }
 
 // applyChangeLocked makes the change and serializes the forest it produced, both under one

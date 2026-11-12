@@ -1,7 +1,7 @@
 // Written by Richard Christopher, Copyright 2026 Mindfull
 package internal
 
-import "github.com/NeoTecDigital/LumberJack/internal/core"
+import "github.com/NeoTecDigital/LumberJack/core"
 
 func (s *Server) workCommandPlan(c *workCommandContext) error {
 	node := c.node

@@ -16,8 +16,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/admission"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // A SESSION A SIGNATURE ASKED FOR. The account authority (Activity, over GoTrue) proves who is

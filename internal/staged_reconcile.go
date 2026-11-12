@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func (s *Server) stageOwnedCommand(command stagedCommand, authorize stagedAuthorizer, build stagedBuilder) (stagedResult, error) {

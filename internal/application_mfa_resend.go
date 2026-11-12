@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // WHAT A RESEND IS ALLOWED TO BE, AND WHAT IT WAS.

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 const conversationParticipantLimit = 100 // Includes the owner and pending invitations.

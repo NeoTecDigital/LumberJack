@@ -4,7 +4,7 @@ package internal
 import (
 	"sync"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Only forest structure/content hashes may be reused. Never put a DomainView,

@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/admission"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 
@@ -100,6 +100,11 @@ type Server struct {
 	// tier is tiered persistence when the config asks for it, and nil in snapshot mode, where the
 	// stateWriter above is what makes a change durable. See persistence.go.
 	tier *tier
+
+	// extensions is the set this runtime was opened with, attached once before the first request.
+	// extensionsClosed is set once their instances are closed; no Host call is honoured after it.
+	extensions       *extensionSet
+	extensionsClosed atomic.Bool
 
 	// stateLevel is the state file's level (compat.StateLevel*): the level read at open, raised by
 	// every write that needs more, never lowered. It selects the banner and the envelope version.

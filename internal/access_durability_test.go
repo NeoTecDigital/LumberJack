@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Evidence for the documented non-rollback boundary, not a claim of transaction

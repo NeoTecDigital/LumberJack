@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // WHETHER THE CODE LEFT THE BUILDING, kept here rather than inferred anywhere else.

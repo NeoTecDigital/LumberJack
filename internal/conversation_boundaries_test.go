@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func conversationFixture(t *testing.T) (*Server, map[string]string) {

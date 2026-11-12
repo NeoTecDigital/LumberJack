@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // The tests here go through the ROUTER rather than calling a handler directly, because what is

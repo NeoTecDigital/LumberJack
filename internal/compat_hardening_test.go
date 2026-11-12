@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/compat"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 	"lukechampine.com/blake3"
 )
 

@@ -1,7 +1,7 @@
 // Written by Richard Christopher, Copyright 2026 Mindfull
 package internal
 
-import "github.com/NeoTecDigital/LumberJack/internal/core"
+import "github.com/NeoTecDigital/LumberJack/core"
 
 type messageSaveInput struct {
 	ID    string `json:"id"`

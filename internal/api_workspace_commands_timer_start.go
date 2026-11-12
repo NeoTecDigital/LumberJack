@@ -2,7 +2,7 @@
 package internal
 
 import (
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func (s *Server) workCommandTimerStart(c *workCommandContext) error {

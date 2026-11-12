@@ -3,7 +3,7 @@ package internal
 import (
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // The shapes an HTTP client is given.

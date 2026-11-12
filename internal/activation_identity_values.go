@@ -3,7 +3,7 @@ package internal
 
 import (
 	"encoding/json"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 const PersonalSourceRevision = "activation-native-personal-source/0.1"

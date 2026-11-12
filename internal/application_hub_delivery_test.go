@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // GIVING UP ON A CODE IS A FACT ABOUT THE LOGIN, and until this file it was not recorded anywhere.

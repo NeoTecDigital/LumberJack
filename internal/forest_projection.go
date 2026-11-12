@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Projecting the forest for one caller: what it may see, and once each.

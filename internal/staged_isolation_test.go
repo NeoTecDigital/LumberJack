@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 func TestStagedLegacyMutationIsRestoredEvenOnCallbackError(t *testing.T) {

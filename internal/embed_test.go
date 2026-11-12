@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // embeddedServer is a core-only server with one admin on the root, built without a signing key. The

@@ -3,7 +3,7 @@ package internal
 import (
 	"testing"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // where.user_id matches an event's ASSIGNEE as well as its creator (phase 18.3).

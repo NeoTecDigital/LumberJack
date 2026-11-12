@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/core"
 )
 
 // Simulate the new relationship on shallow graph copies. Previewing must never

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/admission"
-	"github.com/NeoTecDigital/LumberJack/internal/core"
 )
 
 // POST /session/admit is dispatched by ApplicationCall, not the mux, so these go through
