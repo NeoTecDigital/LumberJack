@@ -38,4 +38,10 @@ type ServerConfig struct {
 	// filled from `<DatabasePath>/config.yaml` when the server opens, and then from the defaults.
 	Persistence PersistenceConfig `json:"persistence"`
 	Sync        SyncConfig        `json:"sync"`
+	// Storage is how the forest and its objects are sealed. Nil reads the environment
+	// (StorageFromEnvironment); a value is explicit, and the environment is not read.
+	Storage *StorageConfig `json:"storage,omitempty"`
+	// AdminReconcile lets ConfigureApplication replace the configured administrator's stored
+	// password from the one it is given. Nil reads LUMBERJACK_ADMIN_RECONCILE.
+	AdminReconcile *bool `json:"admin_reconcile,omitempty"`
 }

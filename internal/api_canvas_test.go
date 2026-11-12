@@ -17,6 +17,10 @@ import (
 
 // serveRoute drives a request through the server's real routing table with a caller in context, so
 // a test exercises the path variables and the method the route was registered under.
+// testLayoutKey is the metadata key the canvas tests keep a layout under. The engine reserves no key:
+// a layout is ordinary metadata, merged like any other.
+const testLayoutKey = "layout"
+
 func serveRoute(t *testing.T, server *Server, method, target, userID string, body interface{}) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -237,7 +241,7 @@ func TestNodeMetadataMerges(t *testing.T) {
 
 	layout := map[string]interface{}{"x": 10.0, "y": 20.0, "w": 100.0, "h": 60.0, "shape": "rect", "color": "#334455", "collapsed": false}
 	decodeBody(t, serveRoute(t, server, "PATCH", "/nodes/canvas/box/metadata", userID, map[string]interface{}{
-		CanvasMetadataKey: layout,
+		testLayoutKey: layout,
 	}), &map[string]interface{}{})
 
 	// A SECOND surface writes a different key. The layout must survive it.
@@ -250,7 +254,7 @@ func TestNodeMetadataMerges(t *testing.T) {
 	if metadata["owner"] != "richard" {
 		t.Errorf("The second patch was not applied: %v", metadata)
 	}
-	if _, kept := metadata[CanvasMetadataKey]; !kept {
+	if _, kept := metadata[testLayoutKey]; !kept {
 		t.Fatalf("The second patch replaced the layout instead of merging: %v", metadata)
 	}
 
@@ -269,7 +273,7 @@ func TestNodeMetadataMerges(t *testing.T) {
 		t.Fatalf("Failed to find the node after a restart: %v", err)
 	}
 
-	restored, present := node.Metadata[CanvasMetadataKey].(map[string]interface{})
+	restored, present := node.Metadata[testLayoutKey].(map[string]interface{})
 	if !present {
 		t.Fatalf("The layout did not survive the restart: %v", node.Metadata)
 	}

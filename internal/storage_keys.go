@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 type wrappedStorageKey struct {
@@ -77,18 +79,19 @@ func (w *localStorageWrapper) Unwrap(_ context.Context, key wrappedStorageKey, a
 	return storageOpen(w.key, key.Ciphertext, aad)
 }
 
-func storageWrapperFromEnvironment() (storageKeyWrapper, error) {
-	switch os.Getenv("CORRESPONDER_STORAGE_MODE") {
+// storageWrapperFor is the key wrapper a storage configuration names, or nil for plaintext.
+func storageWrapperFor(config types.StorageConfig) (storageKeyWrapper, error) {
+	switch config.Mode {
 	case "":
-		return nil, nil // Generic Lumberjack library compatibility; Momentum requires a mode.
+		return nil, nil
 	case "kms":
-		name := os.Getenv("CORRESPONDER_STORAGE_KMS_KEY")
+		name := config.KMSKey
 		if !validKMSKeyName(name) {
-			return nil, errors.New("set CORRESPONDER_STORAGE_KMS_KEY to a Cloud KMS symmetric CryptoKey resource")
+			return nil, errors.New("set LUMBERJACK_STORAGE_KMS_KEY (storage.kms_key) to a Cloud KMS symmetric CryptoKey resource")
 		}
 		return newKMSStorageWrapper(name), nil
 	case "local-test":
-		path := os.Getenv("CORRESPONDER_STORAGE_LOCAL_KEY_FILE")
+		path := config.LocalKeyFile
 		info, err := os.Stat(path)
 		if err != nil {
 			return nil, fmt.Errorf("local-test storage key is unavailable: %w", err)
@@ -102,7 +105,7 @@ func storageWrapperFromEnvironment() (storageKeyWrapper, error) {
 		}
 		return &localStorageWrapper{key: key}, nil
 	default:
-		return nil, errors.New("unsupported CORRESPONDER_STORAGE_MODE; use kms or explicit local-test")
+		return nil, errors.New("unsupported LUMBERJACK_STORAGE_MODE (storage.mode); use kms or explicit local-test")
 	}
 }
 func validKMSKeyName(name string) bool {

@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 type ApplicationRequest struct {
@@ -29,10 +29,21 @@ type ApplicationResponse struct {
 	Body    []byte            `json:"body"`
 }
 
-// adminReconcileEnv names the ONE opt-in that lets the environment overwrite a stored credential.
-// It is read as an exact "1" rather than as any truthy string, because a variable that a typo can
-// switch on is a variable that resets an administrator's password by accident.
-const adminReconcileEnv = "CORRESPONDER_ADMIN_RECONCILE"
+// adminReconcile is the ONE opt-in that lets the configuration overwrite a stored credential:
+// ServerConfig.AdminReconcile, or LUMBERJACK_ADMIN_RECONCILE (CORRESPONDER_ADMIN_RECONCILE for one
+// release) when the config does not say. The variable is read as an exact "1" rather than as any
+// truthy string, because a variable that a typo can switch on is a variable that resets an
+// administrator's password by accident.
+func (s *Server) adminReconcile() bool {
+	if s.config.AdminReconcile != nil {
+		return *s.config.AdminReconcile
+	}
+	reconcile, deprecated := types.AdminReconcileFromEnvironment()
+	if deprecated {
+		s.logger.Warn("CORRESPONDER_ADMIN_RECONCILE is deprecated and read for this release only; set LUMBERJACK_ADMIN_RECONCILE")
+	}
+	return reconcile
+}
 
 // ConfigureApplication runs once, before an embedder accepts untrusted requests.
 // A populated forest keeps its account identities and password hashes.
@@ -44,7 +55,7 @@ const adminReconcileEnv = "CORRESPONDER_ADMIN_RECONCILE"
 // like one that did, and the only symptom was a login that would not work. That happened here: a
 // datastore's admin stopped matching backend/.env after a reset and nothing in any log said so.
 //
-// The repair is explicit and opt-in. With CORRESPONDER_ADMIN_RECONCILE=1 the configured admin's
+// The repair is explicit and opt-in. With LUMBERJACK_ADMIN_RECONCILE=1 the configured admin's
 // password hash — that account's, and no other's — is replaced from the environment, and the fact is
 // logged. Without it the behaviour is exactly what it was, plus the line.
 func (s *Server) ConfigureApplication(username, password, secret string) error {
@@ -52,7 +63,7 @@ func (s *Server) ConfigureApplication(username, password, secret string) error {
 		return fmt.Errorf("application bootstrap needs a username, a password of at least 12 characters and a session key of at least 32 bytes")
 	}
 	s.jwtConfig = JWTConfig{SecretKey: []byte(secret), ExpiresIn: 24 * time.Hour}
-	reconcile := os.Getenv(adminReconcileEnv) == "1"
+	reconcile := s.adminReconcile()
 	// The report is assembled inside the hold and logged outside it, so nothing writes to a log sink
 	// while the forest is held exclusively.
 	notice := ""
@@ -76,7 +87,7 @@ func (s *Server) ConfigureApplication(username, password, secret string) error {
 		if !reconcile {
 			notice = fmt.Sprintf("BOOTSTRAP: the configured admin %q was NOT created or updated — this datastore already holds accounts, "+
 				"and its stored password is whatever it already was. If a sign-in with the configured password is failing, that is why. "+
-				"Set %s=1 to reset THAT ACCOUNT'S password from the environment on the next start.", username, adminReconcileEnv)
+				"Set %s=1 to reset THAT ACCOUNT'S password from the environment on the next start.", username, "LUMBERJACK_ADMIN_RECONCILE")
 			return nil
 		}
 
@@ -96,11 +107,11 @@ func (s *Server) ConfigureApplication(username, password, secret string) error {
 			// keep the symptom.
 			s.forest.Users[i].FailedLogins, s.forest.Users[i].LockedUntil = 0, 0
 			notice = fmt.Sprintf("BOOTSTRAP: %s=1 — reset the password of the existing admin account %q from the environment. "+
-				"No other account was touched.", adminReconcileEnv, username)
+				"No other account was touched.", "LUMBERJACK_ADMIN_RECONCILE", username)
 			return nil
 		}
 		notice = fmt.Sprintf("BOOTSTRAP: %s=1 but this datastore holds no account named %q, so nothing was changed. "+
-			"The repair updates one existing account; it does not create one.", adminReconcileEnv, username)
+			"The repair updates one existing account; it does not create one.", "LUMBERJACK_ADMIN_RECONCILE", username)
 		return nil
 	})
 	if notice != "" {

@@ -378,7 +378,7 @@ func TestStateFileRoundTripsEverythingANodeCarries(t *testing.T) {
 		t.Fatalf("Append to the event: got %d, want %d", code, http.StatusOK)
 	}
 	if code := serveRoute(t, server, "PATCH", "/nodes/org/alpha/shared/metadata", userID,
-		map[string]interface{}{CanvasMetadataKey: map[string]interface{}{"x": 12.0}}).Code; code != http.StatusOK {
+		map[string]interface{}{testLayoutKey: map[string]interface{}{"x": 12.0}}).Code; code != http.StatusOK {
 		t.Fatalf("PATCH metadata: got %d, want %d", code, http.StatusOK)
 	}
 
@@ -427,7 +427,7 @@ func TestStateFileRoundTripsEverythingANodeCarries(t *testing.T) {
 	if event.Metadata["kind"] != "inspection" {
 		t.Errorf("The event's metadata came back as %v, want kind=inspection", event.Metadata)
 	}
-	if after.Metadata[CanvasMetadataKey] == nil {
+	if after.Metadata[testLayoutKey] == nil {
 		t.Errorf("The canvas layout did not survive the round trip: %v", after.Metadata)
 	}
 	if after.CreatedBy != before.CreatedBy || !after.CreatedAt.Equal(before.CreatedAt) {

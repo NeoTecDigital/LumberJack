@@ -198,6 +198,6 @@ func init() {
 	serveCmd.Flags().StringVarP(&serveDBName, "db", "d", "default", "Database name")
 	serveCmd.Flags().StringVar(&serveAdminUser, "admin-user", "admin", "Admin username for initialization")
 	serveCmd.Flags().StringVar(&serveAdminPass, "admin-pass", "", "Admin password for initialization (or "+adminPassEnv+"); required on first init")
-	serveCmd.Flags().StringVar(&serveAdminOrg, "admin-org", "Momentum", "Organization name")
-	serveCmd.Flags().StringVar(&serveAdminMail, "admin-email", "admin@momentum.local", "Admin email")
+	serveCmd.Flags().StringVar(&serveAdminOrg, "admin-org", "LumberJack", "Organization name")
+	serveCmd.Flags().StringVar(&serveAdminMail, "admin-email", "admin@lumberjack.local", "Admin email")
 }

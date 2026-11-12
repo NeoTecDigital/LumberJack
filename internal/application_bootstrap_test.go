@@ -19,7 +19,7 @@ import (
 // in any log said so.
 //
 // So: a populated store now says loudly that it left the account alone, and there is ONE explicit,
-// opt-in way to repair the mismatch — CORRESPONDER_ADMIN_RECONCILE=1, which resets that one account's
+// opt-in way to repair the mismatch — LUMBERJACK_ADMIN_RECONCILE=1, which resets that one account's
 // password from the environment and nothing else. Off by default, because the default must never be
 // "the environment file overwrites the database".
 
@@ -66,7 +66,7 @@ func adminHash(t *testing.T, server *Server, username string) string {
 //
 //	--- FAIL: TestBootstrapSaysLoudlyThatItLeftTheAdminAlone (0.04s)
 //	    application_bootstrap_test.go:81: the bootstrap said nothing about leaving the admin alone
-//	    application_bootstrap_test.go:84: the bootstrap did not name CORRESPONDER_ADMIN_RECONCILE
+//	    application_bootstrap_test.go:84: the bootstrap did not name LUMBERJACK_ADMIN_RECONCILE
 func TestBootstrapSaysLoudlyThatItLeftTheAdminAlone(t *testing.T) {
 	server, dir := newStockServer(t)
 	before := adminHash(t, server, "admin")
@@ -79,8 +79,8 @@ func TestBootstrapSaysLoudlyThatItLeftTheAdminAlone(t *testing.T) {
 	if !strings.Contains(log, "was NOT created or updated") {
 		t.Errorf("the bootstrap said nothing about leaving the admin alone")
 	}
-	if !strings.Contains(log, "CORRESPONDER_ADMIN_RECONCILE") {
-		t.Errorf("the bootstrap did not name CORRESPONDER_ADMIN_RECONCILE")
+	if !strings.Contains(log, "LUMBERJACK_ADMIN_RECONCILE") {
+		t.Errorf("the bootstrap did not name LUMBERJACK_ADMIN_RECONCILE")
 	}
 	if after := adminHash(t, server, "admin"); after != before {
 		t.Errorf("the default bootstrap rewrote the stored credential")
@@ -100,7 +100,7 @@ func TestBootstrapSaysLoudlyThatItLeftTheAdminAlone(t *testing.T) {
 //	    application_bootstrap_test.go:116: the reconciled admin does not verify the configured password
 //	    application_bootstrap_test.go:127: the bootstrap did not report the repair
 func TestBootstrapReconcilesOnlyWhenAskedAndOnlyTheAdmin(t *testing.T) {
-	t.Setenv("CORRESPONDER_ADMIN_RECONCILE", "1")
+	t.Setenv("LUMBERJACK_ADMIN_RECONCILE", "1")
 	server, dir := newStockServer(t)
 	bystander := addPasswordUser(t, server, "bystander", "the-bystanders-password")
 	bystanderBefore := adminHash(t, server, bystander.Username)
@@ -121,7 +121,7 @@ func TestBootstrapReconcilesOnlyWhenAskedAndOnlyTheAdmin(t *testing.T) {
 	}
 
 	log := readServerLog(t, dir)
-	if !strings.Contains(log, "CORRESPONDER_ADMIN_RECONCILE=1") || !strings.Contains(log, "reset the password") {
+	if !strings.Contains(log, "LUMBERJACK_ADMIN_RECONCILE=1") || !strings.Contains(log, "reset the password") {
 		t.Errorf("the bootstrap did not report the repair")
 	}
 	if strings.Contains(log, "the-reconciled-password") {
@@ -139,7 +139,7 @@ func TestBootstrapReconcilesOnlyWhenAskedAndOnlyTheAdmin(t *testing.T) {
 //	--- FAIL: TestBootstrapReconcileSaysSoWhenTheAccountIsNotThere (0.04s)
 //	    application_bootstrap_test.go:154: the bootstrap said nothing about the missing account
 func TestBootstrapReconcileSaysSoWhenTheAccountIsNotThere(t *testing.T) {
-	t.Setenv("CORRESPONDER_ADMIN_RECONCILE", "1")
+	t.Setenv("LUMBERJACK_ADMIN_RECONCILE", "1")
 	server, dir := newStockServer(t)
 	usersBefore := len(server.forest.Users)
 

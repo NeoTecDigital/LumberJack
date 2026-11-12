@@ -130,8 +130,8 @@ type Node struct {
 	Users         []User                `json:"users"`
 	Entries       []Entry               `json:"entries"`
 	Attachments   map[string]Attachment `json:"attachments,omitempty"`
-	// Metadata is the node's own annotations, which is where a canvas layout lives under the
-	// reserved CanvasMetadataKey. It is on the NODE rather than in a parallel store so that a node
+	// Metadata is the node's own annotations, which is where, for one, a canvas layout lives under a
+	// key its client chooses. It is on the NODE rather than in a parallel store so that a node
 	// and its placement cannot drift apart: deleting the node deletes the placement, and there is
 	// no second thing to keep in step. Absent from a state file written before it existed, which
 	// unmarshals as nil and is created on first write.

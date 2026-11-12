@@ -83,8 +83,8 @@ func (server *Server) readState(file *os.File) (*stateTable, error) {
 		return nil, err
 	}
 	if storage != nil {
-		if os.Getenv("CORRESPONDER_STORAGE_MIGRATE_LEGACY") != "1" {
-			return nil, fmt.Errorf("plaintext state requires explicit migration: set CORRESPONDER_STORAGE_MIGRATE_LEGACY=1 for the reviewed offline cutover")
+		if !server.storageConfig().MigrateLegacy {
+			return nil, fmt.Errorf("plaintext state requires explicit migration: set LUMBERJACK_STORAGE_MIGRATE_LEGACY=1 (storage.migrate_legacy) for the reviewed offline cutover")
 		}
 		server.storageRewrite = true
 	}

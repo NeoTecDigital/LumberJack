@@ -12,15 +12,12 @@ import (
 
 // Canvas persistence: node metadata, and the DAG edges the diagram is drawn from.
 //
-// The canvas is an authoring surface for maps and diagrams, and its layout has to survive. The
-// layout lives in Node.Metadata under a RESERVED key rather than in a parallel store, so a node and
-// its placement cannot drift apart: deleting the node deletes the placement, and there is no second
-// thing to keep in step. The edges are the DAG's own Parents/Children — core.AddParent could make a
-// multi-parent edge since the beginning and no route ever exposed it.
-
-// CanvasMetadataKey is where a layout lives. Reserved: it is namespaced so a caller's own metadata
-// and the canvas's cannot collide, and so a client can strip it in one step.
-const CanvasMetadataKey = "mindfull.canvas"
+// A canvas is an authoring surface for maps and diagrams, and its layout has to survive. A client
+// keeps the layout in Node.Metadata, under a key of its own choosing, rather than in a parallel
+// store, so a node and its placement cannot drift apart: deleting the node deletes the placement,
+// and there is no second thing to keep in step. The engine reserves no key for it; metadata already
+// stored under any key is untouched. The edges are the DAG's own Parents/Children — core.AddParent
+// could make a multi-parent edge since the beginning and no route ever exposed it.
 
 // PATCH /nodes/{path}/metadata — MERGE, not replace.
 //

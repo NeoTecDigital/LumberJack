@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -159,9 +158,9 @@ func (server *Server) refuseTieredOnEncryptedStore() error {
 		return err
 	}
 	if storage != nil {
-		return fmt.Errorf("persistence.mode %q is not available on an encrypted store (CORRESPONDER_STORAGE_MODE=%s): "+
+		return fmt.Errorf("persistence.mode %q is not available on an encrypted store (storage mode %s): "+
 			"the hot log would hold the changes in plaintext beside the sealed state file; use %q",
-			types.PersistenceTiered, os.Getenv("CORRESPONDER_STORAGE_MODE"), types.PersistenceSnapshot)
+			types.PersistenceTiered, server.storageConfig().Mode, types.PersistenceSnapshot)
 	}
 	return nil
 }

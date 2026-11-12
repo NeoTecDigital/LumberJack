@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/internal/slots"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
 const encryptedStateMagic = "LUMBERJACK-ENCRYPTED-STATE-3\n"
@@ -64,7 +66,11 @@ type encryptedStateDocument struct {
 
 func (server *Server) storageCodec() (*secureStorage, error) {
 	server.storageOnce.Do(func() {
-		wrapper, err := storageWrapperFromEnvironment()
+		config := server.storageConfig()
+		if server.storageErr = config.Validate(); server.storageErr != nil {
+			return
+		}
+		wrapper, err := storageWrapperFor(config)
 		server.storageErr = err
 		if err != nil || wrapper == nil {
 			return
@@ -74,9 +80,35 @@ func (server *Server) storageCodec() (*secureStorage, error) {
 			server.storageErr = err
 			return
 		}
-		server.storage = &secureStorage{wrapper: wrapper, id: hex.EncodeToString(id), accounts: map[string]storageAccountKey{}}
+		server.storage = &secureStorage{wrapper: wrapper, id: hex.EncodeToString(id), accounts: map[string]storageAccountKey{},
+			label: writeLabel(config)}
 	})
 	return server.storage, server.storageErr
+}
+
+// storageConfig is the explicit storage configuration, or the environment's when there is none,
+// read once. A deprecated variable name is said so in the log.
+func (server *Server) storageConfig() types.StorageConfig {
+	server.storageConfigOnce.Do(func() {
+		if server.config.Storage != nil {
+			server.storageSettings = *server.config.Storage
+			return
+		}
+		var deprecated []string
+		server.storageSettings, deprecated = types.StorageFromEnvironment()
+		for _, name := range deprecated {
+			server.logger.Warn("%s is deprecated and read for this release only; set %s", name, strings.Replace(name, "CORRESPONDER_", "LUMBERJACK_", 1))
+		}
+	})
+	return server.storageSettings
+}
+
+// writeLabel is the label a configuration writes a store under.
+func writeLabel(config types.StorageConfig) compat.Label {
+	if config.WriteLabel == types.StorageLabelNeutral {
+		return compat.LabelNeutral
+	}
+	return compat.LabelLegacy
 }
 func (s *secureStorage) aad(purpose string) []byte {
 	return []byte(s.label.StatePrefix() + s.id + "/" + purpose)
@@ -329,11 +361,19 @@ func (server *Server) readEncryptedState(file *os.File) (*core.Node, bool, error
 		return nil, true, err
 	}
 	server.raiseStateLevel(storage.level)
+	if writeLabel(server.storageConfig()) == compat.LabelNeutral && storage.label != compat.LabelNeutral {
+		// The neutral label was asked for: every account key is wrapped again under it, and the next
+		// write is the store's first neutral envelope. The cut build cannot open it.
+		if err := storage.relabel(context.Background(), compat.LabelNeutral); err != nil {
+			return nil, true, err
+		}
+		server.storageRewrite = true
+	}
 	forest, err := decodeState(data)
 	if err != nil {
 		return nil, true, err
 	}
-	if os.Getenv("CORRESPONDER_STORAGE_REWRAP_KEYS") == "1" {
+	if server.storageConfig().RewrapKeys {
 		for id, key := range storage.accounts {
 			raw, err := storage.accountKey(context.Background(), id)
 			if err != nil {

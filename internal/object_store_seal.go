@@ -50,7 +50,6 @@ const (
 	objectKeyFileName    = "key"
 	objectSealedKeySize  = 12 + 32 + 16
 	objectSealedOverhead = objectSealedKeySize + 12 + 16
-	objectKeyFileVersion = compat.ObjectKeyFileLegacy
 )
 
 // objectKeyEnvelope is the key file. The id is random and in the clear, as the encrypted state
@@ -157,6 +156,11 @@ func openObjectSealer(dir string, storage *secureStorage, hasSegments bool) (*ob
 	if !known {
 		return nil, errors.New("unsupported object store key format")
 	}
+	if storage.label == compat.LabelNeutral {
+		// Neutral mode writes flag 2 even beside a version-1 key file, which is rewrapped only on an
+		// explicit rewrap: its flag-1 records stay readable forever.
+		sealer.writeFlag = objectSealedNeutral
+	}
 	sealer.master, err = storage.wrapper.Unwrap(context.Background(), envelope.Key, sealer.aad("master"))
 	if err != nil {
 		return nil, fmt.Errorf("object store key: %w", err)
@@ -175,13 +179,17 @@ func createObjectSealer(dir, path string, storage *secureStorage) (*objectSealer
 	if err != nil {
 		return nil, err
 	}
-	sealer, _ := objectSealerFor(objectKeyFileVersion, hex.EncodeToString(id))
+	version := compat.ObjectKeyFileLegacy
+	if storage.label == compat.LabelNeutral {
+		version = compat.ObjectKeyFileNeutral
+	}
+	sealer, _ := objectSealerFor(version, hex.EncodeToString(id))
 	sealer.master = master
 	wrapped, err := storage.wrapper.Wrap(context.Background(), master, sealer.aad("master"))
 	if err != nil {
 		return nil, fmt.Errorf("object store key: %w", err)
 	}
-	encoded, err := json.Marshal(objectKeyEnvelope{Version: objectKeyFileVersion, ID: sealer.id, Key: wrapped})
+	encoded, err := json.Marshal(objectKeyEnvelope{Version: version, ID: sealer.id, Key: wrapped})
 	if err != nil {
 		return nil, err
 	}

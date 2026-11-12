@@ -103,12 +103,14 @@ type Server struct {
 	grantsHeld bool
 	// objectStore is the append-only object log beside the state file, opened on first use. It is
 	// written OUTSIDE forestMutex and never rewrites `.dat`. See object_store.go.
-	objectStore    *objectStore
-	objectsMu      sync.Mutex
-	storageOnce    sync.Once
-	storage        *secureStorage
-	storageErr     error
-	storageRewrite bool
+	objectStore       *objectStore
+	objectsMu         sync.Mutex
+	storageOnce       sync.Once
+	storageConfigOnce sync.Once
+	storageSettings   types.StorageConfig
+	storage           *secureStorage
+	storageErr        error
+	storageRewrite    bool
 	// mutations is the fan-out behind GET /stream. Published to AFTER a change is persisted and
 	// acknowledged, never before: announcing something that has not been written is the same lie
 	// as a 200 for it.
