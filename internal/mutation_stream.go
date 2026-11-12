@@ -82,6 +82,10 @@ type mutationStream struct {
 	subscribers map[int]chan mutationEvent
 	nextID      int
 	recent      []mutationEvent
+	// registered is a test seam and nil in production: subscribe calls it once a client is
+	// registered, with mutex released, so a test can land a change at exactly that instant. It is
+	// read and written under mutex.
+	registered func()
 }
 
 // newMutationStream builds the stream a server publishes to.
@@ -117,6 +121,16 @@ type subscription struct {
 // subscribing would lose everything published in between, which is exactly the gap a reconnect is
 // trying to close.
 func (stream *mutationStream) subscribe(after uint64, resuming bool) *subscription {
+	client, registered := stream.register(after, resuming)
+	if registered != nil {
+		registered()
+	}
+	return client
+}
+
+// register is subscribe's one hold: the client registered and its replay read together, and the
+// test seam read beside them.
+func (stream *mutationStream) register(after uint64, resuming bool) (*subscription, func()) {
 	stream.mutex.Lock()
 	defer stream.mutex.Unlock()
 
@@ -125,12 +139,10 @@ func (stream *mutationStream) subscribe(after uint64, resuming bool) *subscripti
 	stream.subscribers[stream.nextID] = events
 
 	client := &subscription{id: stream.nextID, events: events, caughtUp: true}
-	if !resuming {
-		return client
+	if resuming {
+		client.replay, client.caughtUp, _ = stream.replaySince(after)
 	}
-
-	client.replay, client.caughtUp, _ = stream.replaySince(after)
-	return client
+	return client, stream.registered
 }
 
 // replaySince reports the held mutations after a cursor, and whether the caller can be caught up

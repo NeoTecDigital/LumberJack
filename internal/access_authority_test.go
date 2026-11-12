@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,6 +197,75 @@ func TestAccessReviewedUnlinkResynchronizesRevokedReader(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("reviewed unlink failed to resynchronize revoked reader")
+		}
+	}
+}
+
+// TestStreamUnlinkAtSubscriptionResynchronizesRevokedReader lands the reviewed unlink at the
+// instant the reader's subscription registers: the interleaving the test above meets only by
+// chance. The unlink is delivered to the reader, so the stream must judge it against what the reader
+// could read when it subscribed, and tell it to resynchronize before anything that happened later.
+func TestStreamUnlinkAtSubscriptionResynchronizesRevokedReader(t *testing.T) {
+	s, parent, _, child := unlinkAuthorityFixture(t)
+	request := map[string]interface{}{"action": "unlink", "parent_path": parent, "child_path": child}
+	preview := accessTestCall(t, s, "admin", "/access/preview", request, 200)
+	request["sharing_revision"] = preview["revision"]
+	landed := make(chan int, 1)
+	unlink := func() { landed <- serveRoute(t, s, "DELETE", "/nodes/link", "admin", request).Code }
+	var once sync.Once
+	s.mutations.mutex.Lock()
+	s.mutations.registered = func() { once.Do(func() { landAtSubscription(s, unlink) }) }
+	s.mutations.mutex.Unlock()
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.handleStream(w, withUser(r, r.Header.Get("X-Test-User")))
+	}))
+	defer listener.Close()
+	reader := openStream(t, listener.URL, "reader", "")
+	defer reader.close()
+	select {
+	case code := <-landed:
+		if code != 200 {
+			t.Fatalf("unlink at subscription answered %d", code)
+		}
+	case <-time.After(streamWait):
+		t.Fatal("the unlink never landed at the subscription")
+	}
+	// A later change the reader may read. The stream writes in order, so the resynchronization the
+	// unlink owes the reader comes before this change's event.
+	recordTestCommand(t, s, "admin", recordCommand{Command: "create", Path: parent, ClientID: "later", Title: "Later", Kind: "idea"}, 200)
+	expectResyncBefore(t, reader, "event: "+mutationNodeCreated)
+}
+
+// landAtSubscription lands a change at the instant a reader subscribes. Where the forest is free at
+// that instant, a concurrent writer could land there, so the change lands before the stream goes on.
+// Where the stream holds the forest, a writer waits for the hold to end, and so does this change.
+func landAtSubscription(s *Server, change func()) {
+	if s.forestMutex.TryLock() {
+		s.forestMutex.Unlock()
+		change()
+		return
+	}
+	go change()
+}
+
+// expectResyncBefore reads a stream until it is told to resynchronize, failing if the line `later`
+// comes first or if the stream shows the reader the unlink it can no longer see.
+func expectResyncBefore(t *testing.T, reader *streamReader, later string) {
+	t.Helper()
+	deadline := time.After(streamWait)
+	for {
+		select {
+		case line := <-reader.lines:
+			switch line {
+			case "event: resync":
+				return
+			case "event: " + mutationNodeUnlinked:
+				t.Fatal("revoked reader received the private unlink")
+			case later:
+				t.Fatalf("stream delivered %q without resynchronizing the revoked reader", later)
+			}
+		case <-deadline:
+			t.Fatal("unlink at subscription never resynchronized the revoked reader")
 		}
 	}
 }

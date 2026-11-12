@@ -41,16 +41,7 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Account unavailable", http.StatusUnauthorized)
 		return
 	}
-	credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	validate := func() bool {
-		// Direct library handlers may receive a trusted context; public routes
-		// always reach this through authentication with a bearer credential.
-		if credential == "" {
-			return true
-		}
-		session, ok := server.applicationSession(credential)
-		return ok && session.UserID == userID
-	}
+	validate := server.streamValidator(r, userID)
 
 	flusher, streamable := w.(http.Flusher)
 	if !streamable {
@@ -60,22 +51,66 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	writeStreamHeaders(w)
 
 	after, resuming := resumeFrom(r)
-	client := server.mutations.subscribe(after, resuming)
+	client, visible := server.subscribeReader(userID, after, resuming)
 	defer server.mutations.unsubscribe(client)
 
 	// The client is told whether it was caught up BEFORE anything else, so it knows whether what
 	// follows is the whole story or only the part still in the buffer.
 	writeComment(w, fmt.Sprintf("connected caught_up=%t epoch=%s", client.caughtUp, server.mutations.epoch))
 	flusher.Flush()
+	send := server.streamSender(w, userID, visible)
+
+	for _, past := range client.replay {
+		if !validate() {
+			return
+		}
+		send(past)
+	}
+	flusher.Flush()
+
+	pump(r, w, flusher, client, send, validate)
+}
+
+// streamValidator answers whether the stream's credential still names its user.
+func (server *Server) streamValidator(r *http.Request, userID string) func() bool {
+	credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return func() bool {
+		// Direct library handlers may receive a trusted context; public routes
+		// always reach this through authentication with a bearer credential.
+		if credential == "" {
+			return true
+		}
+		session, ok := server.applicationSession(credential)
+		return ok && session.UserID == userID
+	}
+}
+
+// subscribeReader registers a reader and reads the paths it may see, under ONE hold of the forest.
+//
+// The paths are the baseline every later event is judged against: an event about a path the reader
+// could see and no longer can owes it a resync. Subscribing first and reading the paths under a later
+// hold let a change land in between: delivered to the reader, and already in the baseline, so an
+// unlink that revoked a path found it absent and resynchronized nobody. Every change lands under the
+// exclusive hold and is published after it, so with both taken under this one hold, a change either
+// is in the baseline or lands after it and is delivered — never both.
+func (server *Server) subscribeReader(userID string, after uint64, resuming bool) (*subscription, map[string]bool) {
+	var client *subscription
 	visible := map[string]bool{}
 	server.readForest(func() {
+		client = server.mutations.subscribe(after, resuming)
 		_ = server.walkScope("", nil, func(at visit) {
 			if at.node.CheckPermission(userID, core.ReadPermission) {
 				visible[at.path] = true
 			}
 		})
 	})
-	send := func(event mutationEvent) {
+	return client, visible
+}
+
+// streamSender writes an event the reader may read, and a resync where a path it could see has gone
+// out of its reach.
+func (server *Server) streamSender(w http.ResponseWriter, userID string, visible map[string]bool) func(mutationEvent) {
+	return func(event mutationEvent) {
 		allowed := false
 		server.readForest(func() {
 			if _, err := server.forest.GetUserProfile(userID); err != nil {
@@ -92,16 +127,6 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, "event: resync\ndata: {}\n\n")
 		}
 	}
-
-	for _, past := range client.replay {
-		if !validate() {
-			return
-		}
-		send(past)
-	}
-	flusher.Flush()
-
-	pump(r, w, flusher, client, send, validate)
 }
 
 // writeStreamHeaders opens a response that is never supposed to end.
