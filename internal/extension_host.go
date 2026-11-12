@@ -26,7 +26,7 @@ func (host *extensionHost) Read(fn func(extension.ReadTx) error) error {
 		return errExtensionsClosed
 	}
 	var err error
-	host.server.readForest(func() { err = fn(forestTx{server: host.server}) })
+	host.server.readForest(func() { err = fn(forestTx{server: host.server, owner: host.name}) })
 	return err
 }
 
@@ -40,7 +40,9 @@ func (host *extensionHost) Change(ctx context.Context, op extension.WriteOp, fn 
 		return extension.Commit{}, err
 	}
 	op.Origin = host.name
-	return host.server.changeForestOp(op, func() error { return extensionError(fn(forestTx{server: host.server})) })
+	return host.server.changeForestOp(op, func() error {
+		return extensionError(fn(forestTx{server: host.server, owner: host.name}))
+	})
 }
 
 func (host *extensionHost) Publish(kind, path string) {
@@ -68,6 +70,7 @@ func extensionError(err error) error {
 // filtered.
 type forestTx struct {
 	server *Server
+	owner  string // the extension whose transaction this is; "" for the engine's own
 }
 
 func (tx forestTx) Root() *core.Node { return tx.server.forest }

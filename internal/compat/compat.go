@@ -95,3 +95,18 @@ const (
 // guards its subtree (docs/extension-api.md §4.2); its owners are manifest-domain and
 // momentum-personal.
 const OwnedScopeMarker = "lumberjack.staged.scope/v1"
+
+// RecordOrder is the order a node record's keys were written in by the builds that carried
+// product fields on core.Node: encoding/json's struct order of that Node. The record codec emits a
+// record's keys in this order — typed fields and slot keys alike — then any other slot keys sorted,
+// then "children", so a store those builds wrote re-encodes to the same bytes
+// (docs/extension-api.md §7.1).
+var RecordOrder = []string{
+	"personal_bindings", "id", "type", "kind", "name", "parents", "events", "planned_events", "users",
+	"entries", "attachments", "metadata", "command_receipts", "correspondence", "application_sessions",
+	"subscriptions", "conversations", "access_policies", "access_grants", "account_security",
+	"mfa_challenges", "admitted_commands", "created_by", "created_at", "modified_by", "modified_at",
+}
+
+// OutboxOrder is the same for the root's "correspondence" object.
+var OutboxOrder = []string{"feed", "pending", "inbox", "delivered", "last_delivery", "outbound"}

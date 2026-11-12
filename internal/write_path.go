@@ -54,37 +54,43 @@ func (server *Server) acquirePermit(op extension.WriteOp) (extension.Permit, str
 
 // beforeHooksLocked runs every write hook's before, in registration order, and answers the afters. A
 // hook that refuses refuses the write; the afters already taken are told so, with its error.
-func (server *Server) beforeHooksLocked(op extension.WriteOp) ([]extension.After, error) {
+func (server *Server) beforeHooksLocked(op extension.WriteOp) ([]ownedAfter, error) {
 	if server.extensions == nil {
 		return nil, nil
 	}
-	tx := forestTx{server: server}
-	afters := make([]extension.After, 0, len(server.extensions.hooks))
+	afters := make([]ownedAfter, 0, len(server.extensions.hooks))
 	for _, hook := range server.extensions.hooks {
-		after, err := hook.BeforeChangeLocked(tx, op)
+		tx := forestTx{server: server, owner: hook.owner}
+		after, err := hook.capability.BeforeChangeLocked(tx, op)
 		if err != nil {
 			refusal := hookRefusal(err)
-			_ = runAfters(tx, afters, refusal)
+			_ = runAfters(afters, refusal)
 			return nil, refusal
 		}
-		afters = append(afters, after)
+		afters = append(afters, ownedAfter{after: after, tx: tx})
 	}
 	return afters, nil
 }
 
-// afterHooksLocked runs the afters in reverse registration order, every one of them, with the
-// change's own error. The first veto refuses the change.
-func (server *Server) afterHooksLocked(afters []extension.After, changeErr error) error {
-	return runAfters(forestTx{server: server}, afters, changeErr)
+// ownedAfter is a hook's after, with the transaction its hook was handed.
+type ownedAfter struct {
+	after extension.After
+	tx    forestTx
 }
 
-func runAfters(tx forestTx, afters []extension.After, changeErr error) error {
+// afterHooksLocked runs the afters in reverse registration order, every one of them, with the
+// change's own error. The first veto refuses the change.
+func (server *Server) afterHooksLocked(afters []ownedAfter, changeErr error) error {
+	return runAfters(afters, changeErr)
+}
+
+func runAfters(afters []ownedAfter, changeErr error) error {
 	var veto error
 	for index := len(afters) - 1; index >= 0; index-- {
-		if afters[index] == nil {
+		if afters[index].after == nil {
 			continue
 		}
-		if err := afters[index](tx, changeErr); err != nil && veto == nil {
+		if err := afters[index].after(afters[index].tx, changeErr); err != nil && veto == nil {
 			veto = hookRefusal(err)
 		}
 	}

@@ -54,9 +54,6 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	preview := accessTestCall(t, s, owner, "/access/preview", request, 200)
 	request["revision"] = preview["revision"]
 	accessTestCall(t, s, owner, "/access/apply", request, 200)
-	// Explicit conversation membership is a separate authority. Expiring project
-	// access must not silently remove a member from an independently shared chat.
-	s.forest.Conversations = map[string]*core.Conversation{"independent": {ID: "independent", Members: map[string]core.ConversationMember{owner: {From: 0}, "reader": {From: 0}}, Messages: []core.ConversationMessage{{ID: "message", Sequence: 1, Content: "Explicitly shared chat"}}}}
 	// This fixture mutation must be durable before testing command acknowledgements.
 	if err := s.persistState(s.statePath()); err != nil {
 		t.Fatal(err)
@@ -78,9 +75,6 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	after := encryptedDocumentForTest(t, codec, s.forest)
 	if len(after.Nodes[node.ID].AccountKeys["reader"]) != 0 {
 		t.Fatal("expired grant retained a newly persisted resource wrap")
-	}
-	if len(after.Conversations["independent"].Messages["message"].AccountKeys["reader"]) == 0 {
-		t.Fatal("project expiry incorrectly revoked independent conversation membership")
 	}
 	recordTestCommand(t, s, owner, recordCommand{Command: "log", Path: path, ClientID: "private-now", Content: "Protected after expiry"}, 200)
 	deadline := time.After(streamWait)

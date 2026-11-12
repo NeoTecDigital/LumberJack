@@ -12,6 +12,7 @@ import (
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/extension"
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 // The password exchange through the SecondFactor seam, the fail-closed default (owner decision
@@ -60,7 +61,7 @@ func TestEnrolledAccountFailsClosedWithoutSecondFactor(t *testing.T) {
 	flagged := addLoginUser(t, server, "flagged", func(u *core.User) { u.MFAEnabled = true })
 	listed := addLoginUser(t, server, "listed", nil)
 	if err := server.changeForest(func() error {
-		server.forest.AccountSecurity = map[string]core.AccountSecurity{listed.ID: {}}
+		server.forest.Slots(slots.Token{}).SetRaw("account_security", json.RawMessage(`{"`+listed.ID+`":{"verified_email":"listed@example.invalid"}}`))
 		return nil
 	}); err != nil {
 		t.Fatal(err)

@@ -27,9 +27,10 @@ BASE_EXPORTS := ic_lj_abi_version ic_lj_echo ic_lj_open ic_lj_adopt ic_lj_close 
 # failure without them is an undefined symbol three steps away from its cause.
 CLIBS   := -lpthread -ldl -lresolv
 
+.PHONY: rollback-check
 .PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check clean
 
-all: test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check
+all: test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check rollback-check
 
 test:
 	@$(GO) test ./... -count=1
@@ -96,3 +97,20 @@ clean:
 smoke-publication: ffi
 	@$(CC) $(CFLAGS) -I ffi -I $(BUILD) -o $(BUILD)/smoke_publication ffi/ctest/smoke_publication.c $(ARCHIVE) $(CLIBS)
 	@$(BUILD)/smoke_publication
+
+# The rollback check (docs/extension-api.md §7.8.6). This build writes a store from every
+# compatibility fixture; the CUT build — the commit every product/* branch starts from — then opens
+# each one: plaintext and legacy-label stores with every product field intact, neutral-label stores
+# and flag-2 objects refused. The cut build's reader is a template this build does not compile.
+CUT      ?= da93661
+ROLLBACK := $(BUILD)/rollback
+rollback-check: | $(BUILD)
+	@git worktree remove --force $(ROLLBACK)/cut > /dev/null 2>&1 || true
+	@rm -rf $(ROLLBACK)
+	@mkdir -p $(ROLLBACK)/stores
+	@git worktree add --detach $(ROLLBACK)/cut $(CUT) > /dev/null
+	@LJ_ROLLBACK_DIR=$(abspath $(ROLLBACK)/stores) $(GO) test -tags rollbackwrite -run '^TestWriteRollbackStores$$' -count=1 ./internal > $(ROLLBACK)/write.log 2>&1 || { cat $(ROLLBACK)/write.log; exit 1; }
+	@cp internal/compat/rollback/cut_reader_test.go.txt $(ROLLBACK)/cut/internal/zz_rollback_reader_test.go
+	@cd $(ROLLBACK)/cut && LJ_ROLLBACK_DIR=$(abspath $(ROLLBACK)/stores) $(GO) test -run '^TestRollbackStoresOpenAtTheCut$$' -count=1 -v ./internal > $(abspath $(ROLLBACK))/read.log 2>&1 || { grep -E -- '--- |_test.go' $(abspath $(ROLLBACK))/read.log; exit 1; }
+	@git worktree remove --force $(ROLLBACK)/cut
+	@echo "  rollback: the cut build ($(CUT)) opens $$(grep -c -- '--- PASS: TestRollbackStoresOpenAtTheCut/' $(ROLLBACK)/read.log) stores this build wrote as expected"

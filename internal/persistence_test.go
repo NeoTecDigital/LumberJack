@@ -238,7 +238,11 @@ func TestALogHoldingAPartialNodeIsRefusedAtOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	partial, _ := json.Marshal(logNode{Node: node, Children: []string{}, EntriesBefore: len(node.Entries)})
+	whole, _ := core.EncodeRecord(node, []string{})
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(whole, &fields)
+	fields["entries_before"], _ = json.Marshal(len(node.Entries))
+	partial, _ := json.Marshal(fields)
 	record, _ := json.Marshal(changeSet{Root: server.forest.ID, Nodes: map[string]json.RawMessage{node.ID: partial}})
 	covered := server.tier.lastCold.Load()
 	abandon(server)

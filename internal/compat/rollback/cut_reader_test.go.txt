@@ -1,0 +1,204 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
+package internal
+
+// The reading half of the rollback check (docs/extension-api.md §7.8.6). `make rollback-check`
+// copies this file into a worktree of the CUT build — the commit every product/* branch starts
+// from — and runs it there against the stores generic LumberJack wrote from the fixtures. It is a
+// template, not a source file of this build: it calls the cut build's own internals.
+//
+// "open": the cut build opens the store, and every node the fixture held comes back with the record
+// the cut build itself gives it after the same unrelated change — a node added under the root —
+// product fields included. The baseline is the cut build's own write, so what the engine recomputes
+// on every write (materialized grants, entry ids) is held to the same rule on both sides.
+// "refuse": the cut build does not open it (a neutral-label envelope).
+// "flag2": the cut build reads the flag-1 objects and refuses the flag-2 one.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/NeoTecDigital/LumberJack/internal/core"
+	"github.com/NeoTecDigital/LumberJack/types"
+	"lukechampine.com/blake3"
+)
+
+const rbkFixtures = "compat/testdata"
+
+func TestRollbackStoresOpenAtTheCut(t *testing.T) {
+	dir := os.Getenv("LJ_ROLLBACK_DIR")
+	if dir == "" {
+		t.Skip("LJ_ROLLBACK_DIR names the stores; run through make rollback-check")
+	}
+	expects, err := filepath.Glob(filepath.Join(dir, "*.expect"))
+	if err != nil || len(expects) == 0 {
+		t.Fatalf("no stores to read in %s: %v", dir, err)
+	}
+	sort.Strings(expects)
+	for _, path := range expects {
+		name := strings.TrimSuffix(filepath.Base(path), ".expect")
+		expect, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run(name, func(t *testing.T) {
+			switch string(expect) {
+			case "open":
+				rbkOpen(t, dir, name)
+			case "refuse":
+				rbkRefuse(t, dir, name)
+			case "flag2":
+				rbkObjects(t, dir)
+			default:
+				t.Fatalf("unknown expectation %q", expect)
+			}
+		})
+	}
+}
+
+func rbkKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := os.ReadFile(filepath.Join(rbkFixtures, "local-test.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "local-test.key")
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CORRESPONDER_STORAGE_MODE", "local-test")
+	t.Setenv("CORRESPONDER_STORAGE_LOCAL_KEY_FILE", path)
+	return key
+}
+
+// rbkLoad is the store the cut build opens from a state file and its log segments.
+func rbkLoad(t *testing.T, stem string) (*Server, error) {
+	t.Helper()
+	segments, _ := filepath.Glob(stem + ".log.*")
+	config := types.ServerConfig{Process: types.ProcessInfo{Name: "rbk", DatabasePath: t.TempDir()}}
+	if len(segments) > 0 {
+		config.Persistence = types.PersistenceConfig{Mode: types.PersistenceTiered, HotSync: types.HotSyncCommit,
+			HotSyncIntervalMS: 5, ColdEveryCommits: 1 << 30, ColdEverySeconds: 1 << 20}
+		config.Sync = types.DefaultSync()
+	}
+	target := StatePath(config)
+	files, _ := filepath.Glob(stem + "*")
+	for _, from := range files {
+		data, err := os.ReadFile(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target+strings.TrimPrefix(from, stem), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(target+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := LoadServer(config)
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	return server, nil
+}
+
+// rbkProbe is the unrelated change both builds make: a leaf added under the root.
+func rbkProbe(t *testing.T, server *Server) {
+	t.Helper()
+	if err := server.changeForest(func() error {
+		node := core.NewNode(core.LeafNode, "rollback-probe")
+		node.Parents = map[string]string{server.forest.ID: server.forest.Name}
+		server.forest.Children[node.ID] = node
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rbkRecords is every node's record as the cut build encodes it.
+func rbkRecords(t *testing.T, forest *core.Node) map[string]map[string]json.RawMessage {
+	t.Helper()
+	records := map[string]map[string]json.RawMessage{}
+	walkForest(forest, func(node *core.Node, children []string) {
+		encoded, err := json.Marshal(&nodeRecord{Node: node, Children: children})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatal(err)
+		}
+		records[node.ID] = fields
+	})
+	return records
+}
+
+func rbkOpen(t *testing.T, dir, name string) {
+	fixture := strings.TrimSuffix(name, "-neutral")
+	if strings.HasPrefix(fixture, "enc-") {
+		rbkKey(t)
+	}
+	baseline, err := rbkLoad(t, filepath.Join(rbkFixtures, fixture+".ljstate"))
+	if err != nil {
+		t.Fatalf("the cut build does not open its own fixture: %v", err)
+	}
+	fixtureIDs := rbkRecords(t, baseline.forest)
+	rbkProbe(t, baseline)
+	written, err := rbkLoad(t, filepath.Join(dir, name+".ljstate"))
+	if err != nil {
+		t.Fatalf("the cut build does not open the store generic LumberJack wrote: %v", err)
+	}
+	original := baseline.forest
+	before, after := rbkRecords(t, original), rbkRecords(t, written.forest)
+	for id, fields := range before {
+		if _, fromFixture := fixtureIDs[id]; !fromFixture {
+			continue
+		}
+		held, present := after[id]
+		if !present {
+			t.Fatalf("node %s is gone", id)
+		}
+		for key, value := range fields {
+			if id == original.ID && key == "children" {
+				continue
+			}
+			if !bytes.Equal(value, held[key]) {
+				t.Errorf("node %s key %q: %s -> %s", id, key, value, held[key])
+			}
+		}
+		if len(held) != len(fields) {
+			t.Errorf("node %s holds %d keys, the fixture %d", id, len(held), len(fields))
+		}
+	}
+}
+
+func rbkRefuse(t *testing.T, dir, name string) {
+	rbkKey(t)
+	if _, err := rbkLoad(t, filepath.Join(dir, name+".ljstate")); err == nil {
+		t.Fatal("the cut build opened a store sealed under the neutral label")
+	}
+}
+
+func rbkObjects(t *testing.T, dir string) {
+	key := rbkKey(t)
+	storage := &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}}
+	store, err := openObjectStore(filepath.Join(dir, "objects-sealed-v1.objects"), 1<<20, storage)
+	if err != nil {
+		t.Fatalf("the cut build does not open the object store: %v", err)
+	}
+	defer store.close()
+	for _, body := range []string{"first sealed object", "second sealed object", strings.Repeat("third ", 64)} {
+		if got, err := store.get(objectID(blake3.Sum256([]byte(body)))); err != nil || string(got) != body {
+			t.Fatalf("a flag-1 object did not read at the cut: %v", err)
+		}
+	}
+	if _, err := store.get(objectID(blake3.Sum256([]byte("a record the cut build cannot open")))); err == nil {
+		t.Fatal("the cut build served a flag-2 record")
+	}
+}

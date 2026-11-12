@@ -175,13 +175,13 @@ type nodeRecord struct {
 	Children []string `json:"children"`
 }
 
-// plainNodeRecord is nodeRecord without its MarshalJSON, which is this build's own encoding.
-type plainNodeRecord nodeRecord
-
 // MarshalJSON writes a record back as the bytes it was loaded from when the node is unchanged since
-// the load, and in this build's own encoding otherwise. See core/node_loaded.go.
+// the load, and in the record codec's encoding otherwise (core/record.go, core/node_loaded.go).
 func (record *nodeRecord) MarshalJSON() ([]byte, error) {
-	encoded, err := json.Marshal((*plainNodeRecord)(record))
+	if record.Node == nil {
+		return []byte("null"), nil
+	}
+	encoded, err := core.EncodeRecord(record.Node, record.Children)
 	if err != nil || record.Node == nil || !record.Node.HasLoadedRecord() {
 		return encoded, err
 	}
@@ -210,14 +210,15 @@ func decodeExact(raw []byte, target interface{}) error {
 // decodeNodeRecord reads one node record number-exactly. When this build would not write the same
 // bytes back for the record, the node keeps the bytes it was read from (see MarshalJSON).
 func decodeNodeRecord(raw []byte) (*nodeRecord, error) {
-	var record nodeRecord
-	if err := decodeExact(raw, &record); err != nil {
-		return nil, err
-	}
-	if record.Node == nil {
+	if string(bytes.TrimSpace(raw)) == "null" {
 		return nil, nil
 	}
-	encoded, err := json.Marshal((*plainNodeRecord)(&record))
+	node, children, err := core.DecodeRecord(raw)
+	if err != nil {
+		return nil, err
+	}
+	record := nodeRecord{Node: node, Children: children}
+	encoded, err := core.EncodeRecord(record.Node, record.Children)
 	if err != nil {
 		return nil, err
 	}
@@ -376,16 +377,16 @@ func decodeStateChildren(record *nodeRecord, nodes map[string]*nodeRecord) error
 // objects carrying one id — see core.Canonicalize. The rejoin is exact because every occurrence of
 // one id in such a file is a serialization of the same object.
 func (server *Server) readNestedState(data []byte) (*core.Node, error) {
-	var loadedForest core.Node
-	if err := decodeExact(data, &loadedForest); err != nil {
+	loadedForest, err := core.DecodeNested(data)
+	if err != nil {
 		server.logger.Failure("Failed to unmarshal data: %v", err)
 		return nil, fmt.Errorf("error validating data: %v", err)
 	}
 
-	if forks := core.Canonicalize(&loadedForest); forks > 0 {
+	if forks := core.Canonicalize(loadedForest); forks > 0 {
 		server.logger.Info("Rejoined %d duplicated occurrences of shared nodes while loading the state file", forks)
 	}
-	return &loadedForest, nil
+	return loadedForest, nil
 }
 
 // tableFromForest is the node table of a forest that was read in another shape — the nested

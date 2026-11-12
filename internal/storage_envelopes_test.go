@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 // The baseline has no secureStorage codec; the file-level regression's observed
@@ -33,10 +34,13 @@ func TestStorageEnvelopesGrantHistoryAndTampering(t *testing.T) {
 	// "message history/invitation key scope wrong". Sequence == From is private.
 	wrapper := &storageTestWrapper{localStorageWrapper: localStorageWrapper{key: bytes.Repeat([]byte{9}, 32)}}
 	codec := &secureStorage{wrapper: wrapper, id: string(bytes.Repeat([]byte{'a'}, 64)), accounts: map[string]storageAccountKey{}}
-	forest := &core.Node{ID: "root", Name: "private security", Users: []core.User{{ID: "alice"}, {ID: "bob"}, {ID: "eve"}}, Children: map[string]*core.Node{}, Conversations: map[string]*core.Conversation{}}
+	forest := &core.Node{ID: "root", Name: "private security", Users: []core.User{{ID: "alice"}, {ID: "bob"}, {ID: "eve"}}, Children: map[string]*core.Node{}}
 	node := &core.Node{ID: "node", Name: "private attachment title", Users: []core.User{{ID: "alice", Permissions: []core.Permission{core.AdminPermission}}, {ID: "bob", Permissions: []core.Permission{core.ReadPermission}}}}
 	forest.Children[node.ID] = node
-	forest.Conversations["chat"] = &core.Conversation{ID: "chat", Members: map[string]core.ConversationMember{"alice": {From: 0}, "bob": {From: 1}, "eve": {Invited: true}}, Messages: []core.ConversationMessage{{ID: "one", Sequence: 1, Content: "old private message"}, {ID: "two", Sequence: 2, Content: "new private message"}}}
+	// A conversations slot, as a store written before the split holds one on its root. It is sealed
+	// inside the root's own resource, which no account is granted (owner decision Q4(a)).
+	conversations := json.RawMessage(`{"chat":{"id":"chat","members":{"alice":{"from":0},"bob":{"from":1}},"messages":[{"id":"one","content":"old private message"},{"id":"two","content":"new private message"}]}}`)
+	forest.Slots(slots.Token{}).SetRaw("conversations", conversations)
 	source, err := encodeState(forest)
 	if err != nil {
 		t.Fatal(err)
@@ -74,8 +78,8 @@ func TestStorageEnvelopesGrantHistoryAndTampering(t *testing.T) {
 	if len(doc.Nodes["node"].AccountKeys) != 2 {
 		t.Fatal("resource key did not follow node grants")
 	}
-	if len(doc.Conversations["chat"].Messages["one"].AccountKeys) != 1 || len(doc.Conversations["chat"].Messages["two"].AccountKeys) != 2 {
-		t.Fatal("message history/invitation key scope wrong")
+	if len(doc.Conversations) != 0 || bytes.Contains(raw, []byte("private message")) {
+		t.Fatal("the conversations slot was written outside the root's resource")
 	}
 	restarted := &secureStorage{wrapper: wrapper}
 	decoded, err := restarted.decode(encoded)
@@ -86,7 +90,8 @@ func TestStorageEnvelopesGrantHistoryAndTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Children["node"].Name != node.Name || len(recovered.Conversations["chat"].Messages) != 2 {
+	held, _ := recovered.Slots(slots.Token{}).Get("conversations")
+	if recovered.Children["node"].Name != node.Name || held == nil || !bytes.Equal(held.Raw, conversations) {
 		t.Fatal("encrypted restart lost resource content")
 	}
 	node.Users = node.Users[:1]

@@ -10,6 +10,7 @@ import (
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/extension"
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 // What a verified password earns, and the engine's session registry as an extension sees it
@@ -32,12 +33,22 @@ func (server *Server) secondFactor() extension.SecondFactor {
 }
 
 // secondFactorEnrolledLocked reports whether an account was enrolled in a second factor by the
-// build that carried one. The caller holds the forest.
+// build that carried one: users[].mfa_enabled, or its id is a key of the root's preserved
+// "account_security" slot. A slot that does not read as an object closes the door for everyone.
+// The caller holds the forest.
 func (server *Server) secondFactorEnrolledLocked(user core.User) bool {
 	if user.MFAEnabled {
 		return true
 	}
-	_, enrolled := server.forest.AccountSecurity[user.ID]
+	held, present := server.forest.Slots(slots.Token{}).Get("account_security")
+	if !present {
+		return false
+	}
+	var accounts map[string]json.RawMessage
+	if json.Unmarshal(held.Raw, &accounts) != nil {
+		return true
+	}
+	_, enrolled := accounts[user.ID]
 	return enrolled
 }
 
@@ -49,7 +60,7 @@ func (server *Server) passwordVerified(ctx context.Context, user *core.User, log
 	required, enrolled := false, false
 	server.readForest(func() {
 		if factor != nil {
-			required = factor.Required(forestTx{server: server}, *user)
+			required = factor.Required(forestTx{server: server, owner: server.extensions.factorOwner}, *user)
 			return
 		}
 		enrolled = server.secondFactorEnrolledLocked(*user)

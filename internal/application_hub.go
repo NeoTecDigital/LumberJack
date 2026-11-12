@@ -361,7 +361,7 @@ func (s *Server) outboundSettledLocked(item core.OutboundMessage, outcome extens
 	}
 	recorded := false
 	for _, listener := range s.extensions.listeners {
-		if listener.OutboundSettledLocked(forestTx{server: s}, item, outcome) {
+		if listener.capability.OutboundSettledLocked(forestTx{server: s, owner: listener.owner}, item, outcome) {
 			recorded = true
 		}
 	}
@@ -380,7 +380,7 @@ func (s *Server) notificationEntitledLocked(item core.OutboxNotification, node *
 		return false
 	}
 	for _, entitlement := range s.extensions.entitlements {
-		if entitlement.EntitledLocked(forestTx{server: s}, item, userID) {
+		if entitlement.capability.EntitledLocked(forestTx{server: s, owner: entitlement.owner}, item, userID) {
 			return true
 		}
 	}

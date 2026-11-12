@@ -1,5 +1,7 @@
 package core
 
+import "github.com/NeoTecDigital/LumberJack/internal/slots"
+
 // A committed command produces one delivery identity, independent of transient
 // stream cursors. Recipients are captured at commit and checked again at delivery
 // and read time. No private content is copied into routing records.
@@ -22,7 +24,6 @@ type OutboxNotification struct {
 	ReadAt string       `json:"read_at,omitempty"`
 }
 type Outbox struct {
-	Feed         *FeedState                      `json:"feed,omitempty"`
 	Pending      map[string]OutboxChange         `json:"pending"`
 	Inbox        map[string][]OutboxNotification `json:"inbox"`
 	Delivered    uint64                          `json:"delivered"`
@@ -33,12 +34,14 @@ type Outbox struct {
 	// ENQUEUES here; it wires no transport. Channel and Purpose are the routing marker the dispatcher
 	// selects on. Records are backend state, excluded from every user-facing node projection.
 	Outbound map[string]OutboundMessage `json:"outbound,omitempty"`
+	// slots are the object's keys the engine does not type, e.g. a workspace's "feed". See record.go.
+	slots slots.Store
 }
 
 // OutboundMessage is one item queued for external delivery off the portal.
 //
 // It carries the PLAINTEXT payload transiently, because delivery needs it and the store that proves
-// a code (MFAChallenge) deliberately holds only a hash — the two are separate on purpose. It is
+// a code deliberately holds only a hash — the two are separate on purpose. It is
 // short-lived: ExpiresAt bounds how long the plaintext may sit in the outbox, and a sweep removes it
 // even if no dispatcher ever drains it. The engine never logs Payload and never returns it to a
 // client.

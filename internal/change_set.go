@@ -42,10 +42,8 @@ type changeSet struct {
 // Children SHADOW core.Node's own by the rule nodeRecord relies on, and the two partial-form
 // markers it refuses.
 type logNode struct {
-	*core.Node
-	Children      []string `json:"children"`
-	ChildrenKept  bool     `json:"children_kept,omitempty"`
-	EntriesBefore int      `json:"entries_before,omitempty"`
+	ChildrenKept  bool `json:"children_kept,omitempty"`
+	EntriesBefore int  `json:"entries_before,omitempty"`
 }
 
 // encodeWholeNode encodes a node exactly as the state codec does.
@@ -116,7 +114,7 @@ func applyChangeSet(table *stateTable, seq uint64, data []byte) error {
 // mergeLogNode replaces what the table holds for one node with the node a record carries.
 func mergeLogNode(table *stateTable, seq uint64, id string, raw json.RawMessage) error {
 	var incoming logNode
-	if err := decodeExact(raw, &incoming); err != nil || incoming.Node == nil {
+	if err := json.Unmarshal(raw, &incoming); err != nil {
 		return fmt.Errorf("log record %d: node %q: %v", seq, id, err)
 	}
 	if incoming.ChildrenKept || incoming.EntriesBefore != 0 {
@@ -124,7 +122,11 @@ func mergeLogNode(table *stateTable, seq uint64, id string, raw json.RawMessage)
 			"build does not apply; shut the store down cleanly with the build that wrote it to fold the log into "+
 			"the state file", seq, id)
 	}
-	table.records[id] = &nodeRecord{Node: incoming.Node, Children: incoming.Children}
+	node, children, err := core.DecodeRecord(raw)
+	if err != nil {
+		return fmt.Errorf("log record %d: node %q: %v", seq, id, err)
+	}
+	table.records[id] = &nodeRecord{Node: node, Children: children}
 	// The raw bytes no longer describe the node; the cache re-encodes it at open.
 	delete(table.Nodes, id)
 	return nil

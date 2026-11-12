@@ -23,6 +23,13 @@ var ErrExtensionSet = errors.New("lumberjack: extension set refused")
 // engineConfigParts are the application_configure parts the engine itself reads.
 var engineConfigParts = []string{"username", "password", "secret"}
 
+// owned is a capability with the name of the extension that implements it, so the transaction it is
+// handed reaches that extension's slots.
+type owned[T any] struct {
+	capability T
+	owner      string
+}
+
 type extensionSet struct {
 	specs     []extension.Spec
 	instances []extension.Instance // attach order
@@ -31,13 +38,14 @@ type extensionSet struct {
 	authenticators []extension.RequestAuthenticator
 	configurables  map[string]extension.Configurable // by config part
 	secondFactor   extension.SecondFactor            // at most one
-	listeners      []extension.OutboxListener
-	entitlements   []extension.OutboxEntitlement
+	factorOwner    string
+	listeners      []owned[extension.OutboxListener]
+	entitlements   []owned[extension.OutboxEntitlement]
 	routes         []extensionRoute // registration order
 	presentation   map[string]bool  // metadata keys whose changes are not news
 	markers        []string         // ownership markers: the compatibility marker, then each Spec's
 	filters        []extension.VisibilityFilter
-	hooks          []extension.WriteHook
+	hooks          []owned[extension.WriteHook]
 	permits        extension.PermitProvider // at most one
 }
 
@@ -226,19 +234,19 @@ func (set *extensionSet) capabilities(spec extension.Spec, instance extension.In
 		if set.secondFactor != nil {
 			return fmt.Errorf("%w: %s is a second SecondFactor; at most one is registered", ErrExtensionSet, spec.Name)
 		}
-		set.secondFactor = factor
+		set.secondFactor, set.factorOwner = factor, spec.Name
 	}
 	if listener, ok := instance.(extension.OutboxListener); ok {
-		set.listeners = append(set.listeners, listener)
+		set.listeners = append(set.listeners, owned[extension.OutboxListener]{listener, spec.Name})
 	}
 	if entitlement, ok := instance.(extension.OutboxEntitlement); ok {
-		set.entitlements = append(set.entitlements, entitlement)
+		set.entitlements = append(set.entitlements, owned[extension.OutboxEntitlement]{entitlement, spec.Name})
 	}
 	if filter, ok := instance.(extension.VisibilityFilter); ok {
 		set.filters = append(set.filters, filter)
 	}
 	if hook, ok := instance.(extension.WriteHook); ok {
-		set.hooks = append(set.hooks, hook)
+		set.hooks = append(set.hooks, owned[extension.WriteHook]{hook, spec.Name})
 	}
 	if provider, ok := instance.(extension.PermitProvider); ok {
 		if set.permits != nil {

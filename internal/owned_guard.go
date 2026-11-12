@@ -11,6 +11,7 @@ import (
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/extension"
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 // The owned-subtree guard (docs/extension-api.md §4.2), the write-side twin of the visibility rule.
@@ -170,19 +171,19 @@ func subtreeHash(root *core.Node) ([32]byte, error) {
 func cloneSubtree(nodes map[string]*core.Node) (map[string]*core.Node, error) {
 	cloned := make(map[string]*core.Node, len(nodes))
 	for id, node := range nodes {
-		raw, err := json.Marshal((*plainNodeRecord)(&nodeRecord{Node: node}))
+		raw, err := core.EncodeRecord(node, nil)
 		if err != nil {
 			return nil, err
 		}
-		var record nodeRecord
-		if err := decodeExact(raw, &record); err != nil || record.Node == nil {
+		clone, _, err := core.DecodeRecord(raw)
+		if err != nil {
 			return nil, fmt.Errorf("owned node %s did not clone: %v", id, err)
 		}
-		record.Node.Children = make(map[string]*core.Node, len(node.Children))
+		clone.Children = make(map[string]*core.Node, len(node.Children))
 		for key, child := range node.Children {
-			record.Node.Children[key] = child
+			clone.Children[key] = child
 		}
-		cloned[id] = record.Node
+		cloned[id] = clone
 	}
 	return cloned, nil
 }
@@ -232,6 +233,7 @@ func restoreNodeFields(node, clone *core.Node, original map[string]*core.Node) {
 			target.Field(index).Set(source.Field(index))
 		}
 	}
+	node.Slots(slots.Token{}).CopyFrom(clone.Slots(slots.Token{}))
 	node.Children = make(map[string]*core.Node, len(clone.Children))
 	for key, child := range clone.Children {
 		if held := original[child.ID]; held != nil {

@@ -3,6 +3,8 @@ package core
 import (
 	"sync"
 	"time"
+
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 // Permission represents a permission level for users
@@ -111,20 +113,23 @@ type Entry struct {
 // routine, …) that the engine stores and returns but does not interpret. It is distinct from Type,
 // which is only the leaf/branch view hint (see NodeType): Kind is "what this node is to the product",
 // Type is "how to draw it by default". Empty means untyped.
+//
+// A node record may also carry keys the engine does not type: an extension's slot keys, and keys a
+// build that carried product fields wrote and nobody now claims. They are kept, as the bytes the
+// state file held, in the node's slot store, and written back in place by the record codec
+// (record.go). An extension reaches them only through extension.ReadTx.Slot and Tx.SetSlot.
 type Node struct {
-	// Private same-store canonical/native provenance. Explicit public DTOs exclude it.
-	PersonalBindings *PersonalBindingLedger `json:"personal_bindings,omitempty"`
-	ID               string                 `json:"id"`
-	Type             NodeType               `json:"type"`
-	Kind             string                 `json:"kind,omitempty"`
-	Name             string                 `json:"name"`
-	Parents          map[string]string      `json:"parents"`
-	Children         map[string]*Node       `json:"children"`
-	Events           map[string]Event       `json:"events"`
-	PlannedEvents    map[string]Event       `json:"planned_events"`
-	Users            []User                 `json:"users"`
-	Entries          []Entry                `json:"entries"`
-	Attachments      map[string]Attachment  `json:"attachments,omitempty"`
+	ID            string                `json:"id"`
+	Type          NodeType              `json:"type"`
+	Kind          string                `json:"kind,omitempty"`
+	Name          string                `json:"name"`
+	Parents       map[string]string     `json:"parents"`
+	Children      map[string]*Node      `json:"children"`
+	Events        map[string]Event      `json:"events"`
+	PlannedEvents map[string]Event      `json:"planned_events"`
+	Users         []User                `json:"users"`
+	Entries       []Entry               `json:"entries"`
+	Attachments   map[string]Attachment `json:"attachments,omitempty"`
 	// Metadata is the node's own annotations, which is where a canvas layout lives under the
 	// reserved CanvasMetadataKey. It is on the NODE rather than in a parallel store so that a node
 	// and its placement cannot drift apart: deleting the node deletes the placement, and there is
@@ -138,24 +143,14 @@ type Node struct {
 	Correspondence      *Outbox                       `json:"correspondence,omitempty"`
 	ApplicationSessions map[string]ApplicationSession `json:"application_sessions,omitempty"`
 	Subscriptions       map[string]map[string]bool    `json:"subscriptions,omitempty"`
-	Conversations       map[string]*Conversation      `json:"conversations,omitempty"`
 	AccessPolicies      map[string]AccessGrant        `json:"access_policies,omitempty"`
 	AccessGrants        map[string]AccessGrant        `json:"access_grants,omitempty"`
-	AccountSecurity     map[string]AccountSecurity    `json:"account_security,omitempty"`
-	// MFAChallenges is the forest's pending second-factor store, keyed by challenge id. Like
-	// ApplicationSessions it is backend state excluded from every user-facing node projection, and it
-	// holds only a keyed hash of each code — never the code — with an attempt count and an expiry, so
-	// a state file leak cannot be replayed into a login and a stalled challenge sweeps itself out.
-	MFAChallenges map[string]MFAChallenge `json:"mfa_challenges,omitempty"`
-	// AdmittedCommands is the single-use ledger of signed session admissions: command id to the
-	// expiry past which its admission could not verify anyway. Backend state, like the two above; it
-	// is written in the same snapshot as the session each entry paid for, so a restart cannot reopen
-	// a replay window.
-	AdmittedCommands map[string]int64 `json:"admitted_commands,omitempty"`
-	mutex            sync.RWMutex     `json:"-"`
+	mutex               sync.RWMutex                  `json:"-"`
 	// loaded is the record bytes the state file held for this node, when they differ from this
 	// build's encoding of it. See node_loaded.go.
-	loaded     *loadedRecord
+	loaded *loadedRecord
+	// slots are the record's keys the engine does not type. See record.go.
+	slots      slots.Store
 	CreatedBy  string    `json:"created_by,omitempty"`
 	CreatedAt  time.Time `json:"created_at,omitempty"`
 	ModifiedBy string    `json:"modified_by,omitempty"`
@@ -179,7 +174,7 @@ type Attachment struct {
 // MFAEnabled turns the login into a two-step exchange: a verified password mints a short-lived
 // challenge instead of a session, and a code delivered out of band to Phone is what completes it.
 // It is the ONLY MFA state on the account — the code itself never lives here, only in a hashed,
-// TTL-swept challenge store on the forest (see MFAChallenge) — so the profile projection can carry
+// TTL-swept challenge store a second factor keeps — so the profile projection can carry
 // this flag without ever carrying a secret. Absent from a state file written before it existed,
 // which unmarshals as false: an account is not silently opted into a second factor by an upgrade.
 // FailedLogins and LockedUntil are the per-ACCOUNT half of the rate limit, and they live here rather

@@ -25,15 +25,22 @@ type ReadTx interface {
 	Root() *core.Node
 	NodeByID(id string) (*core.Node, bool)
 	NodeByPath(path string) (*core.Node, error) // unfiltered; the owner's view
+	Slot(nodeID, key string) (any, bool)        // a key this extension declared; OutboxSlots addresses OutboxKeys
 	Permits(n *core.Node, userID string, want core.Permission) bool
 }
 
 // Tx is a ReadTx under the exclusive hold of one change.
 type Tx interface {
 	ReadTx
+	SetSlot(nodeID, key string, v any) error // through the key's Codec, or v as json.RawMessage when it has none
+	DeleteSlot(nodeID, key string)
 	Enqueue(c core.OutboxChange) error            // a notification, in the same snapshot as the change
 	EnqueueOutbound(m core.OutboundMessage) error // the external outbox, in the same snapshot as the change
 }
+
+// OutboxSlots is the node id Slot, SetSlot and DeleteSlot take to address a key declared in
+// SlotSpec.OutboxKeys: a key inside the root's "correspondence" object rather than on a record.
+const OutboxSlots = "lumberjack:outbox"
 
 // WriteOp names a write for the permit provider and the hooks.
 type WriteOp struct {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/internal/compat"
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 const encryptedStateMagic = "LUMBERJACK-ENCRYPTED-STATE-3\n"
@@ -80,6 +81,38 @@ func (server *Server) storageCodec() (*secureStorage, error) {
 func (s *secureStorage) aad(purpose string) []byte {
 	return []byte(s.label.StatePrefix() + s.id + "/" + purpose)
 }
+
+// relabel makes the store write under another label from its next write on. Every account key it
+// holds is opened under the label it was wrapped under and wrapped again under the new one — one
+// wrap per account — so the next envelope carries them all under one label (docs/extension-api.md
+// §7.5). A failure leaves the store on its old label.
+func (s *secureStorage) relabel(ctx context.Context, label compat.Label) error {
+	if label == s.label {
+		return nil
+	}
+	opened := make(map[string]storageAccountKey, len(s.accounts))
+	for id := range s.accounts {
+		key, err := s.accountKey(ctx, id)
+		if err != nil {
+			return err
+		}
+		opened[id] = storageAccountKey{key: key}
+	}
+	previous := s.label
+	s.label = label
+	for id, account := range opened {
+		wrapped, err := s.wrapper.Wrap(ctx, account.key, s.aad("account/"+id))
+		if err != nil {
+			s.label = previous
+			return err
+		}
+		account.wrapped = wrapped
+		opened[id] = account
+	}
+	s.accounts = opened
+	return nil
+}
+
 func (s *secureStorage) accountKey(ctx context.Context, id string) ([]byte, error) {
 	account, exists := s.accounts[id]
 	if exists && len(account.key) == 32 {
@@ -174,66 +207,13 @@ func (s *secureStorage) encodeAt(data []byte, level int) ([]byte, error) {
 				}
 			}
 		}
-		body := []byte(table.Nodes[id])
-		if id == table.Root {
-			var fields map[string]json.RawMessage
-			if err = json.Unmarshal(body, &fields); err != nil {
-				return nil, err
-			}
-			delete(fields, "conversations")
-			body, err = json.Marshal(fields)
-			if err != nil {
-				return nil, err
-			}
-		}
-		encrypted, err := s.sealResource(ctx, master, "node/"+id, body, users)
+		// The root's record is sealed whole, its "conversations" slot inside it: the backend key
+		// opens it, and no account is granted the root (owner decision Q4(a)).
+		encrypted, err := s.sealResource(ctx, master, "node/"+id, []byte(table.Nodes[id]), users)
 		if err != nil {
 			return nil, err
 		}
 		document.Nodes[id] = encrypted
-	}
-	for id, conversation := range forest.Conversations {
-		if conversation == nil {
-			return nil, errors.New("cannot encrypt missing conversation")
-		}
-		header := *conversation
-		header.Messages = nil
-		body, err := json.Marshal(header)
-		if err != nil {
-			return nil, err
-		}
-		users := []string{}
-		for userID, member := range header.Members {
-			if !member.Invited {
-				users = append(users, userID)
-			}
-		}
-		encrypted, err := s.sealResource(ctx, master, "conversation/"+id, body, users)
-		if err != nil {
-			return nil, err
-		}
-		saved := encryptedConversation{Header: encrypted, Messages: map[string]encryptedResource{}, Order: []string{}}
-		for _, message := range conversation.Messages {
-			users = nil
-			for userID, member := range header.Members {
-				if !member.Invited && message.Sequence > member.From {
-					users = append(users, userID)
-				}
-			}
-			body, err = json.Marshal(message)
-			if err != nil {
-				return nil, err
-			}
-			if _, duplicate := saved.Messages[message.ID]; duplicate {
-				return nil, errors.New("duplicate encrypted conversation message")
-			}
-			saved.Messages[message.ID], err = s.sealResource(ctx, master, "message/"+id+"/"+message.ID, body, users)
-			if err != nil {
-				return nil, err
-			}
-			saved.Order = append(saved.Order, message.ID)
-		}
-		document.Conversations[id] = saved
 	}
 	// Persist only extant accounts; revocation creates new resource keys on every
 	// snapshot and removes old grant wraps. Downloaded copies cannot be recalled.
@@ -298,40 +278,22 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		var node nodeRecord
-		if err = decodeExact(body, &node); err != nil || node.Node == nil || node.ID != id {
+		node, children, err := core.DecodeRecord(body)
+		if err != nil || node.ID != id {
 			return nil, errors.New("encrypted node identity mismatch")
 		}
-		flat.Nodes[id] = &node
+		flat.Nodes[id] = &nodeRecord{Node: node, Children: children}
 	}
 	root := flat.Nodes[flat.Root]
 	if root == nil {
 		return nil, errors.New("encrypted state root is missing")
 	}
 	if len(document.Conversations) > 0 {
-		root.Conversations = map[string]*core.Conversation{}
-	}
-	for id, saved := range document.Conversations {
-		body, err := s.openResource(master, "conversation/"+id, saved.Header)
+		conversations, err := s.openConversations(master, document.Conversations)
 		if err != nil {
 			return nil, err
 		}
-		var conversation core.Conversation
-		if err = decodeExact(body, &conversation); err != nil || conversation.ID != id {
-			return nil, errors.New("encrypted conversation identity mismatch")
-		}
-		for _, messageID := range saved.Order {
-			body, err = s.openResource(master, "message/"+id+"/"+messageID, saved.Messages[messageID])
-			if err != nil {
-				return nil, err
-			}
-			var message core.ConversationMessage
-			if err = decodeExact(body, &message); err != nil || message.ID != messageID {
-				return nil, errors.New("encrypted message identity mismatch")
-			}
-			conversation.Messages = append(conversation.Messages, message)
-		}
-		root.Conversations[id] = &conversation
+		root.Node.Slots(slots.Token{}).SetRaw("conversations", conversations)
 	}
 	s.accounts = map[string]storageAccountKey{}
 	for id, key := range document.Accounts {

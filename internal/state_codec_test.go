@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/internal/slots"
 )
 
 // What nodeRecord's EMBEDDING buys, asserted rather than assumed.
@@ -46,13 +47,15 @@ func populatedNode(t *testing.T) *core.Node {
 	node.Correspondence = &core.Outbox{Delivered: 1}
 	node.ApplicationSessions = map[string]core.ApplicationSession{"hash": {UserID: "user-id", ExpiresAt: 1}}
 	node.Subscriptions = map[string]map[string]bool{"user-id": {"node-id": true}}
-	node.Conversations = map[string]*core.Conversation{"conversation-id": {ID: "conversation-id", Kind: "dm"}}
 	node.AccessPolicies = map[string]core.AccessGrant{"grant-id": {ID: "grant-id", RootID: "node-id", RecipientID: "user-id", Scope: "item"}}
 	node.AccessGrants = map[string]core.AccessGrant{"grant-id": {ID: "grant-id", RootID: "node-id", RecipientID: "user-id", Scope: "item"}}
-	node.AccountSecurity = map[string]core.AccountSecurity{"user-id": {VerifiedEmail: "fixture@example.invalid"}}
-	node.MFAChallenges = map[string]core.MFAChallenge{"challenge-id": {UserID: "user-id", CodeHash: "hash", ExpiresAt: 1}}
-	node.PersonalBindings = &core.PersonalBindingLedger{Revision: "fixture-revision"}
-	node.AdmittedCommands = map[string]int64{"command-id": 1}
+	// The keys the builds that carried product fields wrote, kept as slot bytes by this one.
+	held := node.Slots(slots.Token{})
+	held.SetRaw("conversations", json.RawMessage(`{"conversation-id":{"id":"conversation-id","kind":"dm"}}`))
+	held.SetRaw("account_security", json.RawMessage(`{"user-id":{"verified_email":"fixture@example.invalid"}}`))
+	held.SetRaw("mfa_challenges", json.RawMessage(`{"challenge-id":{"user_id":"user-id","code_hash":"hash","expires_at":1}}`))
+	held.SetRaw("personal_bindings", json.RawMessage(`{"revision":"fixture-revision"}`))
+	held.SetRaw("admitted_commands", json.RawMessage(`{"command-id":1}`))
 	node.CreatedBy = "user-id"
 	node.CreatedAt = stamp
 	node.ModifiedBy = "user-id"
