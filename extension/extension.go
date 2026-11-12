@@ -28,6 +28,10 @@ type Spec struct {
 	Markers     []string    // CommandReceipts keys that mark a node as owned by this extension
 	ConfigParts []string    // application_configure parts it consumes, e.g. "admission"
 	Persistence Persistence // AnyPersistence | SnapshotOnly (refused under tiered persistence)
+
+	// PresentationMetadata are node metadata keys whose changes are presentation, not news: a change
+	// to them alone queues no notification for the node's subscribers.
+	PresentationMetadata []string
 }
 
 // Persistence is which persistence modes an extension can run under.

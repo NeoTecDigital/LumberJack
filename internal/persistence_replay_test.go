@@ -3,7 +3,6 @@
 package internal
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/NeoTecDigital/LumberJack/types"
@@ -15,57 +14,6 @@ import (
 // behind its disk. Nothing written after it is acknowledged until it is durable too, and the
 // first write that lands once the disk takes writes again carries it there. The disk is refused
 // with refuseDisk.
-
-// A workspace command whose write failed is in memory and not on the disk. A retry of the SAME
-// client id finds its receipt and would answer the stored result — but the answer must wait for
-// the write, in both modes: a 200 is a promise that the command is durable, and a kill before the
-// next successful write would otherwise lose a command the caller was told it could forget.
-func TestAReplayIsNotAcknowledgedUntilTheCommandIsDurable(t *testing.T) {
-	inEachMode(t, replayWaitsForTheDisk)
-}
-
-func replayWaitsForTheDisk(t *testing.T, config types.ServerConfig) {
-	server := newServerWith(t, config)
-	token := storeAdmin(t, server)
-	status, body := storeCall(t, server, token, "POST", "/nodes", map[string]string{"path": "work/a", "type": "leaf"})
-	requireOK(t, "seed", status, body)
-
-	restore := refuseDisk(t, server, config)
-	command := workLog("log-while-down", "work/a", "written while the disk refused it")
-	if status, body := storeCall(t, server, token, "POST", "/workspace/commands", command); status < 500 {
-		t.Fatalf("the write landed on a read-only directory: %d %v", status, body)
-	}
-	if !server.persistBehind() {
-		t.Fatal("the forest is not reported ahead of its store")
-	}
-	status, body = storeCall(t, server, token, "POST", "/workspace/commands", command)
-	if status < 500 {
-		t.Fatalf("a replay was acknowledged while the command was not durable: %d %v", status, body)
-	}
-	if got := entriesOn(server, "work/a"); got != 1 {
-		t.Fatalf("the retry applied the command again: %d entries", got)
-	}
-
-	restore()
-	status, body = storeCall(t, server, token, "POST", "/workspace/commands", command)
-	if status != http.StatusOK || entriesOn(server, "work/a") != 1 {
-		t.Fatalf("retry after the disk returned: %d %v, %d entries", status, body, entriesOn(server, "work/a"))
-	}
-	if server.persistBehind() {
-		t.Fatal("the store is still reported behind after the replay was acknowledged")
-	}
-
-	// A kill after that 200 loses nothing: the reopened store holds the command.
-	expected := fingerprint(server.forest)
-	reopened := reopenWith(t, server, config, false)
-	if got := fingerprint(reopened.forest); got != expected {
-		t.Fatal("the reopened forest does not hold the replayed command")
-	}
-	status, body = storeCall(t, reopened, storeAdmin(t, reopened), "POST", "/workspace/commands", command)
-	if status != http.StatusOK || entriesOn(reopened, "work/a") != 1 {
-		t.Fatalf("replay after reopen: %d %v, %d entries", status, body, entriesOn(reopened, "work/a"))
-	}
-}
 
 // "Until a write lands" is ANY write. No later write can be acknowledged without the failed one:
 // in snapshot mode its file holds the whole forest, and in tiered mode its record is behind the

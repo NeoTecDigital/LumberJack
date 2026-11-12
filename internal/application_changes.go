@@ -17,9 +17,15 @@ type correspondenceSnapshot struct {
 	pending   map[string]bool
 }
 
-func notificationRevision(node *core.Node) string {
-	metadata := workMetadata(node)
-	delete(metadata, "preferences") // personal presentation settings are not news
+// notificationRevision is what a subscriber is told about: the node's generic projection, without the
+// metadata keys an extension declared presentation-only.
+func (s *Server) notificationRevision(node *core.Node) string {
+	metadata := make(map[string]interface{}, len(node.Metadata))
+	for key, value := range node.Metadata {
+		if s.extensions == nil || !s.extensions.presentation[key] {
+			metadata[key] = value
+		}
+	}
 	body, _ := json.Marshal([]interface{}{node.Kind, metadata, newEntryViews(node.Entries), newEventViews(node.Events),
 		newEventViews(node.PlannedEvents), newAttachmentViews(node.Attachments), newUserViews(node.Users)})
 	return fmt.Sprintf("%x", sha256.Sum256(body))
@@ -29,7 +35,7 @@ func (s *Server) captureCorrespondence() *correspondenceSnapshot {
 	before := &correspondenceSnapshot{revisions: map[string]string{}, pending: map[string]bool{}}
 	_ = s.walkScope("", nil, func(at visit) {
 		if at.node != s.forest {
-			before.revisions[at.node.ID] = notificationRevision(at.node)
+			before.revisions[at.node.ID] = s.notificationRevision(at.node)
 		}
 	})
 	if state := s.forest.Correspondence; state != nil {
@@ -51,7 +57,7 @@ func (s *Server) recordCompatibilityChanges(before *correspondenceSnapshot) {
 	}
 	_ = s.walkScope("", nil, func(at visit) {
 		node := at.node
-		if node == s.forest || queued[node.ID] || before.revisions[node.ID] == notificationRevision(node) {
+		if node == s.forest || queued[node.ID] || before.revisions[node.ID] == s.notificationRevision(node) {
 			return
 		}
 		recipients := []string{}
@@ -67,7 +73,7 @@ func (s *Server) recordCompatibilityChanges(before *correspondenceSnapshot) {
 		}
 		sort.Strings(recipients)
 		id := fmt.Sprintf("%x", sha256.Sum256([]byte(core.GenerateUserID()+node.ID)))
-		s.correspondenceState().Pending[id] = core.CorrespondenceChange{ID: id, PinID: node.ID, Path: at.path, Operation: "update",
+		s.correspondenceState().Pending[id] = core.OutboxChange{ID: id, PinID: node.ID, Path: at.path, Operation: "update",
 			At: time.Now().UTC().Format(time.RFC3339Nano), Recipients: recipients}
 		queued[node.ID] = true
 	})

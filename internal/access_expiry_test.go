@@ -47,7 +47,7 @@ func encryptedDocumentForTest(t *testing.T, codec *secureStorage, forest *core.N
 func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	s, owner, base := streamingServer(t)
 	s.forest.Users = append(s.forest.Users, core.User{ID: "reader", Username: "reader", Permissions: []core.Permission{core.ReadPermission}})
-	path := workTestCommand(t, s, owner, workCommand{Command: "create", Path: s.forest.Name, ClientID: "expiring", Title: "Private after expiry", Kind: "idea"}, 200)["path"].(string)
+	path := recordTestCommand(t, s, owner, recordCommand{Command: "create", Path: s.forest.Name, ClientID: "expiring", Title: "Private after expiry", Kind: "idea"}, 200)["path"].(string)
 	node, _ := s.getNodeFromPath(path)
 	expires := time.Now().Unix() + 2
 	request := map[string]interface{}{"action": "grant", "path": path, "username": "reader", "permission": 1, "scope": "item", "expires_at": expires}
@@ -74,14 +74,7 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	if response := serveRoute(t, s, "GET", "/nodes/"+path, "reader", nil); response.Code != 403 {
 		t.Fatalf("expired read returned %d: %s", response.Code, response.Body.String())
 	}
-	workTestCommand(t, s, "reader", workCommand{Command: "log", Path: path, ClientID: "expired-write", Content: "Denied"}, 403)
-	workspace, err := s.Workspace("reader")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(workspace, []byte("Private after expiry")) {
-		t.Fatal("expired workspace revealed content")
-	}
+	recordTestCommand(t, s, "reader", recordCommand{Command: "log", Path: path, ClientID: "expired-write", Content: "Denied"}, 403)
 	after := encryptedDocumentForTest(t, codec, s.forest)
 	if len(after.Nodes[node.ID].AccountKeys["reader"]) != 0 {
 		t.Fatal("expired grant retained a newly persisted resource wrap")
@@ -89,7 +82,7 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	if len(after.Conversations["independent"].Messages["message"].AccountKeys["reader"]) == 0 {
 		t.Fatal("project expiry incorrectly revoked independent conversation membership")
 	}
-	workTestCommand(t, s, owner, workCommand{Command: "log", Path: path, ClientID: "private-now", Content: "Protected after expiry"}, 200)
+	recordTestCommand(t, s, owner, recordCommand{Command: "log", Path: path, ClientID: "private-now", Content: "Protected after expiry"}, 200)
 	deadline := time.After(streamWait)
 	resync := false
 	for !resync {
@@ -111,6 +104,6 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 			break
 		}
 	}
-	workTestCommand(t, s, owner, workCommand{Command: "log", Path: path, ClientID: "still-private", Content: "Still protected"}, 200)
+	recordTestCommand(t, s, owner, recordCommand{Command: "log", Path: path, ClientID: "still-private", Content: "Still protected"}, 200)
 	reader.silentFor(t, 50*time.Millisecond)
 }

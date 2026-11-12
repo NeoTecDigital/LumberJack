@@ -154,18 +154,18 @@ func (s *Server) ApplicationCall(input ApplicationRequest) ApplicationResponse {
 	if target.Path == "/stream" {
 		return applicationError(400, "Use the Corresponder change dispatcher")
 	}
+	req, err := makeApplicationRequest(input)
+	if err != nil {
+		return applicationError(400, "Invalid request")
+	}
 	// The credential exchanges are exempt: a change-delivery backlog must not be able to strand a
-	// caller halfway through a login it has already started.
-	if input.Method != "GET" && input.Method != "HEAD" && target.Path != "/session" && target.Path != "/login" && target.Path != "/refresh" && target.Path != "/changes" {
+	// caller halfway through a login it has already started. See backpressureExempt.
+	if input.Method != "GET" && input.Method != "HEAD" && !s.backpressureExempt(req) {
 		full := false
 		s.readForest(func() { full = s.forest.Correspondence != nil && len(s.forest.Correspondence.Pending) >= 4096 })
 		if full {
 			return applicationError(503, "Change delivery is behind. Try again shortly.")
 		}
-	}
-	req, err := makeApplicationRequest(input)
-	if err != nil {
-		return applicationError(400, "Invalid request")
 	}
 	out := &applicationWriter{header: make(http.Header)}
 	s.dispatchApplication(req, out)

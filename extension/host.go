@@ -31,6 +31,7 @@ type ReadTx interface {
 // Tx is a ReadTx under the exclusive hold of one change.
 type Tx interface {
 	ReadTx
+	Enqueue(c core.OutboxChange) error            // a notification, in the same snapshot as the change
 	EnqueueOutbound(m core.OutboundMessage) error // the external outbox, in the same snapshot as the change
 }
 

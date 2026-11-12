@@ -135,7 +135,7 @@ type Node struct {
 	CommandReceipts map[string]interface{} `json:"command_receipts,omitempty"`
 	// Correspondence is the hub's durable outbox/inbox, stored on the forest.
 	// It is internal state and is excluded from user-facing node projections.
-	Correspondence      *CorrespondenceState          `json:"correspondence,omitempty"`
+	Correspondence      *Outbox                       `json:"correspondence,omitempty"`
 	ApplicationSessions map[string]ApplicationSession `json:"application_sessions,omitempty"`
 	Subscriptions       map[string]map[string]bool    `json:"subscriptions,omitempty"`
 	Conversations       map[string]*Conversation      `json:"conversations,omitempty"`

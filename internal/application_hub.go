@@ -12,57 +12,38 @@ import (
 	"github.com/NeoTecDigital/LumberJack/extension"
 )
 
-// Called while committing a command, so the work and its pending delivery are
-// always part of the same durable snapshot. The hub never observes a half-write.
-func (s *Server) enqueueCorrespondence(actor string, cmd WorkCommand, path string) {
-	if cmd.Command == "preferences" || cmd.Command == "initialize" || cmd.Command == "subscribe" {
-		return
+// enqueueOutboxLocked records a notification as pending delivery, in the same snapshot as the change
+// it announces, so the hub never observes a half-write. The caller holds the forest exclusively and
+// has chosen the recipients; Direct says it chose them for this change itself.
+func (s *Server) enqueueOutboxLocked(change core.OutboxChange) error {
+	if change.ID == "" || change.PinID == "" || change.Path == "" {
+		return &extension.Error{Status: http.StatusBadRequest, Message: "an outbox change needs an id, a pin id and a path"}
 	}
-	node, err := s.getNodeFromPath(path)
-	if err != nil {
-		return
+	if change.At == "" {
+		change.At = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	state := s.correspondenceState()
-	id := fmt.Sprintf("%x", sha256.Sum256([]byte(node.ID+"\x00"+actor+"\x00"+cmd.ClientID)))
-	recipients := []string{}
-	for _, user := range s.forest.Users {
-		if user.ID != SystemUserID && user.ID != actor && node.CheckPermission(user.ID, core.ReadPermission) {
-			// A sharing alert belongs to its explicit recipient, regardless of
-			// other members' subscriptions to ordinary activity on this item.
-			if cmd.Command == "share" && cmd.Username != user.Username {
-				continue
-			}
-			direct := (cmd.Command == "share" && cmd.Username == user.Username) || cmd.AssignedTo == user.ID || node.Kind == "conversation"
-			if direct || s.forest.Subscriptions[user.ID][node.ID] {
-				recipients = append(recipients, user.ID)
-			}
-		}
-	}
-	sort.Strings(recipients)
-	state.Pending[id] = core.CorrespondenceChange{ID: id, PinID: node.ID, Path: s.canonicalPath(path),
-		Actor: actor, Operation: cmd.Command, At: time.Now().UTC().Format(time.RFC3339Nano), Recipients: recipients}
+	change.Recipients = append([]string(nil), change.Recipients...)
+	sort.Strings(change.Recipients)
+	s.correspondenceState().Pending[change.ID] = change
+	return nil
 }
 
-// outboundChallengeID names the challenge an item's delivery verdict belongs to. The MFA path keys
-// both by the same value, so ChallengeID and ID agree there; the fallback is for an item queued by a
-// later purpose that fills only one of them, and an empty answer simply marks nothing.
-func outboundChallengeID(item core.OutboundMessage) string {
-	if item.ChallengeID != "" {
-		return item.ChallengeID
-	}
-	return item.ID
+// outboxChangeID is a change's delivery identity: one per node, actor and operation key, so a retry of
+// the same operation queues the same record rather than a second one.
+func outboxChangeID(nodeID, actor, key string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(nodeID+"\x00"+actor+"\x00"+key)))
 }
 
-func (s *Server) correspondenceState() *core.CorrespondenceState {
+func (s *Server) correspondenceState() *core.Outbox {
 	if s.forest.Correspondence == nil {
-		s.forest.Correspondence = &core.CorrespondenceState{}
+		s.forest.Correspondence = &core.Outbox{}
 	}
 	state := s.forest.Correspondence
 	if state.Pending == nil {
-		state.Pending = map[string]core.CorrespondenceChange{}
+		state.Pending = map[string]core.OutboxChange{}
 	}
 	if state.Inbox == nil {
-		state.Inbox = map[string][]core.CorrespondenceNotification{}
+		state.Inbox = map[string][]core.OutboxNotification{}
 	}
 	return state
 }
@@ -92,7 +73,7 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 	case "pending", "status":
 		s.readForest(func() {
 			state := s.forest.Correspondence
-			pending := []core.CorrespondenceChange{}
+			pending := []core.OutboxChange{}
 			var delivered uint64
 			last := ""
 			if state != nil {
@@ -208,7 +189,7 @@ func (s *Server) ApplicationHub(raw []byte) ([]byte, error) {
 						// Recipients themselves are private routing information.
 						copy := change
 						copy.Recipients = nil
-						inbox = append(inbox, core.CorrespondenceNotification{Change: copy})
+						inbox = append(inbox, core.OutboxNotification{Change: copy})
 						if len(inbox) > 200 {
 							inbox = inbox[len(inbox)-200:]
 						}
@@ -356,7 +337,7 @@ func (s *Server) handleApplicationNotifications(w http.ResponseWriter, r *http.R
 				if err != nil || node.ID != c.PinID || !node.CheckPermission(userID, core.ReadPermission) {
 					continue
 				}
-				if c.Operation != "share" && node.Kind != "conversation" && !s.forest.Subscriptions[userID][node.ID] && node.Metadata["assigned_to"] != userID {
+				if !s.notificationEntitledLocked(item, node, userID) {
 					continue
 				}
 				actor := "A member"
@@ -385,4 +366,23 @@ func (s *Server) outboundSettledLocked(item core.OutboundMessage, outcome extens
 		}
 	}
 	return recorded
+}
+
+// notificationEntitledLocked is the generic /notifications rule (docs/extension-api.md §4.6), once
+// the recipient's read permission is confirmed: the record is Direct, or a share, or the recipient
+// subscribes to the node, or an OutboxEntitlement vouches for a record written before Direct
+// existed.
+func (s *Server) notificationEntitledLocked(item core.OutboxNotification, node *core.Node, userID string) bool {
+	if item.Change.Direct || item.Change.Operation == "share" || s.forest.Subscriptions[userID][node.ID] {
+		return true
+	}
+	if s.extensions == nil {
+		return false
+	}
+	for _, entitlement := range s.extensions.entitlements {
+		if entitlement.EntitledLocked(forestTx{server: s}, item, userID) {
+			return true
+		}
+	}
+	return false
 }

@@ -3,7 +3,7 @@ package core
 // A committed command produces one delivery identity, independent of transient
 // stream cursors. Recipients are captured at commit and checked again at delivery
 // and read time. No private content is copied into routing records.
-type CorrespondenceChange struct {
+type OutboxChange struct {
 	ID         string   `json:"id"`
 	PinID      string   `json:"pin_id"`
 	Path       string   `json:"path"`
@@ -11,17 +11,22 @@ type CorrespondenceChange struct {
 	Operation  string   `json:"operation"`
 	At         string   `json:"at"`
 	Recipients []string `json:"recipients"`
+	// Direct says the recipients were chosen for this change itself — the one a share names, an
+	// assignee — rather than for following the node. It is recorded so the /notifications read does
+	// not have to re-derive it. Omitted when false, so a record written before it existed reads, and
+	// re-encodes, exactly as it was.
+	Direct bool `json:"direct,omitempty"`
 }
-type CorrespondenceNotification struct {
-	Change CorrespondenceChange `json:"change"`
-	ReadAt string               `json:"read_at,omitempty"`
+type OutboxNotification struct {
+	Change OutboxChange `json:"change"`
+	ReadAt string       `json:"read_at,omitempty"`
 }
-type CorrespondenceState struct {
-	Feed         *FeedState                              `json:"feed,omitempty"`
-	Pending      map[string]CorrespondenceChange         `json:"pending"`
-	Inbox        map[string][]CorrespondenceNotification `json:"inbox"`
-	Delivered    uint64                                  `json:"delivered"`
-	LastDelivery string                                  `json:"last_delivery,omitempty"`
+type Outbox struct {
+	Feed         *FeedState                      `json:"feed,omitempty"`
+	Pending      map[string]OutboxChange         `json:"pending"`
+	Inbox        map[string][]OutboxNotification `json:"inbox"`
+	Delivered    uint64                          `json:"delivered"`
+	LastDelivery string                          `json:"last_delivery,omitempty"`
 	// Outbound is the messenger's EXTERNAL outbox: items destined for a channel off this portal
 	// (SMS, today) that a future forward-dispatcher role drains and hands to a one-shot proxy. It is
 	// distinct from Pending, which is user-to-user inbox delivery inside the forest. The engine only

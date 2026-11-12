@@ -11,7 +11,7 @@ import (
 
 // The outbound pair on the trusted ApplicationHub: the read that lists the external outbox
 // oldest-first under a cap, and the durable ack that clears one item. They mirror the
-// pending/deliver pair over CorrespondenceState.Pending, one layer over CorrespondenceState.Outbound,
+// pending/deliver pair over Outbox.Pending, one layer over Outbox.Outbound,
 // and they are the contract the Julia forward-dispatcher (drainOutbound! in HubRuntime.jl) reaches
 // for. Each op is proven red against the bare pending/status/deliver hub before it is added.
 

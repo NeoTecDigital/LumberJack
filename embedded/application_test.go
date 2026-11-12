@@ -35,12 +35,12 @@ func TestApplicationNeverBorrowsTheBootstrapPrincipal(t *testing.T) {
 		}
 		return result
 	}
-	if got := call("GET", "/workspace", "", nil); got.Status != 401 {
+	if got := call("GET", "/forest", "", nil); got.Status != 401 {
 		t.Fatalf("anonymous: %d", got.Status)
 	}
 	token := applicationLogin(t, handle, "operator", password)
-	if got := call("GET", "/workspace", token, nil); got.Status != 200 {
-		t.Fatalf("workspace: %s", got.Body)
+	if got := call("GET", "/forest", token, nil); got.Status != 200 {
+		t.Fatalf("forest: %s", got.Body)
 	}
 	if got := call("POST", "/users/create", token, map[string]string{"username": "guest", "password": applicationCredential(), "email": "guest@example.test"}); got.Status != 200 {
 		t.Fatalf("create: %s", got.Body)

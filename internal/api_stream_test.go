@@ -510,12 +510,12 @@ func TestStreamAnnouncesAttachments(t *testing.T) {
 func TestStreamDoesNotRevealPrivateResourceIdentities(t *testing.T) {
 	server, owner, base := streamingServer(t)
 	server.forest.Users = append(server.forest.Users, core.User{ID: "viewer", Username: "viewer", Permissions: []core.Permission{core.ReadPermission}})
-	answer := workTestCommand(t, server, owner, workCommand{Command: "create", Path: server.forest.Name, ClientID: "private", Title: "Private", Kind: "goal"}, 200)
+	answer := recordTestCommand(t, server, owner, recordCommand{Command: "create", Path: server.forest.Name, ClientID: "private", Title: "Private", Kind: "goal"}, 200)
 	path := answer["path"].(string)
 	reader := openStream(t, base, "viewer", "")
 	defer reader.close()
 	waitForSubscriber(t, server)
-	workTestCommand(t, server, owner, workCommand{Command: "log", Path: path, ClientID: "private-log", Content: "Secret"}, 200)
+	recordTestCommand(t, server, owner, recordCommand{Command: "log", Path: path, ClientID: "private-log", Content: "Secret"}, 200)
 	reader.silentFor(t, 50*time.Millisecond)
 	grantID := reviewedAccessGrant(t, server, owner, path, "viewer", 0, "item")
 	event := reader.nextEvent(t, streamWait)
@@ -539,6 +539,6 @@ refresh:
 			t.Fatal("revocation did not request a permission refresh")
 		}
 	}
-	workTestCommand(t, server, owner, workCommand{Command: "log", Path: path, ClientID: "after-revoke", Content: "Still private"}, 200)
+	recordTestCommand(t, server, owner, recordCommand{Command: "log", Path: path, ClientID: "after-revoke", Content: "Still private"}, 200)
 	reader.silentFor(t, 50*time.Millisecond)
 }

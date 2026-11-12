@@ -129,10 +129,10 @@ func compatAppend(t *testing.T, manifest *bytes.Buffer, entry compatManifestEntr
 // plain-state2-all-fields: every core.Node field, the outbox with feed, pending, inbox and outbound.
 func compatGenAllFields(t *testing.T) compatGenerated {
 	node := populatedNode(t)
-	node.Correspondence = &core.CorrespondenceState{
+	node.Correspondence = &core.Outbox{
 		Feed:         &core.FeedState{Attempts: map[string][]core.FeedAttempt{"user-id": {{ID: "attempt", CommandID: "c", Digest: "d", Operation: "log", Outcome: "applied", Status: 200, At: "2026-03-04T05:06:07Z"}}}},
-		Pending:      map[string]core.CorrespondenceChange{"change": {ID: "change", Path: "populated", Actor: "user-id", Operation: "share", At: "2026-03-04T05:06:07Z", Recipients: []string{"user-id"}}},
-		Inbox:        map[string][]core.CorrespondenceNotification{"user-id": {{Change: core.CorrespondenceChange{ID: "seen", Operation: "update"}}}},
+		Pending:      map[string]core.OutboxChange{"change": {ID: "change", Path: "populated", Actor: "user-id", Operation: "share", At: "2026-03-04T05:06:07Z", Recipients: []string{"user-id"}}},
+		Inbox:        map[string][]core.OutboxNotification{"user-id": {{Change: core.OutboxChange{ID: "seen", Operation: "update"}}}},
 		Delivered:    3,
 		LastDelivery: "2026-03-04T05:06:07Z",
 		Outbound:     map[string]core.OutboundMessage{"sms": {ID: "sms", Channel: "sms", Purpose: "mfa", To: "+15550100", Payload: "code", CreatedAt: 1, ExpiresAt: 2}},

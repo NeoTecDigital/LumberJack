@@ -119,10 +119,9 @@ func storeCall(t *testing.T, server *Server, token, method, target string, body 
 	return recorder.Code, decoded
 }
 
-// workLog is a workspace command that logs one entry on a node. It carries a client id, so a retry
-// of the same command is answered from its receipt rather than applied a second time.
-func workLog(clientID, path, content string) map[string]interface{} {
-	return map[string]interface{}{"command": "log", "path": path, "client_id": clientID, "content": content}
+// entryLog is a POST /entries body that logs one entry on a node, tagged with a client id.
+func entryLog(clientID, path, content string) map[string]interface{} {
+	return map[string]interface{}{"path": path, "content": content, "metadata": map[string]interface{}{"client_id": clientID, "category": "log"}}
 }
 
 // entriesOn is how many entries the node at path holds, or -1 when there is no such node.

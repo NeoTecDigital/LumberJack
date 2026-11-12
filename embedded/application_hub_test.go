@@ -2,9 +2,26 @@
 package embedded
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/extension"
 )
+
+// noticeExtension enqueues a Direct notice through Tx.Enqueue, which is how an extension feeds the
+// outbox now that no product does.
+type noticeExtension struct{ host *extension.Host }
+
+func (e noticeExtension) Spec() extension.Spec { return extension.Spec{Name: "notice"} }
+
+func (e noticeExtension) Attach(host extension.Host) (extension.Instance, error) {
+	*e.host = host
+	return e, nil
+}
+
+func (e noticeExtension) Close(context.Context) error { return nil }
 
 func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 	// Observed before fixture repair: password-only login panicked with
@@ -13,9 +30,10 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 	cfg := embeddedConfig(t)
 	password, key := applicationCredential(), applicationCredential()
 	var h *Handle
+	var host extension.Host
 	open := func() {
 		var err error
-		h, err = Open(cfg, "hub")
+		h, err = OpenWith(cfg, "hub", noticeExtension{host: &host})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -56,13 +74,10 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 	token := login("operator")
 	call("POST", "/users/create", token, map[string]string{"username": "bob", "password": password, "email": "bob@example.test"})
 	bob := login("bob")
-	workspace := call("GET", "/workspace", token, nil)
-	root := workspace["nodes"].([]interface{})[0].(map[string]interface{})["path"].(string)
-	create := map[string]interface{}{"command": "create", "path": root, "client_id": "create", "title": "Shared idea", "kind": "idea"}
-	created := call("POST", "/workspace/commands", token, create)
-	path := created["path"].(string)
-	// Replaying an acknowledged command does not queue a second delivery.
-	call("POST", "/workspace/commands", token, create)
+	// The record is private to its creator, as one made by a product is: the forest's user inventory
+	// is not an invitation to it, so the grant below is the only way bob can read it.
+	operatorID, bobID := call("GET", "/principal", token, nil)["id"].(string), call("GET", "/principal", bob, nil)["id"].(string)
+	nodeID, path := privateRecord(t, host, operatorID, "shared-idea")
 	share := map[string]interface{}{"action": "grant", "path": path, "username": "bob", "permission": 1, "scope": "item"}
 	share["revision"] = call("POST", "/access/preview", token, share)["revision"]
 	grant := call("POST", "/access/apply", token, share)["grant_id"]
@@ -76,8 +91,8 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 	}
 	var pending []map[string]interface{}
 	json.Unmarshal(before, &pending)
-	if len(pending) != 2 {
-		t.Fatalf("want create and share, got %s", before)
+	if len(pending) != 1 {
+		t.Fatalf("want the share, got %s", before)
 	}
 	for _, item := range pending {
 		hub("deliver", item["id"].(string))
@@ -97,7 +112,11 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 	if items[0].(map[string]interface{})["read_at"] == "" {
 		t.Fatal("read acknowledgment was lost")
 	}
-	call("POST", "/workspace/commands", token, map[string]interface{}{"command": "log", "path": path, "client_id": "queued-before-revoke", "content": "Private update"})
+	if _, err := host.Change(context.Background(), extension.WriteOp{Key: "queued-before-revoke"}, func(tx extension.Tx) error {
+		return tx.Enqueue(core.OutboxChange{ID: "queued-before-revoke", PinID: nodeID, Path: path, Operation: "update", Recipients: []string{bobID}, Direct: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	revoke := map[string]interface{}{"action": "revoke", "path": path, "grant_id": grant}
 	revoke["revision"] = call("POST", "/access/preview", token, revoke)["revision"]
 	call("POST", "/access/apply", token, revoke)
@@ -113,4 +132,24 @@ func TestApplicationHubSurvivesRestartAndFiltersRevocation(t *testing.T) {
 	if answer.Status < 400 {
 		t.Fatal("HTTP reached trusted hub capability")
 	}
+}
+
+// privateRecord makes a child of the root that only its creator can read, through the extension's
+// Host, and answers its id and path.
+func privateRecord(t *testing.T, host extension.Host, creator, name string) (string, string) {
+	t.Helper()
+	var id, rootName string
+	if _, err := host.Change(context.Background(), extension.WriteOp{Key: "record:" + name}, func(tx extension.Tx) error {
+		root := tx.Root()
+		node := core.NewNode(core.BranchNode, name)
+		node.Parents = map[string]string{root.ID: root.Name}
+		node.CreatedBy = creator
+		node.Users = []core.User{{ID: creator, Permissions: []core.Permission{core.AdminPermission}}}
+		root.Children[node.ID] = node
+		id, rootName = node.ID, root.Name
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return id, rootName + "/" + name
 }

@@ -40,8 +40,8 @@ func TestTieredWritesAppendToTheLogAndLeaveTheStateFileAlone(t *testing.T) {
 	requireOK(t, "start", status, body)
 	status, body = storeCall(t, server, token, "PATCH", "/nodes/work/a/metadata", map[string]interface{}{"label": "tiered"})
 	requireOK(t, "metadata", status, body)
-	status, body = storeCall(t, server, token, "POST", "/workspace/commands", workLog("log-a", "work/a", "logged"))
-	requireOK(t, "workspace log", status, body)
+	status, body = storeCall(t, server, token, "POST", "/entries", entryLog("log-a", "work/a", "logged"))
+	requireOK(t, "entry log", status, body)
 	after, _ := os.Stat(StatePath(config))
 	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
 		t.Fatal("a write rewrote the state file")
@@ -79,7 +79,7 @@ func scriptRequest(random *rand.Rand, seed int64, i int) (string, string, interf
 	case 5:
 		return "DELETE", "/nodes/" + node + "?mode=cascade", nil
 	}
-	return "POST", "/workspace/commands", workLog(fmt.Sprintf("log-%d-%d", seed, i), node, text)
+	return "POST", "/entries", entryLog(fmt.Sprintf("log-%d-%d", seed, i), node, text)
 }
 
 func randomScript(seed int64, length int) opScript {
@@ -134,16 +134,15 @@ func TestSnapshotAndTieredModesEndInTheSameForest(t *testing.T) {
 		if snapshot != tiered {
 			t.Fatalf("seed %d: the modes disagree\n--- snapshot\n%s\n--- tiered\n%s", seed, snapshot, tiered)
 		}
-		// The script must have exercised the event routes and the workspace commands for the
-		// agreement to mean anything.
+		// The script must have exercised the event routes and the entry routes for the agreement to
+		// mean anything.
 		if !strings.Contains(snapshot, `"category":"log"`) || !strings.Contains(snapshot, `"events":{"ev`) {
 			t.Fatalf("seed %d: the script did not exercise both kinds of write", seed)
 		}
 	}
 }
 
-// seedStore makes a few writes, the last of them a workspace command a caller may retry, and
-// answers the forest's fingerprint.
+// seedStore makes a few writes, the last of them entry logs, and answers the forest's fingerprint.
 func seedStore(t *testing.T, server *Server, token string) string {
 	t.Helper()
 	status, body := storeCall(t, server, token, "POST", "/nodes", map[string]string{"path": "work/a", "type": "leaf"})
@@ -152,7 +151,7 @@ func seedStore(t *testing.T, server *Server, token string) string {
 	requireOK(t, "metadata", status, body)
 	for i := 1; i <= 3; i++ {
 		name := fmt.Sprintf("log-%d", i)
-		status, body := storeCall(t, server, token, "POST", "/workspace/commands", workLog(name, "work/a", name))
+		status, body := storeCall(t, server, token, "POST", "/entries", entryLog(name, "work/a", name))
 		requireOK(t, name, status, body)
 	}
 	return fingerprint(server.forest)
@@ -196,12 +195,6 @@ func TestARecordAppendedButNotAcknowledgedIsKeptAcrossAKill(t *testing.T) {
 	reopened := reopenWith(t, server, config, false)
 	if got := fingerprint(reopened.forest); got != expected {
 		t.Fatal("an appended record was lost")
-	}
-	// The caller retries the last command with the same id and is answered from its receipt, not
-	// applied a second time.
-	status, body := storeCall(t, reopened, storeAdmin(t, reopened), "POST", "/workspace/commands", workLog("log-3", "work/a", "log-3"))
-	if status != http.StatusOK || entriesOn(reopened, "work/a") != 3 {
-		t.Fatalf("retry: %d %v, %d entries", status, body, entriesOn(reopened, "work/a"))
 	}
 }
 
@@ -277,7 +270,7 @@ func TestALogHoldingAPartialNodeIsRefusedAtOpen(t *testing.T) {
 
 // The stream is numbered from the log's last record on open. Every write here publishes ONE
 // mutation per record, which is what that continuation rests on: a write that publishes more than
-// one per record — a workspace command publishes two — can leave the restarted numbering below
+// one per record can leave the restarted numbering below
 // what a client saw, and the stream's epoch is what tells that client the process restarted.
 func TestTheChangeSequenceContinuesAfterARestart(t *testing.T) {
 	config := tieredConfig(t, types.HotSyncCommit)

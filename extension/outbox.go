@@ -25,3 +25,11 @@ type OutboundOutcome struct {
 	ErrorClass string // the coarse failure class, for OutboundFailed
 	Attempts   int
 }
+
+// OutboxEntitlement lets an extension vouch that a recipient is still entitled to a notification
+// the generic rule would hide: a record written without Direct, before the flag existed. The
+// generic rule is: the recipient can still read the node, and the record is Direct, or a share, or
+// the recipient subscribes to the node, or an entitlement vouches.
+type OutboxEntitlement interface {
+	EntitledLocked(tx ReadTx, n core.OutboxNotification, userID string) bool
+}

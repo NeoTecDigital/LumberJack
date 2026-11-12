@@ -52,47 +52,9 @@ func accessAuthorityFixture(t *testing.T) (*Server, string) {
 	for _, id := range []string{"manager", "reader", "editor"} {
 		s.forest.Users = append(s.forest.Users, core.User{ID: id, Username: id, Permissions: []core.Permission{core.ReadPermission}})
 	}
-	path := workTestCommand(t, s, "admin", workCommand{Command: "create", Path: "root", ClientID: "owned", Title: "Owned", Kind: "project"}, 200)["path"].(string)
+	path := recordTestCommand(t, s, "admin", recordCommand{Command: "create", Path: "root", ClientID: "owned", Title: "Owned", Kind: "project"}, 200)["path"].(string)
 	reviewedAccessGrant(t, s, "admin", path, "manager", 2, "item")
 	return s, path
-}
-
-// Observed red 2026-09-21: legacy share/shared creation returned 200; editor unlink
-// returned 200 and owner downgrade preview returned 200.
-func TestAccessLegacyAudienceMutationsRetired(t *testing.T) {
-	for _, permission := range []int{-1, 0, 1} {
-		t.Run(string(rune('2'+permission)), func(t *testing.T) {
-			s, path := accessAuthorityFixture(t)
-			workTestCommand(t, s, "manager", workCommand{Command: "share", Path: path, ClientID: "attack", Username: "admin", Permission: &permission}, 410)
-			node, _ := s.getNodeFromPath(path)
-			if !node.CheckPermission("admin", core.AdminPermission) {
-				t.Fatal("owner lost access")
-			}
-			request := map[string]interface{}{"path": path, "assignee_id": "admin", "permission": permission}
-			rec := post(t, s.handleAssignUser, "manager", request)
-			if rec.Code != 410 {
-				t.Fatalf("legacy assign returned %d: %s", rec.Code, rec.Body.String())
-			}
-		})
-	}
-	t.Run("shared creation", func(t *testing.T) {
-		s, path := accessAuthorityFixture(t)
-		node, _ := s.getNodeFromPath(path)
-		before := len(node.Children)
-		workTestCommand(t, s, "admin", workCommand{Command: "create", Path: path, ClientID: "unsafe", Title: "Unsafe", Kind: "idea", Shared: true}, 410)
-		if len(node.Children) != before {
-			t.Fatal("retired shared creation mutated children")
-		}
-		privatePath := workTestCommand(t, s, "admin", workCommand{Command: "create", Path: path, ClientID: "private", Title: "Private", Kind: "idea"}, 200)["path"].(string)
-		private, _ := s.getNodeFromPath(privatePath)
-		if private.CheckPermission("manager", core.ReadPermission) {
-			t.Fatal("private create inherited audience")
-		}
-	})
-	t.Run("legacy chat", func(t *testing.T) {
-		s, path := accessAuthorityFixture(t)
-		workTestCommand(t, s, "admin", workCommand{Command: "chat", Path: path, ClientID: "chat", Username: "reader"}, 410)
-	})
 }
 
 func TestAccessOwnerCannotBeDowngradedAndStaleReviewFails(t *testing.T) {
@@ -120,8 +82,8 @@ func TestAccessOwnerCannotBeDowngradedAndStaleReviewFails(t *testing.T) {
 func unlinkAuthorityFixture(t *testing.T) (*Server, string, string, string) {
 	t.Helper()
 	s, parent := accessAuthorityFixture(t)
-	other := workTestCommand(t, s, "admin", workCommand{Command: "create", Path: "root", ClientID: "other", Title: "Other", Kind: "project"}, 200)["path"].(string)
-	child := workTestCommand(t, s, "admin", workCommand{Command: "create", Path: other, ClientID: "child", Title: "Child", Kind: "idea"}, 200)["path"].(string)
+	other := recordTestCommand(t, s, "admin", recordCommand{Command: "create", Path: "root", ClientID: "other", Title: "Other", Kind: "project"}, 200)["path"].(string)
+	child := recordTestCommand(t, s, "admin", recordCommand{Command: "create", Path: other, ClientID: "child", Title: "Child", Kind: "idea"}, 200)["path"].(string)
 	reviewedAccessGrant(t, s, "admin", parent, "reader", 1, "ongoing")
 	reviewedAccessGrant(t, s, "admin", parent, "editor", 1, "item")
 	reviewedAccessGrant(t, s, "admin", child, "editor", 1, "item")
@@ -194,7 +156,7 @@ func TestAccessUnlinkRequiresReviewAndPreservesIndependentGrant(t *testing.T) {
 
 func TestAccessTopologyWithoutAudienceChangeNeedsOnlyEdit(t *testing.T) {
 	s, parent := accessAuthorityFixture(t)
-	child := workTestCommand(t, s, "admin", workCommand{Command: "create", Path: "root", ClientID: "editable", Title: "Editable", Kind: "idea"}, 200)["path"].(string)
+	child := recordTestCommand(t, s, "admin", recordCommand{Command: "create", Path: "root", ClientID: "editable", Title: "Editable", Kind: "idea"}, 200)["path"].(string)
 	for _, path := range []string{parent, child} {
 		reviewedAccessGrant(t, s, "admin", path, "editor", 1, "item")
 	}

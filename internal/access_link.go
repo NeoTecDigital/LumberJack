@@ -87,7 +87,7 @@ func (s *Server) linkAccessPreviewLocked(request accessRequest, userID string) (
 		node := original.nodes[id]
 		after := simulated.nodes[id]
 		for _, account := range s.forest.Users {
-			beforePermission, afterPermission := workPermission(node, account.ID), workPermission(after, account.ID)
+			beforePermission, afterPermission := highestPermission(node, account.ID), highestPermission(after, account.ID)
 			if afterPermission == beforePermission {
 				continue
 			}

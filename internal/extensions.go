@@ -32,6 +32,9 @@ type extensionSet struct {
 	configurables  map[string]extension.Configurable // by config part
 	secondFactor   extension.SecondFactor            // at most one
 	listeners      []extension.OutboxListener
+	entitlements   []extension.OutboxEntitlement
+	routes         []extensionRoute // registration order
+	presentation   map[string]bool  // metadata keys whose changes are not news
 }
 
 // ExtensionSetIdentity names an extension set: its names in registration order. A runtime is shared
@@ -72,7 +75,7 @@ func engineClaims() extensionClaims {
 	}
 	_ = claims.claim("root key", "children", "the engine")
 	_ = claims.claim("node key", "children", "the engine")
-	for _, name := range jsonFieldNames(reflect.TypeOf(core.CorrespondenceState{})) {
+	for _, name := range jsonFieldNames(reflect.TypeOf(core.Outbox{})) {
 		_ = claims.claim("outbox key", name, "the engine")
 	}
 	for _, part := range engineConfigParts {
@@ -184,7 +187,7 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 	if err != nil {
 		return err
 	}
-	set := &extensionSet{specs: specs, configurables: map[string]extension.Configurable{}}
+	set := &extensionSet{specs: specs, configurables: map[string]extension.Configurable{}, presentation: map[string]bool{}}
 	for index, ext := range exts {
 		instance, err := ext.Attach(&extensionHost{server: server, name: specs[index].Name})
 		if err == nil && instance == nil {
@@ -199,6 +202,10 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 			_ = set.close(context.Background())
 			return err
 		}
+	}
+	if err := set.collectRoutes(server, specs); err != nil {
+		_ = set.close(context.Background())
+		return err
 	}
 	server.extensions = set
 	return nil
@@ -218,6 +225,12 @@ func (set *extensionSet) capabilities(spec extension.Spec, instance extension.In
 	}
 	if listener, ok := instance.(extension.OutboxListener); ok {
 		set.listeners = append(set.listeners, listener)
+	}
+	if entitlement, ok := instance.(extension.OutboxEntitlement); ok {
+		set.entitlements = append(set.entitlements, entitlement)
+	}
+	for _, key := range spec.PresentationMetadata {
+		set.presentation[key] = true
 	}
 	configurable, ok := instance.(extension.Configurable)
 	if len(spec.ConfigParts) > 0 && !ok {

@@ -168,7 +168,7 @@ func (s *Server) accessRecipients(node *core.Node, exclude string) []map[string]
 		if user.ID == exclude {
 			continue
 		}
-		if permission := workPermission(node, user.ID); permission >= 0 {
+		if permission := highestPermission(node, user.ID); permission >= 0 {
 			recipients = append(recipients, map[string]interface{}{"id": user.ID, "username": user.Username, "permission": permission})
 		}
 	}
@@ -250,8 +250,12 @@ func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
 				// checks current rights again on delivery and notification reads.
 				graph := s.accessGraphLocked()
 				if root := graph.nodes[grant.RootID]; root != nil && grant.RecipientID != userID && root.CheckPermission(grant.RecipientID, core.ReadPermission) {
-					profile, _ := s.forest.GetUserProfile(grant.RecipientID)
-					s.enqueueCorrespondence(userID, WorkCommand{Command: "share", Username: profile.Username, ClientID: "access:" + request.Action + ":" + grant.ID}, graph.paths[root.ID])
+					recipients := []string{}
+					if grant.RecipientID != SystemUserID {
+						recipients = append(recipients, grant.RecipientID)
+					}
+					_ = s.enqueueOutboxLocked(core.OutboxChange{ID: outboxChangeID(root.ID, userID, "access:"+request.Action+":"+grant.ID),
+						PinID: root.ID, Path: s.canonicalPath(graph.paths[root.ID]), Actor: userID, Operation: "share", Recipients: recipients, Direct: true})
 				}
 				result = map[string]interface{}{"grant_id": grant.ID, "applied": true}
 				return nil
@@ -272,7 +276,7 @@ func (s *Server) stopRevokedAccessTimer(node *core.Node, recipient, actor string
 	if node.CheckPermission(recipient, core.WritePermission) {
 		return
 	}
-	active := workActive(node, recipient)
+	active := activeTimeEntry(node, recipient)
 	if active == nil {
 		return
 	}
@@ -284,4 +288,34 @@ func (s *Server) stopRevokedAccessTimer(node *core.Node, recipient, actor string
 		node.Events[eventID] = event
 	}
 	node.AddEntry(core.TimeEntryStop, map[string]interface{}{"event_id": eventID, "stopped_by": actor, "reason": "access_changed"}, recipient, "", "")
+}
+
+// activeTimeEntry is the recipient's open time span on a node: the last TimeEntryStart entry with no
+// TimeEntryStop after it, derived from the same sentinels the time routes write. The caller holds
+// the forest.
+func activeTimeEntry(node *core.Node, userID string) *core.Entry {
+	var active *core.Entry
+	for index := range node.Entries {
+		entry := &node.Entries[index]
+		if entry.UserID != userID {
+			continue
+		}
+		switch content, _ := entry.Content.(string); content {
+		case core.TimeEntryStart:
+			active = entry
+		case core.TimeEntryStop:
+			active = nil
+		}
+	}
+	return active
+}
+
+// highestPermission is the strongest permission a user holds on a node, or -1 for none.
+func highestPermission(node *core.Node, userID string) int {
+	for permission := core.AdminPermission; permission >= core.ReadPermission; permission-- {
+		if node.CheckPermission(userID, permission) {
+			return int(permission)
+		}
+	}
+	return -1
 }

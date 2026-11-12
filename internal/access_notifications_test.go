@@ -14,7 +14,7 @@ func TestAccessNotificationOnlyForAcceptedExplicitRecipient(t *testing.T) {
 	s, path := accessAuthorityFixture(t)
 	node, _ := s.getNodeFromPath(path)
 	s.forest.Subscriptions = map[string]map[string]bool{"manager": {node.ID: true}}
-	s.correspondenceState().Pending = map[string]core.CorrespondenceChange{}
+	s.correspondenceState().Pending = map[string]core.OutboxChange{}
 	request := map[string]interface{}{"action": "grant", "path": path, "username": "reader", "scope": "item", "permission": 0}
 	preview := accessTestCall(t, s, "admin", "/access/preview", request, 200)
 	request["revision"] = "stale"

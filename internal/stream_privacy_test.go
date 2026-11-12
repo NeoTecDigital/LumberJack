@@ -16,11 +16,11 @@ import (
 func TestStreamAdministratorCannotReadAnotherOwnersPrivateActivity(t *testing.T) {
 	s, admin, base := streamingServer(t)
 	s.forest.Users = append(s.forest.Users, core.User{ID: "private-owner", Username: "private-owner", Permissions: []core.Permission{core.WritePermission}})
-	path := workTestCommand(t, s, "private-owner", workCommand{Command: "create", Path: s.forest.Name, Title: "private", Kind: "idea", ClientID: "private"}, 200)["path"].(string)
+	path := recordTestCommand(t, s, "private-owner", recordCommand{Command: "create", Path: s.forest.Name, Title: "private", Kind: "idea", ClientID: "private"}, 200)["path"].(string)
 	reader := openStream(t, base, admin, "")
 	defer reader.close()
 	waitForSubscriber(t, s)
-	workTestCommand(t, s, "private-owner", workCommand{Command: "log", Path: path, Content: "other account content", ClientID: "private-log"}, 200)
+	recordTestCommand(t, s, "private-owner", recordCommand{Command: "log", Path: path, Content: "other account content", ClientID: "private-log"}, 200)
 	reader.silentFor(t, 50*time.Millisecond)
 }
 

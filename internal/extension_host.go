@@ -109,3 +109,8 @@ func (tx forestTx) EnqueueOutbound(message core.OutboundMessage) error {
 	state.Outbound[message.ID] = message
 	return nil
 }
+
+// Enqueue records a notification in the same snapshot as the change.
+func (tx forestTx) Enqueue(change core.OutboxChange) error {
+	return tx.server.enqueueOutboxLocked(change)
+}

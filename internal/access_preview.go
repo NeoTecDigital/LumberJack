@@ -157,7 +157,7 @@ func (s *Server) accessPreviewLocked(request accessRequest, userID string) (map[
 		if request.Action == "revoke" && (grant.RecipientID == userID || grant.RecipientID == accessOwner(target)) {
 			return nil, empty, nil, apiErrorf(409, "Owners cannot be removed or remove their own access")
 		}
-		current := workPermission(target, grant.RecipientID)
+		current := highestPermission(target, grant.RecipientID)
 		except := ""
 		var extra *core.AccessGrant
 		if request.Action == "revoke" {
