@@ -1,4 +1,4 @@
-package main
+package abi
 
 /*
 #include "lumberjack.h"
@@ -7,8 +7,7 @@ import "C"
 
 import "github.com/NeoTecDigital/LumberJack/embedded"
 
-//export ic_lj_events_publish
-func ic_lj_events_publish(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseEventsPublish(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	if reqLen > C.int64_t(C.LJ_PUBLISH_MAX_BYTES) {

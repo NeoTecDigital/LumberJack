@@ -3,7 +3,7 @@
 
 // The codec's one load-bearing property, which the C smoke cannot see: the wire names are the HTTP
 // surface's json names, because every document is routed through JSON rather than tagged twice.
-package main
+package abi
 
 import (
 	"strings"

@@ -10,7 +10,7 @@
 //
 // These are ordinary Go tests because cgo is not supported in test files; the table itself is plain
 // Go, so all of it is reachable from here.
-package main
+package abi
 
 import (
 	"sync"

@@ -8,7 +8,7 @@
 // size and a cap, and the tests drive those functions with the exact boundary values a real 2 GiB
 // document or a nonsense timeout would have produced. Each asserts the value the OLD width computed
 // (a negative length, an instant timeout) is NOT what comes back.
-package main
+package abi
 
 import (
 	"errors"

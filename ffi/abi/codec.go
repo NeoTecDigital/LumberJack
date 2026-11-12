@@ -9,7 +9,7 @@
 // one place. The cost is a caution the header states: on decode, the YAML parser resolves a bare
 // scalar in a `map[string]interface{}` (metadata) into an int, a nil or a timestamp before it is a
 // string. Typed fields never see this; metadata does, so identity-bearing metadata must be quoted.
-package main
+package abi
 
 import (
 	"bytes"

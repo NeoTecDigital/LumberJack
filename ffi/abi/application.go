@@ -1,4 +1,4 @@
-package main
+package abi
 
 /*
 #include <stdlib.h>
@@ -12,8 +12,7 @@ import (
 	"unsafe"
 )
 
-//export ic_lj_application_configure
-func ic_lj_application_configure(h C.lj_handle_t, req C.lj_cstr, n C.int64_t) (status C.lj_status_t) {
+func baseApplicationConfigure(h C.lj_handle_t, req C.lj_cstr, n C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, nil)
 	handle, ok := lookupHandle(uint64(h))
 	if !ok {
@@ -33,8 +32,7 @@ func ic_lj_application_configure(h C.lj_handle_t, req C.lj_cstr, n C.int64_t) (s
 	return statusOK
 }
 
-//export ic_lj_application_call
-func ic_lj_application_call(h C.lj_handle_t, req C.lj_cstr, n C.int64_t, out **C.char, outLen *C.int64_t) (status C.lj_status_t) {
+func baseApplicationCall(h C.lj_handle_t, req C.lj_cstr, n C.int64_t, out **C.char, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	if out == nil || outLen == nil {
 		return statusInvalid
@@ -80,5 +78,4 @@ func ic_lj_application_call(h C.lj_handle_t, req C.lj_cstr, n C.int64_t, out **C
 	return statusOK
 }
 
-//export ic_lj_application_free
-func ic_lj_application_free(out *C.char) { C.free(unsafe.Pointer(out)) }
+func baseApplicationFree(out *C.char) { C.free(unsafe.Pointer(out)) }

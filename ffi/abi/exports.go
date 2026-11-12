@@ -4,7 +4,7 @@
 // The thirteen exports. Each is `defer guard` then a thin translation to an embedded call: look up
 // the handle, copy the request, run, encode the answer. The engine's behaviour, its holds and its
 // persist all live below embedded; nothing here decides anything the HTTP surface does not.
-package main
+package abi
 
 /*
 #include "lumberjack.h"
@@ -17,10 +17,11 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/embedded"
+	"github.com/NeoTecDigital/LumberJack/internal"
+	"github.com/NeoTecDigital/LumberJack/types"
 )
 
-//export ic_lj_open
-func ic_lj_open(req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t) (status C.lj_status_t) {
+func baseOpen(req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t) (status C.lj_status_t) {
 	defer guard(&status, nil)
 
 	if outHandle == nil {
@@ -37,7 +38,8 @@ func ic_lj_open(req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t) (stat
 		return statusCodec
 	}
 
-	handle, err := embedded.OpenPath(r.Organization, r.DatabasePath, r.Name, r.Principal)
+	config := embedded.Config{Organization: r.Organization, Process: types.ProcessInfo{DatabasePath: r.DatabasePath, Name: r.Name}}
+	handle, err := embedded.OpenWith(config, r.Principal, registered()...)
 	if err != nil {
 		return openStatus(err)
 	}
@@ -58,12 +60,15 @@ func openStatus(err error) C.lj_status_t {
 		return statusLocked
 	case errors.Is(err, embedded.ErrUnguarded):
 		return statusUnguarded
+	case errors.Is(err, embedded.ErrExtensionConflict):
+		return statusConflict
+	case errors.Is(err, internal.ErrExtensionSet):
+		return statusInvalid
 	}
 	return statusInternal
 }
 
-//export ic_lj_adopt
-func ic_lj_adopt(req C.lj_cstr, reqLen C.int64_t) (status C.lj_status_t) {
+func baseAdopt(req C.lj_cstr, reqLen C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, nil)
 
 	body, bad := take(req, reqLen)
@@ -93,8 +98,7 @@ func adoptStatus(err error) C.lj_status_t {
 	return statusInternal
 }
 
-//export ic_lj_close
-func ic_lj_close(h C.lj_handle_t) (status C.lj_status_t) {
+func baseClose(h C.lj_handle_t) (status C.lj_status_t) {
 	defer guard(&status, nil)
 
 	// A miss is LJ_OK, not an error: closing twice, or closing a token that never opened, is benign.
@@ -109,71 +113,61 @@ func ic_lj_close(h C.lj_handle_t) (status C.lj_status_t) {
 	return statusOK
 }
 
-//export ic_lj_node_create
-func ic_lj_node_create(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseNodeCreate(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, mutation, opNodeCreate)
 }
 
-//export ic_lj_event_plan
-func ic_lj_event_plan(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseEventPlan(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, mutation, opEventPlan)
 }
 
-//export ic_lj_event_start
-func ic_lj_event_start(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseEventStart(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, mutation, opEventStart)
 }
 
-//export ic_lj_event_append
-func ic_lj_event_append(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseEventAppend(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, mutation, opEventAppend)
 }
 
-//export ic_lj_event_end
-func ic_lj_event_end(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseEventEnd(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, mutation, opEventEnd)
 }
 
-//export ic_lj_event_entries
-func ic_lj_event_entries(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseEventEntries(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, read, opEventEntries)
 }
 
-//export ic_lj_query
-func ic_lj_query(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseQuery(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, read, opQuery)
 }
 
-//export ic_lj_aggregate
-func ic_lj_aggregate(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseAggregate(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, read, opAggregate)
 }
 
-//export ic_lj_forest
-func ic_lj_forest(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseForest(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 	return runOp(h, req, reqLen, out, outCap, outLen, read, opForest)
 }
 
-//export ic_lj_stream_poll
-func ic_lj_stream_poll(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
+func baseStreamPoll(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t,
 	out *C.char, outCap C.int64_t, outLen *C.int64_t) (status C.lj_status_t) {
 	defer guard(&status, outLen)
 

@@ -7,7 +7,7 @@
 // here — so ic_lj_open and ic_lj_adopt themselves are driven from ffi/ctest/smoke.c, one with a
 // second process holding the flock. What THIS proves is the mapping those exports call: a real
 // refusal out of embedded, through openStatus and adoptStatus, to the status the header documents.
-package main
+package abi
 
 import (
 	"fmt"

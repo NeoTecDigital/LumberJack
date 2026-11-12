@@ -27,10 +27,10 @@ BASE_EXPORTS := ic_lj_abi_version ic_lj_echo ic_lj_open ic_lj_adopt ic_lj_close 
 # failure without them is an undefined symbol three steps away from its cause.
 CLIBS   := -lpthread -ldl -lresolv
 
-.PHONY: rollback-check
+.PHONY: rollback-check product-archive-example
 .PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check clean
 
-all: test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check rollback-check
+all: test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check product-archive-example rollback-check
 
 test:
 	@$(GO) test ./... -count=1
@@ -114,3 +114,16 @@ rollback-check: | $(BUILD)
 	@cd $(ROLLBACK)/cut && LJ_ROLLBACK_DIR=$(abspath $(ROLLBACK)/stores) $(GO) test -run '^TestRollbackStoresOpenAtTheCut$$' -count=1 -v ./internal > $(abspath $(ROLLBACK))/read.log 2>&1 || { grep -E -- '--- |_test.go' $(abspath $(ROLLBACK))/read.log; exit 1; }
 	@git worktree remove --force $(ROLLBACK)/cut
 	@echo "  rollback: the cut build ($(CUT)) opens $$(grep -c -- '--- PASS: TestRollbackStoresOpenAtTheCut/' $(ROLLBACK)/read.log) stores this build wrote as expected"
+
+# A product archive in miniature (docs/extension-api.md §6): ffi/testdata/example is a main package
+# of the generated base wrappers, one export of its own and an extension registered in init. It is
+# built as ONE c-archive and driven from C, which proves the composition and that the product export
+# resolves handles ic_lj_open issued; its exports are the nineteen base functions plus its own.
+EXAMPLE_ARCHIVE := $(BUILD)/libexample.a
+product-archive-example: | $(BUILD)
+	@CGO_ENABLED=1 $(GO) build -buildmode=c-archive -trimpath -o $(EXAMPLE_ARCHIVE) ./ffi/testdata/example
+	@$(CC) $(CFLAGS) -I ffi -I ffi/testdata/example -I $(BUILD) -o $(BUILD)/example ffi/ctest/example.c $(EXAMPLE_ARCHIVE) $(CLIBS)
+	@$(BUILD)/example
+	@test "$$($(NM) -g --defined-only $(EXAMPLE_ARCHIVE) | awk '$$2 == "T" && $$3 ~ /^ic_lj_/ { print $$3 }' | sort -u | wc -l)" = 20 || { \
+		echo "ERROR: the example archive does not export the base plus its one export"; exit 1; }
+	@echo "  example: a product archive exports the 19 base functions and its own, over one handle table"

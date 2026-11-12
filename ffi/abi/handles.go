@@ -8,7 +8,7 @@
 // runtime — a lookup for it simply misses, and the caller is told LJ_BAD_HANDLE rather than handed
 // somebody else's forest. A close is lenient (a miss is LJ_OK, so closing twice is fine); every data
 // call is strict (a miss is LJ_BAD_HANDLE), which is the asymmetry the header describes.
-package main
+package abi
 
 import (
 	"sync"

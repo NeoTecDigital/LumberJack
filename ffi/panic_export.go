@@ -16,8 +16,7 @@ package main
 */
 import "C"
 
+import "github.com/NeoTecDigital/LumberJack/ffi/abi"
+
 //export ic_lj__panic_for_test
-func ic_lj__panic_for_test() (status C.lj_status_t) {
-	defer guard(&status, nil)
-	panic("forced panic to exercise the recover guard")
-}
+func ic_lj__panic_for_test() C.lj_status_t { return C.lj_status_t(abi.PanicForTest()) }
