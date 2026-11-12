@@ -2,7 +2,6 @@
 package internal
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -130,56 +129,42 @@ func (server *Server) readForest(read func()) {
 // refused under the hold had no effect when the forest still has the revision it had before; one
 // that could not be made durable is unknown to the fence; one that landed is finished.
 func (server *Server) changeForest(change func() error) error {
-	_, err := server.changeForestCommit(change)
+	_, err := server.changeForestOp(engineWriteOp(), change)
 	return err
 }
 
-// changeForestCommit is changeForest answering where the change became durable: the snapshot the
+// changeForestOp is the one write path, answering where the change became durable: the snapshot the
 // state writer published (this one, or a newer one holding it), or the hot-log record in tiered mode.
-func (server *Server) changeForestCommit(change func() error) (extension.Commit, error) {
-	permit, before, err := server.beginForestWrite()
+//
+// The permit is taken BEFORE the hold and settled AFTER the outcome is known, with neither the
+// forest nor the writer held (docs/extension-api.md §4.1, §5): Refused when the change returned an
+// error under the hold, Unknown when it could not be made durable, Durable when it landed.
+func (server *Server) changeForestOp(op extension.WriteOp, change func() error) (extension.Commit, error) {
+	permit, before, err := server.acquirePermit(op)
 	if err != nil {
 		return extension.Commit{}, err
 	}
-	land, err := server.stageChange(change)
+	land, err := server.stageChange(op, change)
 	if err != nil {
-		permit.noEffect(permit.fenced() && before != "" && before == server.sourceForestRevision())
+		unchanged := permit.WantsRevision() && before != "" && before == server.forestRevision()
+		permit.Settle(extension.Outcome{State: extension.WriteRefused, Unchanged: unchanged, Err: err})
 		return extension.Commit{}, err
 	}
 	commit, err := land()
 	if err != nil {
-		permit.finish(false, true)
+		permit.Settle(extension.Outcome{State: extension.WriteUnknown, Err: err})
 		return extension.Commit{}, err
 	}
-	permit.finish(true, true)
+	permit.Settle(extension.Outcome{State: extension.WriteDurable, Commit: commit})
 	return commit, nil
-}
-
-// beginForestWrite takes the source-fence permit an ordinary write holds, and answers the forest's
-// revision before the change when the fence will ask for it. Only a FENCED permit reads that
-// answer (a legacy one is released whatever it is told), so only a fenced write pays for encoding
-// the whole forest to name it.
-func (server *Server) beginForestWrite() (*sourceOrdinaryPermit, string, error) {
-	operationID, err := newDomainID()
-	if err != nil {
-		return nil, "", sourceUnavailable()
-	}
-	permit, err := server.sourceFence().beginOrdinaryWrite(context.Background(), "ordinary-forest/"+operationID)
-	if err != nil {
-		return nil, "", err
-	}
-	if !permit.fenced() {
-		return permit, "", nil
-	}
-	return permit, server.sourceForestRevision(), nil
 }
 
 // stageChange makes the change under the exclusive hold, in whichever persistence holds the
 // forest, and answers what makes it durable with the hold released: the state file in snapshot
 // mode, the change's log record in tiered mode.
-func (server *Server) stageChange(change func() error) (func() (extension.Commit, error), error) {
+func (server *Server) stageChange(op extension.WriteOp, change func() error) (func() (extension.Commit, error), error) {
 	if server.tier != nil {
-		seq, err := server.stageChangeLocked(change)
+		seq, err := server.stageChangeLocked(op, change)
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +172,7 @@ func (server *Server) stageChange(change func() error) (func() (extension.Commit
 			return extension.Commit{Tiered: true, Seq: seq, Path: server.statePath()}, server.landTiered(seq)
 		}, nil
 	}
-	snapshot, err := server.applyChangeLocked(change)
+	snapshot, err := server.applyChangeLocked(op, change)
 	if err != nil {
 		return nil, err
 	}
@@ -211,11 +196,11 @@ func (server *Server) landSnapshot(snapshot stateSnapshot) (extension.Commit, er
 // exclusive hold, and answers the snapshot the caller must make durable.
 //
 // The hold ends when this returns. Nothing below it may touch the disk.
-func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, error) {
+func (server *Server) applyChangeLocked(op extension.WriteOp, change func() error) (stateSnapshot, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
 
-	if err := server.runChangeLocked(change); err != nil {
+	if err := server.runChangeLocked(op, change); err != nil {
 		return stateSnapshot{}, err
 	}
 
@@ -227,14 +212,19 @@ func (server *Server) applyChangeLocked(change func() error) (stateSnapshot, err
 	return snapshot, nil
 }
 
-// runChangeLocked runs a change and everything that brackets a change under the hold: the
-// staged-scope protection is captured before it and verified after it, the access grants are
-// refreshed, and the hub is told what changed, from a before-image of the forest. The caller holds
-// the forest exclusively. Both persistences come through here, so neither can make durable a
-// change the protection refused.
-func (server *Server) runChangeLocked(change func() error) error {
-	protected, err := server.captureStagedProtectionLocked()
+// runChangeLocked runs a change and everything that brackets a change under the hold: the built-in
+// owned-subtree guard is captured first and verified last, the write hooks bracket the change in
+// registration order, the access grants are refreshed, and the hub is told what changed, from a
+// before-image of the forest. The caller holds the forest exclusively. Both persistences come
+// through here, so neither can make durable a change the guard or a hook refused.
+func (server *Server) runChangeLocked(op extension.WriteOp, change func() error) error {
+	guard, err := server.ownedGuard().captureLocked(op)
 	if err != nil {
+		return err
+	}
+	afters, err := server.beforeHooksLocked(op)
+	if err != nil {
+		guard.restoreLocked()
 		return err
 	}
 	var before *correspondenceSnapshot
@@ -243,7 +233,11 @@ func (server *Server) runChangeLocked(change func() error) error {
 	}
 
 	changeErr := change()
-	if err := server.verifyStagedProtectionLocked(protected); err != nil {
+	if err := server.afterHooksLocked(afters, changeErr); err != nil {
+		guard.restoreLocked()
+		return err
+	}
+	if err := guard.verifyLocked(); err != nil {
 		return apiErrorf(http.StatusForbidden, "%v", err)
 	}
 	if changeErr != nil {

@@ -56,7 +56,7 @@ func (server *Server) walkScope(scope string, depth *int, visitor func(visit)) e
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
-		if isStagedNode(current.node) {
+		if server.hiddenLocked(current.node) {
 			continue
 		}
 		visitor(current)
@@ -65,13 +65,13 @@ func (server *Server) walkScope(scope string, depth *int, visitor func(visit)) e
 			continue
 		}
 
-		queue = appendVisitChildren(queue, current, visited)
+		queue = appendVisitChildren(queue, current, visited, server.hiddenLocked)
 	}
 	return nil
 }
 
-func appendVisitChildren(queue []visit, current visit, visited map[string]bool) []visit {
-	for _, child := range childrenByName(current.node) {
+func appendVisitChildren(queue []visit, current visit, visited map[string]bool, hidden func(*core.Node) bool) []visit {
+	for _, child := range childrenByName(current.node, hidden) {
 		if visited[child.ID] {
 			continue
 		}
@@ -87,10 +87,10 @@ func appendVisitChildren(queue []visit, current visit, visited map[string]bool) 
 //
 // Ranging a Go map is deliberately randomized, so without this the path a shared node is reported
 // under — and therefore the order of a page — differs between two identical requests.
-func childrenByName(node *core.Node) []*core.Node {
+func childrenByName(node *core.Node, hidden func(*core.Node) bool) []*core.Node {
 	children := make([]*core.Node, 0, len(node.Children))
 	for _, child := range node.Children {
-		if isStagedNode(child) {
+		if hidden(child) {
 			continue
 		}
 		children = append(children, child)

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/extension"
 	"github.com/NeoTecDigital/LumberJack/internal/persist"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -214,11 +215,11 @@ func (server *Server) landTiered(seq uint64) error {
 // stageChangeLocked runs the change under the exclusive hold and stages its record: the change set
 // a comparison of the whole forest against its last encoding finds. It answers the record's
 // sequence, or zero when the change touched nothing.
-func (server *Server) stageChangeLocked(change func() error) (uint64, error) {
+func (server *Server) stageChangeLocked(op extension.WriteOp, change func() error) (uint64, error) {
 	server.forestMutex.Lock()
 	defer server.forestMutex.Unlock()
 
-	if err := server.runChangeLocked(change); err != nil {
+	if err := server.runChangeLocked(op, change); err != nil {
 		return 0, err
 	}
 	body, err := server.tier.detectChangeSet(server.forest)

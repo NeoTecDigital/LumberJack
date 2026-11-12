@@ -131,7 +131,7 @@ func TestChildrenAreWalkedInNameOrder(t *testing.T) {
 	}
 
 	walked := []string{}
-	for _, child := range childrenByName(parent) {
+	for _, child := range childrenByName(parent, server.hiddenLocked) {
 		walked = append(walked, "ordered/"+child.Name)
 	}
 

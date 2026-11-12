@@ -135,7 +135,7 @@ func BenchmarkForestProjectionOverALadderOfDiamonds(b *testing.B) {
 			b.ReportMetric(float64(countNodes(server.forest)), "nodes")
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				view := newNodeView(server.forest, userID)
+				view := newNodeView(server.forest, userID, server.hiddenLocked)
 				if view.ID == "" {
 					b.Fatal("the projection produced nothing")
 				}
@@ -161,7 +161,7 @@ func BenchmarkForestProjectionOverAWideForest(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				newNodeView(server.forest, userID)
+				newNodeView(server.forest, userID, server.hiddenLocked)
 			}
 		})
 	}
@@ -308,7 +308,7 @@ func TestMarshalAndProjectionGrowWithNodesNotPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%d rungs: encodeState: %v", rungs, err)
 		}
-		view, err := json.Marshal(newNodeView(server.forest, userID))
+		view, err := json.Marshal(newNodeView(server.forest, userID, server.hiddenLocked))
 		if err != nil {
 			t.Fatalf("%d rungs: marshal the projection: %v", rungs, err)
 		}

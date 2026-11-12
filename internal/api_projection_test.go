@@ -209,7 +209,7 @@ func TestForestProjectionCopiesTheMapsItExposes(t *testing.T) {
 		Entries:  []core.Entry{{Content: "an event entry", Metadata: map[string]interface{}{"tag": "original"}}},
 	}
 
-	view, found := findNodeView(newNodeView(server.forest, userID), node.ID)
+	view, found := findNodeView(newNodeView(server.forest, userID, server.hiddenLocked), node.ID)
 	if !found {
 		t.Fatalf("The projection did not contain the fixture node")
 	}

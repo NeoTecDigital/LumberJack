@@ -32,8 +32,8 @@ func compareHashes(a, b []byte) bool {
 func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	segments := server.segmentsFrom(path)
 	if len(segments) == 0 {
-		if isStagedNode(server.forest) {
-			return nil, errStagedProtected
+		if server.hiddenLocked(server.forest) {
+			return nil, errOwnedNode
 		}
 		return server.forest, nil
 	}
@@ -48,8 +48,8 @@ func (server *Server) getNodeFromPath(path string) (*core.Node, error) {
 	if !found {
 		return nil, fmt.Errorf("node not found: %s", path)
 	}
-	if isStagedNode(node) {
-		return nil, errStagedProtected
+	if server.hiddenLocked(node) {
+		return nil, errOwnedNode
 	}
 
 	// Update cache after fetch

@@ -80,8 +80,8 @@ func (server *Server) getFromCache(segments []string) (*core.Node, error) {
 	}
 
 	if node, found := walkNames(server.cache.Forest, segments); found {
-		if isStagedNode(node) {
-			return nil, errStagedProtected
+		if server.hiddenLocked(node) {
+			return nil, errOwnedNode
 		}
 		return node, nil
 	}
@@ -149,7 +149,7 @@ func (server *Server) queuedNodeView(path, userID string) (nodeView, error) {
 		Callback: func(forest *core.Node) interface{} {
 			var view nodeView
 			if err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
-				view = newNodeView(node, userID)
+				view = newNodeView(node, userID, server.hiddenLocked)
 				return nil
 			}); err != nil {
 				return err

@@ -181,7 +181,7 @@ func (server *Server) parentForDeletion(node *core.Node, path string) (*core.Nod
 func (server *Server) doomedFor(node *core.Node, path, mode string) ([]visit, error) {
 	at := visit{node: node, path: server.canonicalPath(path)}
 	if mode == deleteModeCascade {
-		return cascadeFrom(at), nil
+		return cascadeFrom(at, server.hiddenLocked), nil
 	}
 
 	if held := heldBy(node); held != "" {
@@ -223,7 +223,7 @@ func heldBy(node *core.Node) string {
 // second pass, and each edge is examined once per parent.
 //
 // The caller must hold the forest exclusively.
-func cascadeFrom(root visit) []visit {
+func cascadeFrom(root visit, hidden func(*core.Node) bool) []visit {
 	doomed := map[string]bool{root.node.ID: true}
 	found := []visit{root}
 	queue := []visit{root}
@@ -232,7 +232,7 @@ func cascadeFrom(root visit) []visit {
 		at := queue[0]
 		queue = queue[1:]
 
-		for _, child := range childrenByName(at.node) {
+		for _, child := range childrenByName(at.node, hidden) {
 			if doomed[child.ID] || !allParentsDoomed(child, doomed) {
 				continue
 			}

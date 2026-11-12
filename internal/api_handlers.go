@@ -154,7 +154,7 @@ func (server *Server) handleGetForest(w http.ResponseWriter, r *http.Request) {
 func (server *Server) forestView(userID string) nodeView {
 	var view nodeView
 	server.readForest(func() {
-		view = newNodeView(server.forest, userID)
+		view = newNodeView(server.forest, userID, server.hiddenLocked)
 	})
 	return view
 }

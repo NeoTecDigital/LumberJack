@@ -35,6 +35,10 @@ type extensionSet struct {
 	entitlements   []extension.OutboxEntitlement
 	routes         []extensionRoute // registration order
 	presentation   map[string]bool  // metadata keys whose changes are not news
+	markers        []string         // ownership markers: the compatibility marker, then each Spec's
+	filters        []extension.VisibilityFilter
+	hooks          []extension.WriteHook
+	permits        extension.PermitProvider // at most one
 }
 
 // ExtensionSetIdentity names an extension set: its names in registration order. A runtime is shared
@@ -188,6 +192,7 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 		return err
 	}
 	set := &extensionSet{specs: specs, configurables: map[string]extension.Configurable{}, presentation: map[string]bool{}}
+	set.markers = set.ownedMarkers()
 	for index, ext := range exts {
 		instance, err := ext.Attach(&extensionHost{server: server, name: specs[index].Name})
 		if err == nil && instance == nil {
@@ -228,6 +233,18 @@ func (set *extensionSet) capabilities(spec extension.Spec, instance extension.In
 	}
 	if entitlement, ok := instance.(extension.OutboxEntitlement); ok {
 		set.entitlements = append(set.entitlements, entitlement)
+	}
+	if filter, ok := instance.(extension.VisibilityFilter); ok {
+		set.filters = append(set.filters, filter)
+	}
+	if hook, ok := instance.(extension.WriteHook); ok {
+		set.hooks = append(set.hooks, hook)
+	}
+	if provider, ok := instance.(extension.PermitProvider); ok {
+		if set.permits != nil {
+			return fmt.Errorf("%w: %s is a second PermitProvider; at most one is registered", ErrExtensionSet, spec.Name)
+		}
+		set.permits = provider
 	}
 	for _, key := range spec.PresentationMetadata {
 		set.presentation[key] = true

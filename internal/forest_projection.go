@@ -50,11 +50,13 @@ import (
 type forestProjector struct {
 	userID  string
 	emitted map[string]bool
+	hidden  func(*core.Node) bool // the server's generic-read visibility rule
 }
 
-// newNodeView projects a node and everything beneath it that userID may read.
-func newNodeView(node *core.Node, userID string) nodeView {
-	projector := &forestProjector{userID: userID, emitted: map[string]bool{}}
+// newNodeView projects a node and everything beneath it that userID may read and hidden does not
+// hide.
+func newNodeView(node *core.Node, userID string, hidden func(*core.Node) bool) nodeView {
+	projector := &forestProjector{userID: userID, emitted: map[string]bool{}, hidden: hidden}
 	return projector.project(node)
 }
 
@@ -62,7 +64,7 @@ func newNodeView(node *core.Node, userID string) nodeView {
 //
 // The caller must hold the forest for reading.
 func (p *forestProjector) project(node *core.Node) nodeView {
-	if node == nil || isStagedNode(node) {
+	if node == nil || p.hidden(node) {
 		return nodeView{}
 	}
 	if p.emitted[node.ID] {
@@ -149,7 +151,7 @@ func (p *forestProjector) visibleChildren(node *core.Node) []*core.Node {
 // nodes below them. The seen set is per call and guards the descent against the cycles and the
 // diamonds a DAG has; it is NOT the emitted set, which spans the whole document.
 func (p *forestProjector) collectVisible(node *core.Node, seen map[string]bool, into *[]*core.Node) {
-	for _, child := range childrenByName(node) {
+	for _, child := range childrenByName(node, p.hidden) {
 		if seen[child.ID] {
 			continue
 		}

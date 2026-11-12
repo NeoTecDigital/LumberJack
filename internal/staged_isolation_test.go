@@ -86,7 +86,7 @@ func TestStagedLegacyCacheWalkAndProjectionCannotDiscloseScope(t *testing.T) {
 	if strings.Contains(strings.Join(visited, ","), "data-root") || strings.Contains(strings.Join(visited, ","), "record-a") {
 		t.Fatal("root-wide walker disclosed owned IDs")
 	}
-	projection, _ := json.Marshal(newNodeView(server.forest, "legacy-native"))
+	projection, _ := json.Marshal(newNodeView(server.forest, "legacy-native", server.hiddenLocked))
 	if strings.Contains(string(projection), "data-root") || strings.Contains(string(projection), "record-a") {
 		t.Fatalf("legacy recursive projection disclosed owned IDs: %s", projection)
 	}
@@ -184,7 +184,7 @@ func stagedTestNoLegacyOwnedDisclosure(t *testing.T, server *Server) {
 	if err := server.walkScope("", nil, func(at visit) { visited = append(visited, at.node.ID) }); err != nil {
 		t.Fatal(err)
 	}
-	projection, _ := json.Marshal(newNodeView(server.forest, "legacy-native"))
+	projection, _ := json.Marshal(newNodeView(server.forest, "legacy-native", server.hiddenLocked))
 	for _, id := range []string{"data-root", "record-a", "unregistered-owned-copy"} {
 		if strings.Contains(strings.Join(visited, ","), id) || strings.Contains(string(projection), id) {
 			t.Fatal("legacy traversal/projector disclosed owned copied content")

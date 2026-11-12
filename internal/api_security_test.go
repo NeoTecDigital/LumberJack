@@ -77,7 +77,7 @@ func TestProjectionDoesNotMutateTheForest(t *testing.T) {
 	server, _ := newStockServer(t)
 	before := server.forest.Users[0].Password
 
-	newNodeView(server.forest, adminID(t, server))
+	newNodeView(server.forest, adminID(t, server), server.hiddenLocked)
 
 	if after := server.forest.Users[0].Password; after != before {
 		t.Errorf("Projecting the forest changed the stored password from %q to %q", before, after)

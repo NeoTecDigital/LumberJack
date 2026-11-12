@@ -30,16 +30,17 @@ func (host *extensionHost) Read(fn func(extension.ReadTx) error) error {
 	return err
 }
 
-// Change runs fn as one change through the engine's write path. The operation identity reaches the
-// permit provider and the write hooks once they are called (docs/extension-api.md §4.1).
-func (host *extensionHost) Change(ctx context.Context, _ extension.WriteOp, fn func(extension.Tx) error) (extension.Commit, error) {
+// Change runs fn as one change through the engine's write path, with the operation identity the
+// permit provider and the write hooks see, its Origin set to this extension's name.
+func (host *extensionHost) Change(ctx context.Context, op extension.WriteOp, fn func(extension.Tx) error) (extension.Commit, error) {
 	if host.server.extensionsClosed.Load() {
 		return extension.Commit{}, errExtensionsClosed
 	}
 	if err := ctx.Err(); err != nil {
 		return extension.Commit{}, err
 	}
-	return host.server.changeForestCommit(func() error { return extensionError(fn(forestTx{server: host.server})) })
+	op.Origin = host.name
+	return host.server.changeForestOp(op, func() error { return extensionError(fn(forestTx{server: host.server})) })
 }
 
 func (host *extensionHost) Publish(kind, path string) {

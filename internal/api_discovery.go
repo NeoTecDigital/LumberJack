@@ -74,7 +74,7 @@ func (server *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 
 	var answer map[string]interface{}
 	err := server.readNode(path, userID, core.ReadPermission, func(node *core.Node) error {
-		answer = nodeDetail(node, server.canonicalPath(path))
+		answer = nodeDetail(node, server.canonicalPath(path), server.hiddenLocked)
 		return nil
 	})
 	if err != nil {
@@ -89,11 +89,11 @@ func (server *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 // nodeDetail projects one node and names its children without descending into them.
 //
 // The caller must hold the forest for reading.
-func nodeDetail(node *core.Node, path string) map[string]interface{} {
+func nodeDetail(node *core.Node, path string, hidden func(*core.Node) bool) map[string]interface{} {
 	summary := nodeCandidate(visit{node: node, path: path}).View.(nodeSummaryView)
 
 	children := make([]map[string]interface{}, 0, len(node.Children))
-	for _, child := range childrenByName(node) {
+	for _, child := range childrenByName(node, hidden) {
 		children = append(children, map[string]interface{}{
 			"id":   child.ID,
 			"name": child.Name,
