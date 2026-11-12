@@ -40,7 +40,7 @@ func hiddenFixture(t *testing.T) (*Server, extension.Host, string, []*core.Node)
 	}
 	admin := adminID(t, server)
 	var hidden []*core.Node
-	err := server.changeForest(func() error {
+	err := plantAndPersist(server, func() error {
 		for _, spec := range []struct {
 			name    string
 			receipt string
@@ -111,7 +111,7 @@ func TestHiddenNodeIsAbsentFromEveryGenericRead(t *testing.T) {
 			t.Errorf("/access/preview of %s answered %d", node.Name, code)
 		}
 	}
-	assertOutboxCaptureSkipsHidden(t, server, admin, hidden)
+	assertOutboxCaptureSkipsHidden(t, server, host, admin, hidden)
 	assertOwnerReadsItsNodes(t, host, hidden)
 }
 
@@ -143,8 +143,9 @@ func changesVisible(t *testing.T, server *Server, bearer string) []string {
 }
 
 // A subscriber to a hidden node is told nothing when it changes: the outbox capture walk is a
-// generic read too.
-func assertOutboxCaptureSkipsHidden(t *testing.T, server *Server, admin string, hidden []*core.Node) {
+// generic read too. The filtered node changes by an ordinary write and the extension's own node by
+// its owner's write; the compatibility-owned node cannot change by either, which the guard holds.
+func assertOutboxCaptureSkipsHidden(t *testing.T, server *Server, host extension.Host, admin string, hidden []*core.Node) {
 	t.Helper()
 	server.applicationHubEnabled.Store(true)
 	if err := server.changeForest(func() error {
@@ -156,13 +157,20 @@ func assertOutboxCaptureSkipsHidden(t *testing.T, server *Server, admin string, 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.changeForest(func() error {
-		for _, node := range hidden {
-			node.Metadata["title"] = "changed"
+	for _, node := range hidden {
+		var err error
+		switch node.Name {
+		case "filtered":
+			err = server.changeForest(func() error { node.Metadata["title"] = "changed"; return nil })
+		case "extension-owned":
+			_, err = host.Change(context.Background(), extension.WriteOp{Key: "own"}, func(extension.Tx) error {
+				node.Metadata["title"] = "changed"
+				return nil
+			})
 		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+		if err != nil {
+			t.Fatalf("%s did not change: %v", node.Name, err)
+		}
 	}
 	if pending := len(server.forest.Correspondence.Pending); pending != 0 {
 		t.Fatalf("changes to hidden nodes queued %d notifications", pending)

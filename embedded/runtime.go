@@ -33,14 +33,12 @@ import (
 // Its fields are set once at Open and never change except refs, which the registry mutex guards. The
 // server pointer is what two handles over one path SHARE.
 type Runtime struct {
-	sourceLifetime *personalSourceRuntimeLifetime
-	domainLifetime *domainRuntimeLifetime
-	server         *internal.Server
-	path           string   // canonical state path — the registry key; the flock is on its <state>.lock sidecar
-	lock           *os.File // the file description holding the sidecar flock, released on the last Close
-	epoch          uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
-	refs           int      // open handles over this runtime; guarded by registryMu
-	closed         chan struct{}
+	server *internal.Server
+	path   string   // canonical state path — the registry key; the flock is on its <state>.lock sidecar
+	lock   *os.File // the file description holding the sidecar flock, released on the last Close
+	epoch  uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
+	refs   int      // open handles over this runtime; guarded by registryMu
+	closed chan struct{}
 
 	// extensions names the extension set the runtime was opened with (internal.ExtensionSetIdentity);
 	// extended is whether it holds any. closing is set, under registryMu, when an extended runtime
@@ -129,10 +127,10 @@ func OpenWith(config Config, principal string, exts ...extension.Extension) (*Ha
 
 // runtimeOpenWait is what an Open of a closing runtime's path waits on, or nil to proceed.
 func runtimeOpenWait(rt *Runtime) chan struct{} {
-	if rt != nil && rt.closing != nil {
+	if rt != nil {
 		return rt.closing
 	}
-	return configuredOpenWait(rt)
+	return nil
 }
 
 func openRuntimeLocked(config Config, key, principal string, exts []extension.Extension) (*Handle, error) {
@@ -205,17 +203,6 @@ func (rt *Runtime) close() error {
 		rt.closing = make(chan struct{})
 		registryMu.Unlock()
 		return rt.closeExtendedRuntime()
-	}
-	if rt.domainLifetime != nil || rt.sourceLifetime != nil {
-		wait := make(chan struct{})
-		if rt.domainLifetime != nil {
-			rt.domainLifetime.closing = wait
-		}
-		if rt.sourceLifetime != nil {
-			rt.sourceLifetime.closing = wait
-		}
-		registryMu.Unlock()
-		return rt.closeConfiguredRuntime(wait)
 	}
 	defer registryMu.Unlock()
 	delete(registry, rt.path)

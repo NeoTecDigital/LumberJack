@@ -63,16 +63,12 @@ type APIResponse struct {
 }
 
 type Server struct {
-	nativeControl     atomic.Pointer[nativeControlRuntime]
-	sourceCoordinator atomic.Pointer[sourceCoordinator]
-	personalSource    atomic.Pointer[personalSource]
-	forest            *core.Node
-	cache             *Cache
-	apiQueue          *APIQueue
+	forest   *core.Node
+	cache    *Cache
+	apiQueue *APIQueue
 	// forestMutex is the ONE lock over the whole forest. Held exclusively across a mutation and
 	// the persist that acknowledges it; graph readers share it. See forest_lock.go.
 	forestMutex           forestViewRWMutex
-	domainSnapshots       domainSnapshotCache
 	applicationHubEnabled atomic.Bool
 	jwtConfig             JWTConfig
 	logger                types.Logger
@@ -90,10 +86,6 @@ type Server struct {
 	stateSeq uint64
 	// stateWriter makes snapshots durable with the forest UNHELD. See state_writer.go.
 	stateWriter *stateWriter
-	// Internal-only owned namespaces. Public/Activation admission is not configured here.
-	domainConfiguring bool
-	domain            *domainEngine
-	stagedScopes      map[string]*stagedScope
 	// tier is tiered persistence when the config asks for it, and nil in snapshot mode, where the
 	// stateWriter above is what makes a change durable. See persistence.go.
 	tier *tier

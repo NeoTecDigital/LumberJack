@@ -55,9 +55,6 @@ func (server *Server) loadFromFile(filename string) error {
 		server.logger.Info("Named %d entries that were written before entries had ids", named)
 	}
 
-	if err := server.restoreStagedScopes(filename); err != nil {
-		return err
-	}
 	if server.storageRewrite {
 		// The opt-in migration/re-wrap is atomic and completes before serving.
 		// A failed KMS request leaves the original file untouched and aborts startup.
@@ -211,7 +208,19 @@ func (server *Server) snapshotForest(filename string) (stateSnapshot, error) {
 // sequence number is assigned here, inside the same critical section as the encode, so that
 // sequence order is the order the forest actually passed through these states.
 func (server *Server) encodeStateLocked(filename string) (stateSnapshot, error) {
-	return server.encodeSnapshotLocked(filename, true)
+	// Tiered mode writes the state file only through its cold writer; a whole snapshot meant for
+	// the state writer is refused before it is built. See refuseWholeStateWriterUnderTier.
+	if err := server.refuseWholeStateWriterUnderTier("a whole-state snapshot"); err != nil {
+		return stateSnapshot{}, err
+	}
+	data, err := encodeState(server.forest)
+	if err != nil {
+		return stateSnapshot{}, err
+	}
+	hash := sha256.Sum256(data)
+	server.lastHash = append([]byte(nil), hash[:]...)
+	server.stateSeq++
+	return stateSnapshot{seq: server.stateSeq, hash: hash[:], data: data, path: filename}, nil
 }
 
 // commitState makes a snapshot durable and MUST be called with no hold on the forest.

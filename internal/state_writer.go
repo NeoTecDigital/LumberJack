@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"encoding/hex"
 	"fmt"
 	"sync"
 )
@@ -37,7 +36,6 @@ type stateSnapshot struct {
 	hash  []byte
 	data  []byte
 	path  string
-	pairs map[string]stagedPair
 	force bool
 }
 
@@ -63,10 +61,9 @@ type stateWriter struct {
 	// durableSeq and durableHash describe the file as it actually is. durableHash is what the
 	// unchanged-content skip is decided against, and it is cleared whenever a flush fails, so a
 	// failed write is never mistaken for bytes already on disk.
-	durableSeq   uint64
-	durableHash  []byte
-	durablePath  string
-	durablePairs map[string]stagedPair
+	durableSeq  uint64
+	durableHash []byte
+	durablePath string
 
 	// failedSeq and failedErr carry a flush failure back to every caller whose snapshot that
 	// flush was going to satisfy.
@@ -91,7 +88,6 @@ func (writer *stateWriter) markDurable(hash []byte) {
 	defer writer.mutex.Unlock()
 
 	writer.durableHash = hash
-	writer.durablePairs = nil // A read/hash is not an actual-publish paired witness.
 	writer.durablePath = ""
 }
 
@@ -151,20 +147,6 @@ func (writer *stateWriter) stampLocked(snapshot stateSnapshot) writerStamp {
 	return stamp
 }
 
-// commitPaired requires a witness from the actual successful published job.
-func (writer *stateWriter) commitPaired(snapshot stateSnapshot, pair stagedPair) (stagedDurableStamp, error) {
-	if pair.ScopeID == "" || !matchingStagedPair(snapshot.pairs, pair) {
-		return stagedDurableStamp{}, fmt.Errorf("snapshot lacks the required encoded pair")
-	}
-	writer.mutex.Lock()
-	defer writer.mutex.Unlock()
-
-	if err := writer.awaitLocked(snapshot); err != nil {
-		return stagedDurableStamp{}, err
-	}
-	return writer.pairedStamp(snapshot.path, &pair)
-}
-
 // awaitLocked stages the snapshot and flushes until it, or a newer snapshot holding it, is durable.
 // The caller holds writer.mutex; flush releases it around the disk write.
 func (writer *stateWriter) awaitLocked(snapshot stateSnapshot) error {
@@ -187,17 +169,6 @@ func (writer *stateWriter) awaitLocked(snapshot stateSnapshot) error {
 	}
 }
 
-func (writer *stateWriter) pairedStamp(path string, pair *stagedPair) (stagedDurableStamp, error) {
-	if pair == nil {
-		return stagedDurableStamp{}, nil
-	}
-	if writer.durablePath != path || !stateFileExists(path) || !matchingStagedPair(writer.durablePairs, *pair) {
-		return stagedDurableStamp{}, fmt.Errorf("newer durable snapshot does not prove the required pair")
-	}
-	return stagedDurableStamp{Sequence: writer.durableSeq, SnapshotHash: hex.EncodeToString(writer.durableHash),
-		Path: writer.durablePath, Pair: *pair}, nil
-}
-
 // stage records a snapshot as the next thing to write, and answers the sequence that has to become
 // durable before the change in it may be acknowledged.
 //
@@ -207,8 +178,7 @@ func (writer *stateWriter) stage(snapshot stateSnapshot) uint64 {
 	// disk, so it is only honest while the file it went to is still there. An install whose data
 	// directory was cleared underneath it was otherwise told every write succeeded while nothing
 	// was ever written.
-	if !snapshot.force && writer.durableHash != nil && compareHashes(writer.durableHash, snapshot.hash) && stateFileExists(snapshot.path) &&
-		equalStagedPairs(writer.durablePairs, snapshot.pairs) {
+	if !snapshot.force && writer.durableHash != nil && compareHashes(writer.durableHash, snapshot.hash) && stateFileExists(snapshot.path) {
 		return writer.durableSeq
 	}
 
@@ -240,14 +210,12 @@ func (writer *stateWriter) flush() {
 		writer.durableSeq = job.seq
 		writer.durableHash = job.hash
 		writer.durablePath = job.path
-		writer.durablePairs = job.pairs
 	} else {
 		writer.failedSeq = job.seq
 		writer.failedErr = err
 		// The file is no longer vouched for. Clearing the hash makes the next persist WRITE even
 		// if the forest still serializes to the bytes this attempt failed to publish.
 		writer.durableHash = nil
-		writer.durablePairs = nil
 	}
 	writer.settled.Broadcast()
 }

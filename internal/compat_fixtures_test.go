@@ -52,6 +52,17 @@ type compatManifestEntry struct {
 
 func compatHex(sum []byte) string { return hex.EncodeToString(sum) }
 
+// compatBareServer is a server over a directory with no install: an empty forest, a state writer,
+// nothing loaded. The fixtures are read into it.
+func compatBareServer(t *testing.T, directory string) *Server {
+	t.Helper()
+	server := &Server{logger: types.NewLogger(), cache: &Cache{},
+		config: types.ServerConfig{Process: types.ProcessInfo{Name: "compat", DatabasePath: directory}}}
+	server.stateWriter = newStateWriter(server.publishSnapshot)
+	server.forest = &core.Node{ID: "forest-id", Name: "forest", Children: map[string]*core.Node{}}
+	return server
+}
+
 func compatSHA(data []byte) string {
 	sum := sha256.Sum256(data)
 	return compatHex(sum[:])
@@ -141,7 +152,7 @@ func compatLoadedDocument(t *testing.T, entry compatManifestEntry, data []byte) 
 
 func compatLoadNested(t *testing.T, data []byte) []byte {
 	t.Helper()
-	server := stagedTestServer(t, t.TempDir())
+	server := compatBareServer(t, t.TempDir())
 	payload, err := server.readSealedPayload(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +167,7 @@ func compatLoadNested(t *testing.T, data []byte) []byte {
 func compatLoadEncrypted(t *testing.T, data []byte) []byte {
 	t.Helper()
 	compatUseFixtureKey(t)
-	server := stagedTestServer(t, t.TempDir())
+	server := compatBareServer(t, t.TempDir())
 	path := filepath.Join(t.TempDir(), "enc.ljstate")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)

@@ -112,3 +112,25 @@ type ownedGuardCapture interface {
 type ownedGuarder interface {
 	captureLocked(op extension.WriteOp) (ownedGuardCapture, error)
 }
+
+// permitProvider is the registered PermitProvider, or the open permit when there is none: with no
+// provider there is nothing to wait for and nothing to tell, so the permit asks for no revision and
+// its settlement goes nowhere.
+func (server *Server) permitProvider() extension.PermitProvider {
+	if server.extensions != nil && server.extensions.permits != nil {
+		return server.extensions.permits
+	}
+	return openPermits{}
+}
+
+type openPermits struct{}
+
+func (openPermits) Acquire(context.Context, extension.WriteOp) (extension.Permit, error) {
+	return openPermit{}, nil
+}
+
+type openPermit struct{}
+
+func (openPermit) WantsRevision() bool { return false }
+
+func (openPermit) Settle(extension.Outcome) {}

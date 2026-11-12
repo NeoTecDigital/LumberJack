@@ -94,7 +94,7 @@ func compatBannerOf(t *testing.T, path string) string {
 // installs the forest it holds.
 func compatOpenFixture(t *testing.T, name string) *Server {
 	t.Helper()
-	server := stagedTestServer(t, t.TempDir())
+	server := compatBareServer(t, t.TempDir())
 	path := filepath.Join(compatFixtureDir, name)
 	file, err := os.Open(path)
 	if err != nil {
@@ -151,11 +151,22 @@ func TestStateTwoRisesOnlyWithAReference(t *testing.T) {
 	}
 }
 
-// The mark the compatibility table carries is the one a stored reference marshals to.
-func TestCompatReferenceRevisionIsTheDomainsRevision(t *testing.T) {
-	if compat.ACLReferenceRevision != domainACLReferenceRevision {
-		t.Fatalf("compat table %q, domain %q", compat.ACLReferenceRevision, domainACLReferenceRevision)
+// The mark the compatibility table carries is the one the STATE-3 fixture's references carry.
+func TestCompatReferenceMarkIsTheStoredReferences(t *testing.T) {
+	for _, entry := range compatManifest(t) {
+		if entry.Fixture != "plain-state3-acl-reference" {
+			continue
+		}
+		document, banner, err := compatPlainDocument(compatRead(t, entry))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(document, []byte(compat.ReferenceMark)) || banner != stateMagicReferences {
+			t.Fatalf("the STATE-3 fixture does not carry %s", compat.ReferenceMark)
+		}
+		return
 	}
+	t.Fatal("the STATE-3 fixture is missing")
 }
 
 func compatEnvelopeVersion(t *testing.T, sealed []byte) int {

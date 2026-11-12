@@ -15,6 +15,13 @@ PANIC_ARCHIVE := $(BUILD)/liblumberjack_panic.a
 # the Rust, C and Go readers, and this is the path from here to it.
 CANON_CORPUS ?= ../../crates/intercessor/tests/corpus/canon_corpus.json
 
+# The generic archive's exports, exactly: the base a product archive is a superset of
+# (docs/extension-api.md §6). nm-check refuses an archive with any other ic_lj_ export.
+BASE_EXPORTS := ic_lj_abi_version ic_lj_echo ic_lj_open ic_lj_adopt ic_lj_close ic_lj_node_create \
+	ic_lj_event_plan ic_lj_event_start ic_lj_event_append ic_lj_event_end ic_lj_event_entries \
+	ic_lj_query ic_lj_aggregate ic_lj_forest ic_lj_stream_poll ic_lj_events_publish \
+	ic_lj_application_configure ic_lj_application_call ic_lj_application_free
+
 # The libraries a cgo archive needs on Linux. pthread and dl fold into libc on glibc >= 2.34
 # and are no-ops there; they are named because an older glibc still wants them and the
 # failure without them is an undefined symbol three steps away from its cause.
@@ -49,6 +56,11 @@ nm-check: ffi
 	@if $(NM) $(ARCHIVE) | grep -q ic_lj__panic_for_test; then \
 		echo "ERROR: ic_lj__panic_for_test is present in the shipped archive"; exit 1; fi
 	@echo "  nm: the shipped archive carries no forced-panic export"
+	@$(NM) -g --defined-only $(ARCHIVE) | awk '$$2 == "T" && $$3 ~ /^ic_lj_/ { print $$3 }' | sort -u > $(BUILD)/exports.txt
+	@printf '%s\n' $(BASE_EXPORTS) | sort -u > $(BUILD)/exports.want
+	@diff -u $(BUILD)/exports.want $(BUILD)/exports.txt || { \
+		echo "ERROR: the shipped archive's exports are not exactly the base"; exit 1; }
+	@echo "  nm: the shipped archive exports exactly the $$(wc -l < $(BUILD)/exports.txt) base functions"
 
 # The ABI is real if a C program that knows nothing about Go can drive it.
 smoke: ffi

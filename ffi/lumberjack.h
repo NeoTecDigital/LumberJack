@@ -15,7 +15,16 @@
  *
  * NEVER LINK TWO GO c-archives INTO ONE BINARY. The Go runtime symbols collide, and
  * `--allow-multiple-definition` does not fix it — it produces two Go runtimes in one
- * address space, which is worse than a link error because it starts. */
+ * address space, which is worse than a link error because it starts.
+ *
+ * THE EXPORTS ARE THE BASE, AND ONLY THE BASE. The generic archive (`make ffi`) exports exactly
+ * the nineteen functions declared here, and `make nm-check` holds it to that list. The fourteen
+ * product exports the archive carried before the split — the eight ic_lj_domain_* and the six
+ * ic_lj_personal_source_* / ic_lj_native_* — are not in it: each product builds its own archive, a
+ * SUPERSET of this one, with its own header that includes this file (docs/extension-api.md §6),
+ * because one binary may hold one Go runtime and so one archive. A product links that archive and
+ * no other. The ABI is still 2: no base signature or status changed, and a caller built against
+ * the earlier header that calls a product export fails to LINK against this archive, not to run. */
 
 #include <stdint.h>
 
@@ -222,31 +231,6 @@ lj_status_t ic_lj_application_configure(lj_handle_t h, lj_cstr req, int64_t req_
 lj_status_t ic_lj_application_call(lj_handle_t h, lj_cstr req, int64_t req_len,
                                   char **out, int64_t *out_len);
 void ic_lj_application_free(char *out);
-/* Additive private domain ports. Outputs are owned and freed ONLY with domain_free.
- * Domain resolve never returns record bags or authority. Call returns a lease-only
- * BEGIN; authenticated adopt precedes receive. Control is handle-independent so a
- * delegated lease can finish after its original handle closes. No old ABI changes. */
-lj_status_t ic_lj_domain_configure(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_domain_resolve(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_domain_call(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_domain_enroll(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_domain_provision_root(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_domain_control(lj_cstr, int64_t, char **, int64_t *);
-/* Optional ABI2 cleanup: only after the host has recorded a completed finish.
- * Retires transient lease metadata, never durable receipts or revocation fences. */
-lj_status_t ic_lj_domain_ack_completion(lj_cstr, int64_t, char **, int64_t *);
-void ic_lj_domain_free(char *);
-
-/* PRIVATE source/control projections on SAME handle/forest/runtime. No login,
- * Role/account grants or public Application dispatch. Owned JSON output is
- * allocated once; free ONLY using personal_source_free. No size-driven replay. */
-/* Additive private canonical/control setup and pure retained seal verification. */
-lj_status_t ic_lj_native_control_configure(lj_handle_t h, lj_cstr req, int64_t n, char **out, int64_t *out_len);
-lj_status_t ic_lj_native_source_verify_seal(lj_cstr req, int64_t n, char **out, int64_t *out_len);
-lj_status_t ic_lj_personal_source_configure(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_personal_source_call(lj_handle_t, lj_cstr, int64_t, char **, int64_t *);
-lj_status_t ic_lj_personal_source_control(lj_cstr, int64_t, char **, int64_t *);
-void ic_lj_personal_source_free(char *);
 
 #ifdef __cplusplus
 }

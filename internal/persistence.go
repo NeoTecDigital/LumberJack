@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/NeoTecDigital/LumberJack/extension"
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/internal/persist"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -85,6 +86,9 @@ func (server *Server) openStore(table *stateTable) error {
 	if err := server.refuseTieredOnEncryptedStore(); err != nil {
 		return err
 	}
+	if err := refuseLegacyOwnedScopeUnderTier(table); err != nil {
+		return err
+	}
 	if table == nil {
 		table = &stateTable{Version: stateVersion, records: map[string]*nodeRecord{}, Nodes: map[string]json.RawMessage{}}
 	}
@@ -128,6 +132,22 @@ func (server *Server) installTable(table *stateTable) error {
 		return err
 	}
 	server.forest = forest
+	return nil
+}
+
+// refuseLegacyOwnedScopeUnderTier keeps the hot log away from a store holding an owned scope written
+// before the split. Its owners (compat.OwnedScopeMarker) run under snapshot persistence only, and a
+// store handed back to them must not have acquired a log they do not replay.
+func refuseLegacyOwnedScopeUnderTier(table *stateTable) error {
+	if table == nil {
+		return nil
+	}
+	for _, record := range table.records {
+		if _, owned := record.Node.CommandReceipts[compat.OwnedScopeMarker]; owned {
+			return fmt.Errorf("a store holding an owned scope is not available under persistence.mode %q: its "+
+				"owners run under snapshot persistence only; use %q", types.PersistenceTiered, types.PersistenceSnapshot)
+		}
+	}
 	return nil
 }
 

@@ -6,12 +6,13 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 )
 
 const bannerBeforeReferences = "LUMBERJACK-STATE-2\nthis file is a flat node table\n"
@@ -43,9 +44,14 @@ func readBeforeReferences(path string) error {
 	return err
 }
 
-func aclStateBanner(t *testing.T, f *enrollmentFixture) string {
+// aclReference is a stored ACL reference as the domain wrote one: its contract revision sorts first.
+func aclReference(rootID, kind string) map[string]interface{} {
+	return map[string]interface{}{"contractRevision": compat.ACLReferenceRevision, "rootId": rootID, "kind": kind}
+}
+
+func stateBannerOf(t *testing.T, path string) string {
 	t.Helper()
-	raw, err := os.ReadFile(f.server.statePath())
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,47 +61,46 @@ func aclStateBanner(t *testing.T, f *enrollmentFixture) string {
 	return string(raw[:len(stateMagic)])
 }
 
-func aclAssertOpenable(t *testing.T, f *enrollmentFixture, step string) {
+// referencesFixture is a stock server whose forest holds a record, and a way to put a reference on
+// it.
+func referencesFixture(t *testing.T) (*Server, func()) {
 	t.Helper()
-	if banner := aclStateBanner(t, f); banner != stateMagic {
-		t.Fatalf("%s: a forest with no reference has banner %q", step, banner)
-	}
-	if err := readBeforeReferences(f.server.statePath()); err != nil {
-		t.Fatalf("%s: the older build must still open this forest: %v", step, err)
-	}
-}
-
-func aclAssertRefused(t *testing.T, f *enrollmentFixture, step string) {
-	t.Helper()
-	if banner := aclStateBanner(t, f); banner != stateMagicReferences {
-		t.Fatalf("%s: a forest holding a reference has banner %q", step, banner)
-	}
-	if err := readBeforeReferences(f.server.statePath()); err == nil || !strings.Contains(err.Error(), "gzip: invalid header") {
-		t.Fatalf("%s: the older build must refuse this forest at the reader: %v", step, err)
-	}
-}
-
-func TestStateFileRefusesTheOlderBuildOnlyOnceAReferenceExists(t *testing.T) {
-	f := newEnrollmentFixture(t)
-	rootID := aclFixtureProvision(t, f, "unit-banner")
-	aclAssertOpenable(t, f, "provisioned")
-	aclSeedRecords(t, f, rootID, "copy", 2, aclFixtureCopy(t, f, rootID))
-	aclFixtureRestart(t, f)
-	aclAssertOpenable(t, f, "copies, reopened")
-	target := "unit-banner-member"
-	aclFixtureGrant(t, f, EnrollmentReadGrant, "unit-banner", rootID, target, "grant")
-	aclAssertOpenable(t, f, "copies, after a paired grant")
-	aclSeedRecords(t, f, rootID, "follower", 1, aclFixtureFollower(rootID))
-	if err := f.server.persistState(f.server.statePath()); err != nil {
+	server, _ := newStockServer(t)
+	if err := server.changeForest(addRootChild(server, "copy")); err != nil {
 		t.Fatal(err)
 	}
-	aclAssertRefused(t, f, "first reference")
-	aclFixtureRestart(t, f)
-	aclAssertRefused(t, f, "reopened by this build")
-	aclFixtureGrant(t, f, EnrollmentReadRevoke, "unit-banner", rootID, target, "revoke")
-	aclAssertRefused(t, f, "after a paired revoke")
-	if err := aclFixtureDecision(t, f, "unit-banner", target, "copy-000"); err == nil {
-		t.Fatal("revoke through the new banner left the member on a stored copy")
+	return server, func() {
+		if err := server.changeForest(func() error {
+			for _, child := range server.forest.Children {
+				child.Metadata = map[string]interface{}{"acl": aclReference(child.ID, "copy")}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The build before references opens a forest with none, and refuses one holding a reference at the
+// reader, before any data is read; this build reads both.
+func TestStateFileRefusesTheOlderBuildOnlyOnceAReferenceExists(t *testing.T) {
+	server, addReference := referencesFixture(t)
+	if banner := stateBannerOf(t, server.statePath()); banner != stateMagic {
+		t.Fatalf("a forest with no reference has banner %q", banner)
+	}
+	if err := readBeforeReferences(server.statePath()); err != nil {
+		t.Fatalf("the older build must still open this forest: %v", err)
+	}
+	addReference()
+	if banner := stateBannerOf(t, server.statePath()); banner != stateMagicReferences {
+		t.Fatalf("a forest holding a reference has banner %q", banner)
+	}
+	if err := readBeforeReferences(server.statePath()); err == nil || !strings.Contains(err.Error(), "gzip: invalid header") {
+		t.Fatalf("the older build must refuse this forest at the reader: %v", err)
+	}
+	reloaded := reloadServer(t, server.config.Process.DatabasePath)
+	if banner := stateBannerOf(t, reloaded.statePath()); banner != stateMagicReferences {
+		t.Fatalf("reopened by this build, the banner is %q", banner)
 	}
 }
 
@@ -112,14 +117,14 @@ func TestStateBannersKeepTheRefusalTheyRelyOn(t *testing.T) {
 }
 
 func TestStateReferenceMarkMatchesAReferenceAndNotItsText(t *testing.T) {
-	reference, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{"acl": domainACLReferenceValue("root", "kind")}})
+	reference, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{"acl": aclReference("root", "kind")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !stateHoldsACLReferences(reference) {
 		t.Fatalf("a stored reference went unnoticed: %s", reference)
 	}
-	text, err := json.Marshal(map[string]interface{}{"note": string(stateACLReferenceMark), "acl": map[string]interface{}{"contractRevision": domainACLRevision}})
+	text, err := json.Marshal(map[string]interface{}{"note": string(stateACLReferenceMark), "acl": map[string]interface{}{"contractRevision": "lj.domain.acl/1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,9 +133,9 @@ func TestStateReferenceMarkMatchesAReferenceAndNotItsText(t *testing.T) {
 	}
 }
 
-func aclEnvelopeVersion(t *testing.T, f *enrollmentFixture) int {
+func encryptedEnvelopeVersion(t *testing.T, path string) int {
 	t.Helper()
-	raw, err := os.ReadFile(f.server.statePath())
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,44 +153,15 @@ func aclEnvelopeVersion(t *testing.T, f *enrollmentFixture) int {
 func TestEncryptedStateRefusesTheOlderBuildOnlyOnceAReferenceExists(t *testing.T) {
 	t.Setenv("CORRESPONDER_STORAGE_MODE", "local-test")
 	t.Setenv("CORRESPONDER_STORAGE_LOCAL_KEY_FILE", storageTestKey(t))
-	f := newEnrollmentFixture(t)
-	rootID := aclFixtureProvision(t, f, "unit-envelope")
-	aclSeedRecords(t, f, rootID, "copy", 2, aclFixtureCopy(t, f, rootID))
-	aclFixtureRestart(t, f)
-	if version := aclEnvelopeVersion(t, f); version != 3 {
+	server, addReference := referencesFixture(t)
+	if version := encryptedEnvelopeVersion(t, server.statePath()); version != 3 {
 		t.Fatalf("a forest with no reference has envelope version %d", version)
 	}
-	aclSeedRecords(t, f, rootID, "follower", 1, aclFixtureFollower(rootID))
-	aclFixtureRestart(t, f)
-	if version := aclEnvelopeVersion(t, f); version != 4 {
+	addReference()
+	if version := encryptedEnvelopeVersion(t, server.statePath()); version != 4 {
 		t.Fatalf("a forest holding a reference has envelope version %d", version)
 	}
-	if err := aclFixtureDecision(t, f, "unit-envelope", aclFixtureOwner, "follower-000"); err != nil {
-		t.Fatal("this build must read its own envelope", err)
-	}
-}
-
-// Recovery reads the file back to witness a lost acknowledgement, so it must accept both banners.
-func TestEnrollmentWitnessAcceptsTheReferencesBanner(t *testing.T) {
-	f := newEnrollmentFixture(t)
-	rootID := aclFixtureProvision(t, f, "unit-witness")
-	aclSeedRecords(t, f, rootID, "follower", 2, aclFixtureFollower(rootID))
-	target := "unit-witness-member"
-	input := f.input(EnrollmentReadGrant, "unit-witness", "unit-grant", "unit-proof-grant", enrollmentCurrentRevision(t, f, rootID), &target)
-	actual := f.server.stateWriter.write
-	f.server.stateWriter.write = func(snapshot stateSnapshot) error {
-		if err := actual(snapshot); err != nil {
-			return err
-		}
-		return errors.New("unit lost ACK after actual publication")
-	}
-	begin := f.enroll(t, input)
-	if received := f.received(t, begin); received.Pair != nil {
-		t.Fatal("a lost acknowledgement became a successful disclosure")
-	}
-	aclAssertRefused(t, f, "published before the lost acknowledgement")
-	f.server.stateWriter.write = actual
-	if result := enrollmentDiscard(t, f, begin); !result.Completed || f.server.sourceFence().unknown {
-		t.Fatal("the witness did not accept the durable pair under the new banner")
+	if _, err := reloadServer(t, server.config.Process.DatabasePath).getNodeFromPath("copy"); err != nil {
+		t.Fatalf("this build must read its own envelope: %v", err)
 	}
 }
