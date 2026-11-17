@@ -19,6 +19,18 @@ func messageOperationRoute(r *http.Request) bool {
 	}
 	return pieces[2] == "messages" && (len(pieces) > 3 || r.Method == "POST")
 }
+func decodeMessageOperationInput(w http.ResponseWriter, r *http.Request, pieces []string) (messageOperationInput, error) {
+	var in messageOperationInput
+	var err error
+	if r.Method != "GET" {
+		in, err = messageInput(w, r)
+	}
+	if err != nil {
+		return in, err
+	}
+	return messageRequestScope(r, pieces, in)
+}
+
 func (s *Server) handleMessageOperations(w http.ResponseWriter, r *http.Request) {
 	user, ok := userIDFrom(r)
 	if !ok {
@@ -26,21 +38,13 @@ func (s *Server) handleMessageOperations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	pieces := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	var in messageOperationInput
-	var err error
-	if r.Method != "GET" {
-		in, err = messageInput(w, r)
-	}
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	in, err = messageRequestScope(r, pieces, in)
+	in, err := decodeMessageOperationInput(w, r, pieces)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	var result interface{}
+	var announced mutationEvent
 	apply := func() error {
 		if _, err := s.forest.GetUserProfile(user); err != nil {
 			return apiErrorf(401, "Account unavailable")
@@ -50,7 +54,7 @@ func (s *Server) handleMessageOperations(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			return err
 		}
-		result, err = s.messageOperation(c, member, user, pieces, r.Method, in)
+		result, announced, err = s.messageOperation(c, member, user, pieces, r.Method, in)
 		return err
 	}
 	if r.Method == "GET" {
@@ -62,26 +66,31 @@ func (s *Server) handleMessageOperations(w http.ResponseWriter, r *http.Request)
 		writeAPIError(w, err)
 		return
 	}
+	if announced.Type != "" {
+		s.publish(announced)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }
-func (s *Server) messageOperation(c *core.Conversation, member core.ConversationMember, user string, pieces []string, method string, in messageOperationInput) (interface{}, error) {
+func (s *Server) messageOperation(c *core.Conversation, member core.ConversationMember, user string, pieces []string, method string, in messageOperationInput) (interface{}, mutationEvent, error) {
 	if pieces[2] == "attachments" {
-		return s.messageAttachment(c, member, user, pieces, method, in)
+		out, err := s.messageAttachment(c, member, user, pieces, method, in)
+		return out, mutationEvent{}, err
 	}
 	if len(pieces) == 3 && method == "POST" {
-		return s.messageSend(c, member, user, in)
+		return s.messageSendMutate(c, member, user, in)
 	}
 	if len(pieces) == 5 && pieces[4] == "history" && method == "GET" {
 		if err := messageHistoryScope(c, member, pieces[3], in); err != nil {
-			return nil, err
+			return nil, mutationEvent{}, err
 		}
-		return messageHistory(c, member, pieces[3])
+		out, err := messageHistory(c, member, pieces[3])
+		return out, mutationEvent{}, err
 	}
 	if len(pieces) == 4 && method == "PATCH" {
-		return s.messageEdit(c, member, user, pieces[3], in)
+		return s.messageEditMutate(c, member, user, pieces[3], in)
 	}
-	return nil, apiErrorf(404, "Message operation not found")
+	return nil, mutationEvent{}, apiErrorf(404, "Message operation not found")
 }
 func messageHistoryScope(c *core.Conversation, member core.ConversationMember, id string, in messageOperationInput) error {
 	for _, m := range c.Messages {

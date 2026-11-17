@@ -5,8 +5,10 @@ package internal
 // private node path, and "revoked stream remained open" after session deletion.
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,4 +49,54 @@ func TestStreamRevokedSessionStopsBeforeDelivering(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("revoked stream remained open")
 	}
+}
+
+func TestStreamConversationEventsReachMembersOnly(t *testing.T) {
+	s, _, base := streamingServer(t)
+	tokens := map[string]string{}
+	for _, id := range []string{"alice", "bob", "outsider"} {
+		s.forest.Users = append(s.forest.Users, core.User{ID: id, Username: id, Permissions: []core.Permission{core.ReadPermission}})
+		token, _, err := s.mintApplicationSession(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens[id] = token
+	}
+	bobStream, outsiderStream := openStream(t, base, "bob", ""), openStream(t, base, "outsider", "")
+	defer bobStream.close()
+	defer outsiderStream.close()
+	if !readsComment(t, bobStream, "connected", time.Second) || !readsComment(t, outsiderStream, "connected", time.Second) {
+		t.Fatal("streams did not connect")
+	}
+	cid := conversationCall(t, s, tokens["alice"], "POST", "/conversations", map[string]interface{}{"kind": "group", "title": "Room", "usernames": []string{"bob"}, "client_id": "c1"}, 200)["id"].(string)
+	conversationCall(t, s, tokens["bob"], "POST", "/conversations/"+cid+"/membership", map[string]string{"action": "accept"}, 200)
+	mid := conversationCall(t, s, tokens["alice"], "POST", "/conversations/"+cid+"/messages", map[string]string{"content": "secret body text", "client_id": "m1"}, 200)["id"].(string)
+	deadline, seen := time.After(time.Second), []mutationEvent{}
+	nextLine := func() string {
+		select {
+		case line := <-bobStream.lines:
+			return line
+		case <-deadline:
+			t.Fatal("timed out waiting for conversation events")
+			return ""
+		}
+	}
+	for len(seen) < 3 {
+		line := nextLine()
+		if strings.Contains(line, "secret body text") {
+			t.Fatalf("stream leaked message body: %s", line)
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var ev mutationEvent
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, ev)
+	}
+	if seen[0].Type != mutationConversationCreated || seen[0].ConversationID != cid || seen[0].NodePath != "" || seen[1].Type != mutationConversationMembership || seen[1].ConversationID != cid || seen[2].Type != mutationMessageSent || seen[2].ConversationID != cid || seen[2].MessageID != mid {
+		t.Fatalf("unexpected conversation events: %+v", seen)
+	}
+	outsiderStream.silentFor(t, 50*time.Millisecond)
 }

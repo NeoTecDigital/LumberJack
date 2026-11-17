@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 Mindfull
 package internal
 
 // The native application's compatibility surface. It binds the existing route
@@ -47,6 +48,54 @@ const adminReconcileEnv = "CORRESPONDER_ADMIN_RECONCILE"
 // The repair is explicit and opt-in. With CORRESPONDER_ADMIN_RECONCILE=1 the configured admin's
 // password hash — that account's, and no other's — is replaced from the environment, and the fact is
 // logged. Without it the behaviour is exactly what it was, plus the line.
+func (s *Server) reconcileAdminAccount(username, password string) (string, error) {
+	// The repair, scoped to one account by name. It updates a password hash and NOTHING else — not
+	// permissions, not the id, not any other user — because the failure it answers is exactly one
+	// credential having diverged, and widening it would make an environment variable a way to
+	// rewrite the account table.
+	for i := range s.forest.Users {
+		if s.forest.Users[i].Username != username {
+			continue
+		}
+		if err := s.forest.Users[i].SetPassword(password); err != nil {
+			return "", err
+		}
+		// A repaired credential also clears the lockout counter: an account whose password was
+		// wrong has almost certainly been failed into, and leaving it shut would fix the hash and
+		// keep the symptom.
+		s.forest.Users[i].FailedLogins, s.forest.Users[i].LockedUntil = 0, 0
+		return fmt.Sprintf("BOOTSTRAP: %s=1 — reset the password of the existing admin account %q from the environment. "+
+			"No other account was touched.", adminReconcileEnv, username), nil
+	}
+	return fmt.Sprintf("BOOTSTRAP: %s=1 but this datastore holds no account named %q, so nothing was changed. "+
+		"The repair updates one existing account; it does not create one.", adminReconcileEnv, username), nil
+}
+
+func (s *Server) bootstrapHasAccounts() bool {
+	for _, user := range s.forest.Users {
+		if user.ID != SystemUserID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) applyBootstrap(username, password string, reconcile bool) (string, error) {
+	if !s.bootstrapHasAccounts() {
+		user := core.User{ID: core.GenerateUserID(), Username: username}
+		if err := user.SetPassword(password); err != nil {
+			return "", err
+		}
+		return "", s.forest.AssignUser(user, core.AdminPermission)
+	}
+	if !reconcile {
+		return fmt.Sprintf("BOOTSTRAP: the configured admin %q was NOT created or updated — this datastore already holds accounts, "+
+			"and its stored password is whatever it already was. If a sign-in with the configured password is failing, that is why. "+
+			"Set %s=1 to reset THAT ACCOUNT'S password from the environment on the next start.", username, adminReconcileEnv), nil
+	}
+	return s.reconcileAdminAccount(username, password)
+}
+
 func (s *Server) ConfigureApplication(username, password, secret string) error {
 	if len(secret) < 32 || username == "" || len(password) < 12 {
 		return fmt.Errorf("application bootstrap needs a username, a password of at least 12 characters and a session key of at least 32 bytes")
@@ -57,51 +106,9 @@ func (s *Server) ConfigureApplication(username, password, secret string) error {
 	// while the forest is held exclusively.
 	notice := ""
 	err := s.changeForest(func() error {
-		notice = ""
-		populated := false
-		for _, user := range s.forest.Users {
-			if user.ID != SystemUserID {
-				populated = true
-				break
-			}
-		}
-		if !populated {
-			user := core.User{ID: core.GenerateUserID(), Username: username}
-			if err := user.SetPassword(password); err != nil {
-				return err
-			}
-			return s.forest.AssignUser(user, core.AdminPermission)
-		}
-
-		if !reconcile {
-			notice = fmt.Sprintf("BOOTSTRAP: the configured admin %q was NOT created or updated — this datastore already holds accounts, "+
-				"and its stored password is whatever it already was. If a sign-in with the configured password is failing, that is why. "+
-				"Set %s=1 to reset THAT ACCOUNT'S password from the environment on the next start.", username, adminReconcileEnv)
-			return nil
-		}
-
-		// The repair, scoped to one account by name. It updates a password hash and NOTHING else — not
-		// permissions, not the id, not any other user — because the failure it answers is exactly one
-		// credential having diverged, and widening it would make an environment variable a way to
-		// rewrite the account table.
-		for i := range s.forest.Users {
-			if s.forest.Users[i].Username != username {
-				continue
-			}
-			if err := s.forest.Users[i].SetPassword(password); err != nil {
-				return err
-			}
-			// A repaired credential also clears the lockout counter: an account whose password was
-			// wrong has almost certainly been failed into, and leaving it shut would fix the hash and
-			// keep the symptom.
-			s.forest.Users[i].FailedLogins, s.forest.Users[i].LockedUntil = 0, 0
-			notice = fmt.Sprintf("BOOTSTRAP: %s=1 — reset the password of the existing admin account %q from the environment. "+
-				"No other account was touched.", adminReconcileEnv, username)
-			return nil
-		}
-		notice = fmt.Sprintf("BOOTSTRAP: %s=1 but this datastore holds no account named %q, so nothing was changed. "+
-			"The repair updates one existing account; it does not create one.", adminReconcileEnv, username)
-		return nil
+		var err error
+		notice, err = s.applyBootstrap(username, password, reconcile)
+		return err
 	})
 	if notice != "" {
 		s.logger.Warn("%s", notice)
@@ -182,6 +189,41 @@ func applicationError(status int, message string) ApplicationResponse {
 	return ApplicationResponse{Status: status, Headers: map[string]string{"Content-Type": "text/plain"}, Body: []byte(message)}
 }
 
+func sortedVisiblePaths(visible map[string]bool) []string {
+	paths := make([]string, 0, len(visible))
+	for path := range visible {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func eventStreamKey(event mutationEvent) string {
+	if event.ConversationID != "" {
+		return conversationStreamKey(event.ConversationID)
+	}
+	return event.NodePath
+}
+
+func filterVisibleEvents(events []mutationEvent, visible map[string]bool) []mutationEvent {
+	delivered := []mutationEvent{}
+	for _, event := range events {
+		if visible[eventStreamKey(event)] {
+			delivered = append(delivered, event)
+		}
+	}
+	return delivered
+}
+
+func lostVisibleScope(prior []string, visible map[string]bool) bool {
+	for _, path := range prior {
+		if !visible[path] {
+			return true
+		}
+	}
+	return false
+}
+
 // Each Corresponder subscriber owns its prior visible path set. Polling is
 // nonblocking; the hub schedules it, filters delivery and owns the socket.
 func (s *Server) handleApplicationChanges(w http.ResponseWriter, r *http.Request) {
@@ -196,26 +238,15 @@ func (s *Server) handleApplicationChanges(w http.ResponseWriter, r *http.Request
 		return
 	}
 	visible := map[string]bool{}
-	valid := false
 	// Permission resolution, cursor polling and projection share one read hold.
 	// Revocation cannot interleave between collecting access and filtering paths.
 	s.forestMutex.RLock()
 	defer s.forestMutex.RUnlock()
-	func() {
-		_, err := s.forest.GetUserProfile(userID)
-		valid = err == nil
-		if valid {
-			_ = s.walkScope("", nil, func(at visit) {
-				if at.node.CheckPermission(userID, core.ReadPermission) {
-					visible[at.path] = true
-				}
-			})
-		}
-	}()
-	if !valid {
+	if _, err := s.forest.GetUserProfile(userID); err != nil {
 		http.Error(w, "Account unavailable", 401)
 		return
 	}
+	s.collectVisible(userID, visible)
 	events, caughtUp, _ := s.mutations.pollSince(query.After)
 	s.mutations.mutex.Lock()
 	sequence, epoch := s.mutations.sequence, s.mutations.epoch
@@ -231,24 +262,9 @@ func (s *Server) handleApplicationChanges(w http.ResponseWriter, r *http.Request
 		after = sequence
 		events = nil
 	}
-	delivered := []mutationEvent{}
-	for _, event := range events {
-		if visible[event.NodePath] {
-			delivered = append(delivered, event)
-		}
-	}
-	resync := !caughtUp
-	for _, path := range query.Visible {
-		if !visible[path] {
-			resync = true
-			break
-		}
-	}
-	paths := make([]string, 0, len(visible))
-	for path := range visible {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
+	delivered := filterVisibleEvents(events, visible)
+	resync := !caughtUp || lostVisibleScope(query.Visible, visible)
+	paths := sortedVisiblePaths(visible)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"events": delivered, "epoch": epoch, "after": after, "caught_up": caughtUp, "resync": resync, "visible": paths})
 }

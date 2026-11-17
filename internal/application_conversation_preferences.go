@@ -27,6 +27,16 @@ func savedMessageCount(c *core.Conversation, member core.ConversationMember) int
 	return count
 }
 
+func copySavedMessages(src map[string]bool) map[string]bool {
+	saved := map[string]bool{}
+	for id, value := range src {
+		if value {
+			saved[id] = true
+		}
+	}
+	return saved
+}
+
 func savedMessagePatch(c *core.Conversation, member *core.ConversationMember, patch *messageSaveInput) error {
 	if patch == nil {
 		return nil
@@ -42,12 +52,7 @@ func savedMessagePatch(c *core.Conversation, member *core.ConversationMember, pa
 			continue
 		}
 		// Copy before editing: failed validation never mutates the stored member map.
-		saved := map[string]bool{}
-		for id, value := range member.SavedMessages {
-			if value {
-				saved[id] = true
-			}
-		}
+		saved := copySavedMessages(member.SavedMessages)
 		if *patch.Saved {
 			saved[patch.ID] = true
 		} else {

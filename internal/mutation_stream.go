@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 Mindfull
 package internal
 
 import (
@@ -37,6 +38,12 @@ const (
 	mutationEventUpdated    = "event_updated"
 	mutationEntryDeleted    = "entry_deleted"
 	mutationTimeSpanDeleted = "time_span_deleted"
+
+	mutationConversationCreated    = "conversation_created"
+	mutationConversationUpdated    = "conversation_updated"
+	mutationConversationMembership = "conversation_membership"
+	mutationMessageSent            = "message_sent"
+	mutationMessageEdited          = "message_edited"
 )
 
 // mutationEvent is what /stream emits.
@@ -58,6 +65,8 @@ type mutationEvent struct {
 	// client holding the old id has no other way to learn that the event it is watching is the one
 	// that just appeared under a new name.
 	PreviousEventID string    `json:"previous_event_id,omitempty"`
+	ConversationID  string    `json:"conversation_id,omitempty"`
+	MessageID       string    `json:"message_id,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
 }
 
@@ -224,7 +233,9 @@ func (server *Server) publish(event mutationEvent) mutationEvent {
 	// that names a node differently depending on which route changed it cannot be joined against
 	// anything the query surface returned. See node_path.go. It is canonicalised even on an
 	// embedded server with no stream, so the returned event names the node the way every read does.
-	event.NodePath = server.canonicalPath(event.NodePath)
+	if event.ConversationID == "" {
+		event.NodePath = server.canonicalPath(event.NodePath)
+	}
 	if server.mutations == nil {
 		return event
 	}
@@ -286,4 +297,12 @@ func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration,
 // entry" has to look like when 0 is a real index.
 func mutation(kind, nodePath string) mutationEvent {
 	return mutationEvent{Type: kind, NodePath: nodePath, EntryIndex: -1}
+}
+
+func conversationMutation(kind, conversationID, messageID string) mutationEvent {
+	return mutationEvent{Type: kind, ConversationID: conversationID, MessageID: messageID, EntryIndex: -1}
+}
+
+func conversationStreamKey(id string) string {
+	return "conversation:" + id
 }

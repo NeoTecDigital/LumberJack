@@ -1,3 +1,4 @@
+// Written by Richard Christopher, Copyright 2026 Mindfull
 package internal
 
 import (
@@ -29,6 +30,74 @@ import (
 // radio. A comment line is ignored by every SSE client and keeps the path open.
 const heartbeatInterval = 20 * time.Second
 
+func (server *Server) streamSessionValid(r *http.Request, userID string) func() bool {
+	credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return func() bool {
+		// Direct library handlers may receive a trusted context; public routes
+		// always reach this through authentication with a bearer credential.
+		if credential == "" {
+			return true
+		}
+		session, ok := server.applicationSession(credential)
+		return ok && session.UserID == userID
+	}
+}
+
+func (server *Server) collectVisible(userID string, visible map[string]bool) {
+	_ = server.walkScope("", nil, func(at visit) {
+		if at.node.CheckPermission(userID, core.ReadPermission) {
+			visible[at.path] = true
+		}
+	})
+	for cid, c := range server.forest.Conversations {
+		if c == nil {
+			continue
+		}
+		if _, ok := c.Members[userID]; ok {
+			visible[conversationStreamKey(cid)] = true
+		}
+	}
+}
+
+func conversationMemberPresent(c *core.Conversation, userID string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.Members[userID]
+	return ok
+}
+
+func (server *Server) streamEventAccess(userID string, event mutationEvent) (string, bool) {
+	key := event.NodePath
+	if event.ConversationID != "" {
+		key = conversationStreamKey(event.ConversationID)
+	}
+	allowed := false
+	server.readForest(func() {
+		if _, err := server.forest.GetUserProfile(userID); err != nil {
+			return
+		}
+		if event.ConversationID != "" {
+			allowed = conversationMemberPresent(server.forest.Conversations[event.ConversationID], userID)
+			return
+		}
+		node, err := server.getNodeFromPath(event.NodePath)
+		allowed = err == nil && node.CheckPermission(userID, core.ReadPermission)
+	})
+	return key, allowed
+}
+
+func (server *Server) sendStreamEvent(w http.ResponseWriter, userID string, visible map[string]bool, event mutationEvent) {
+	key, allowed := server.streamEventAccess(userID, event)
+	if allowed {
+		visible[key] = true
+		writeEvent(w, event)
+	} else if visible[key] {
+		delete(visible, key)
+		fmt.Fprint(w, "event: resync\ndata: {}\n\n")
+	}
+}
+
 func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	userID, ok := userIDFrom(r)
 	if !ok {
@@ -41,17 +110,7 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Account unavailable", http.StatusUnauthorized)
 		return
 	}
-	credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	validate := func() bool {
-		// Direct library handlers may receive a trusted context; public routes
-		// always reach this through authentication with a bearer credential.
-		if credential == "" {
-			return true
-		}
-		session, ok := server.applicationSession(credential)
-		return ok && session.UserID == userID
-	}
-
+	validate := server.streamSessionValid(r, userID)
 	flusher, streamable := w.(http.Flusher)
 	if !streamable {
 		http.Error(w, "Streaming is not supported by this connection", http.StatusInternalServerError)
@@ -68,30 +127,8 @@ func (server *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	writeComment(w, fmt.Sprintf("connected caught_up=%t epoch=%s", client.caughtUp, server.mutations.epoch))
 	flusher.Flush()
 	visible := map[string]bool{}
-	server.readForest(func() {
-		_ = server.walkScope("", nil, func(at visit) {
-			if at.node.CheckPermission(userID, core.ReadPermission) {
-				visible[at.path] = true
-			}
-		})
-	})
-	send := func(event mutationEvent) {
-		allowed := false
-		server.readForest(func() {
-			if _, err := server.forest.GetUserProfile(userID); err != nil {
-				return
-			}
-			node, err := server.getNodeFromPath(event.NodePath)
-			allowed = err == nil && node.CheckPermission(userID, core.ReadPermission)
-		})
-		if allowed {
-			visible[event.NodePath] = true
-			writeEvent(w, event)
-		} else if visible[event.NodePath] {
-			delete(visible, event.NodePath)
-			fmt.Fprint(w, "event: resync\ndata: {}\n\n")
-		}
-	}
+	server.readForest(func() { server.collectVisible(userID, visible) })
+	send := func(event mutationEvent) { server.sendStreamEvent(w, userID, visible, event) }
 
 	for _, past := range client.replay {
 		if !validate() {
@@ -114,30 +151,35 @@ func writeStreamHeaders(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// pumpStep handles one frame or heartbeat on the stream and reports whether to continue.
+func pumpStep(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription, heartbeat <-chan time.Time, send func(mutationEvent), validate func() bool) bool {
+	select {
+	case event, open := <-client.events:
+		if !open || !validate() {
+			return false
+		}
+		send(event)
+		flusher.Flush()
+		return true
+	case <-heartbeat:
+		if !validate() {
+			return false
+		}
+		writeComment(w, "keep-alive")
+		flusher.Flush()
+		return true
+	case <-r.Context().Done():
+		// The client went away. Returning releases the subscription, which is what stops the
+		// publisher from filling a buffer nobody will ever read.
+		return false
+	}
+}
+
 // pump writes mutations to a client until it goes away.
 func pump(r *http.Request, w http.ResponseWriter, flusher http.Flusher, client *subscription, send func(mutationEvent), validate func() bool) {
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
-
-	for {
-		select {
-		case event, open := <-client.events:
-			if !open || !validate() {
-				return
-			}
-			send(event)
-			flusher.Flush()
-		case <-heartbeat.C:
-			if !validate() {
-				return
-			}
-			writeComment(w, "keep-alive")
-			flusher.Flush()
-		case <-r.Context().Done():
-			// The client went away. Returning releases the subscription, which is what stops the
-			// publisher from filling a buffer nobody will ever read.
-			return
-		}
+	for pumpStep(r, w, flusher, client, heartbeat.C, send, validate) {
 	}
 }
 

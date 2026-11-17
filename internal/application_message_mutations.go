@@ -37,30 +37,35 @@ func messageBody(in messageOperationInput, user, conversation string, revision u
 	return nil
 }
 func (s *Server) messageSend(c *core.Conversation, member core.ConversationMember, user string, in messageOperationInput) (interface{}, error) {
+	out, _, err := s.messageSendMutate(c, member, user, in)
+	return out, err
+}
+
+func (s *Server) messageSendMutate(c *core.Conversation, member core.ConversationMember, user string, in messageOperationInput) (interface{}, mutationEvent, error) {
 	if in.ExpectedRevision != 0 || len(in.NameEnvelope) > 0 || len(in.NameContext) > 0 {
-		return nil, apiErrorf(400, "Invalid send fields")
+		return nil, mutationEvent{}, apiErrorf(400, "Invalid send fields")
 	}
 	if err := messageBody(in, user, c.ID, 1); err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	refs := []core.ConversationAttachmentRef{}
 	if in.Attachments != nil {
 		refs = *in.Attachments
 	}
 	if err := messageReferences(c, user, refs); err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	if err := messageReferenceScope(c, refs, in); err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	for _, m := range c.Messages {
 		if m.AuthorID != user || m.ClientID != in.ClientID {
 			continue
 		}
 		if m.Sequence <= member.From || !messageSendMatches(m, in) {
-			return nil, apiErrorf(409, "This message identity was already used")
+			return nil, mutationEvent{}, apiErrorf(409, "This message identity was already used")
 		}
-		return messageForMember(m, member), nil
+		return messageForMember(m, member), mutationEvent{}, nil
 	}
 	seq := uint64(len(c.Messages) + 1)
 	m := core.ConversationMessage{ID: fmt.Sprintf("%s:%d", c.ID, seq), Sequence: seq, AuthorID: user,
@@ -70,7 +75,7 @@ func (s *Server) messageSend(c *core.Conversation, member core.ConversationMembe
 	c.Revision++
 	member.Archived = false
 	c.Members[user] = member
-	return messageForMember(m, member), nil
+	return messageForMember(m, member), conversationMutation(mutationMessageSent, c.ID, m.ID), nil
 }
 func messageSendMatches(m core.ConversationMessage, in messageOperationInput) bool {
 	initial := messageEvidence(m)
@@ -108,44 +113,49 @@ func messageFind(c *core.Conversation, member core.ConversationMember, user, id 
 	return 0, apiErrorf(404, "Message not found")
 }
 func (s *Server) messageEdit(c *core.Conversation, member core.ConversationMember, user, id string, in messageOperationInput) (interface{}, error) {
+	out, _, err := s.messageEditMutate(c, member, user, id, in)
+	return out, err
+}
+
+func (s *Server) messageEditMutate(c *core.Conversation, member core.ConversationMember, user, id string, in messageOperationInput) (interface{}, mutationEvent, error) {
 	index, err := messageFind(c, member, user, id)
 	if err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	m := c.Messages[index]
 	digest := messageDigest(in)
 	if receipt, ok := m.EditReceipts[in.ClientID]; ok {
 		if receipt != digest {
-			return nil, apiErrorf(409, "This edit identity was already used")
+			return nil, mutationEvent{}, apiErrorf(409, "This edit identity was already used")
 		}
-		return messageForMember(m, member), nil
+		return messageForMember(m, member), mutationEvent{}, nil
 	}
 	if in.ExpectedRevision == 0 || in.ExpectedRevision >= 9007199254740991 || messageRevision(m) != in.ExpectedRevision {
-		return nil, apiErrorf(409, "Message revision changed")
+		return nil, mutationEvent{}, apiErrorf(409, "Message revision changed")
 	}
 	if len(in.NameEnvelope) > 0 || len(in.NameContext) > 0 {
-		return nil, apiErrorf(400, "Invalid edit fields")
+		return nil, mutationEvent{}, apiErrorf(400, "Invalid edit fields")
 	}
 	if len(m.Envelope) > 0 && len(in.Envelope) == 0 {
-		return nil, apiErrorf(400, "Encrypted messages require encrypted edits")
+		return nil, mutationEvent{}, apiErrorf(400, "Encrypted messages require encrypted edits")
 	}
 	if err = messageBody(in, user, c.ID, in.ExpectedRevision+1); err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	refs := m.Attachments
 	if in.Attachments != nil {
 		refs = *in.Attachments
 	}
 	if err = messageReferences(c, user, refs); err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	if err = messageReferenceScope(c, refs, in); err != nil {
-		return nil, err
+		return nil, mutationEvent{}, err
 	}
 	m = messageApplyEdit(m, in, refs, digest)
 	c.Messages[index] = m
 	c.Revision++
-	return messageForMember(m, member), nil
+	return messageForMember(m, member), conversationMutation(mutationMessageEdited, c.ID, m.ID), nil
 }
 func messageApplyEdit(m core.ConversationMessage, in messageOperationInput, refs []core.ConversationAttachmentRef, digest string) core.ConversationMessage {
 	m.EditEvidence = append(m.EditEvidence, messageEvidence(m))
