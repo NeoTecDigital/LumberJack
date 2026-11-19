@@ -22,6 +22,8 @@ func (d *draft) edit(e framedEdit) error {
 		return ErrInvalid
 	}
 	switch e.Op {
+	case "grant_read", "revoke_read":
+		return d.readGrant(e)
 	case "create":
 		return d.create(e)
 	case "link", "unlink":
@@ -60,6 +62,7 @@ func (d *draft) create(e framedEdit) error {
 	}
 	n := newNode(e.ID, e.Kind)
 	d.change(func() { d.s.nodes[e.ID] = n }, func() { delete(d.s.nodes, e.ID) })
+	d.posting(kindkey(n.Kind, n.ID), true)
 	d.made[e.ID] = true
 	d.touched[e.ID] = true
 	d.created = append(d.created, e.ID)
@@ -78,6 +81,9 @@ func (d *draft) content(e framedEdit) error {
 		d.change(func() { n.Entries = append(n.Entries, e.Value) }, func() { n.Entries = old })
 		return nil
 	}
+	return d.setValue(n, e)
+}
+func (d *draft) setValue(n *node, e framedEdit) error {
 	if !token(e.Key) {
 		return ErrInvalid
 	}
@@ -93,6 +99,16 @@ func (d *draft) content(e framedEdit) error {
 	unset := strings.HasPrefix(e.Op, "unset")
 	if !unset && !json.Valid(e.Value) {
 		return ErrInvalid
+	}
+	if e.Op == "field" || e.Op == "unset_field" {
+		if err := d.fieldPost(n, e.Key, old, false); err != nil {
+			return err
+		}
+		if !unset {
+			if err := d.fieldPost(n, e.Key, e.Value, true); err != nil {
+				return err
+			}
+		}
 	}
 	d.change(func() {
 		if unset {
@@ -132,6 +148,8 @@ func (d *draft) link(parent, child string, add bool) error {
 	}
 	insert := func() { p.Children[child] = true; c.Parents[parent] = true }
 	drop := func() { delete(p.Children, child); delete(c.Parents, parent) }
+	d.edgePosts("c", p, c, add)
+	d.edgePosts("p", c, p, add)
 	if add {
 		d.change(insert, drop)
 	} else {
@@ -181,6 +199,10 @@ func (d *draft) remove(id string) error {
 		if err := d.link(id, c, false); err != nil {
 			return err
 		}
+	}
+	d.posting(kindkey(n.Kind, n.ID), false)
+	if err := d.unindexNode(n); err != nil {
+		return err
 	}
 	d.change(func() { n.Dead = true }, func() { n.Dead = false })
 	return nil

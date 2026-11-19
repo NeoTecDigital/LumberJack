@@ -3,7 +3,7 @@ package store
 
 import (
 	"encoding/json"
-	"sort"
+	"strings"
 )
 
 type PageRequest struct {
@@ -32,7 +32,10 @@ type page struct {
 }
 
 func (s *Store) Page(issuer string, q PageRequest) ([]byte, error) {
-	if issuer != s.m.Owner {
+	return s.currentPage(issuer, q, false)
+}
+func (s *Store) currentPage(issuer string, q PageRequest, scopedID bool) ([]byte, error) {
+	if issuer != s.m.Owner && !scopedID {
 		return nil, ErrDenied
 	}
 	s.life.RLock()
@@ -45,6 +48,20 @@ func (s *Store) Page(issuer string, q PageRequest) ([]byte, error) {
 	if s.fault != nil {
 		return nil, ErrUnavailable
 	}
+	if scopedID {
+		n := s.s.nodes[q.ID]
+		if !s.canOpen(issuer, true) {
+			return nil, ErrDenied
+		}
+		if n == nil || n.Dead || !s.visible(issuer, n.Kind) {
+			return nil, ErrAbsent
+		}
+	}
+	return s.renderPage(q)
+}
+
+// renderPage runs under the committed-state read lock.
+func (s *Store) renderPage(q PageRequest) ([]byte, error) {
 	if q.Sequence != nil && *q.Sequence != s.s.sequence {
 		return nil, ErrConflict
 	}
@@ -77,12 +94,12 @@ func (s *Store) Page(issuer string, q PageRequest) ([]byte, error) {
 		if q.Offset != 0 {
 			return nil, ErrInvalid
 		}
-		p.collect(s.s, q, n.Children)
+		p.collect(s.s, q, bucket("c", q.ID, ""))
 	case "kind":
 		if !token(q.Kind) || q.ID != "" || q.Offset != 0 {
 			return nil, ErrInvalid
 		}
-		p.collect(s.s, q, nil)
+		p.collect(s.s, q, bucket("k", q.Kind, ""))
 	default:
 		return nil, ErrInvalid
 	}
@@ -100,29 +117,21 @@ func (p *page) detail(n *node, q PageRequest) {
 	}
 }
 
-// Resident reference implementation; page limits bound output, not the scan.
-// Ordered persistent indexes replace the sort without changing this ABI.
-func (p *page) collect(s *state, q PageRequest, ids map[string]bool) {
-	keys := []string{}
-	if q.By == "children" {
-		for id := range ids {
-			if id > q.After {
-				keys = append(keys, id)
-			}
+// Legacy cursor semantics (restart on commit), using the same ordered postings.
+func (p *page) collect(s *state, q PageRequest, pre string) {
+	lo := pre
+	if q.After != "" {
+		lo += q.After + sep
+	}
+	seek(s.index.root, lo, func(n *branch) bool {
+		if !strings.HasPrefix(n.key, pre) {
+			return false
 		}
-	} else {
-		for id, n := range s.nodes {
-			if !n.Dead && n.Kind == q.Kind && id > q.After {
-				keys = append(keys, id)
-			}
+		if len(p.Items) == q.Limit {
+			p.Next = p.Items[len(p.Items)-1].ID
+			return false
 		}
-	}
-	sort.Strings(keys)
-	if len(keys) > q.Limit {
-		keys = keys[:q.Limit]
-		p.Next = keys[len(keys)-1]
-	}
-	for _, id := range keys {
-		p.Items = append(p.Items, toItem(s.nodes[id]))
-	}
+		p.Items = append(p.Items, toItem(s.nodes[n.key[len(pre):]]))
+		return true
+	})
 }

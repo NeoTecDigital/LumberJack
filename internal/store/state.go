@@ -24,10 +24,18 @@ type state struct {
 	nodes    map[string]*node
 	receipts map[receiptKey]saved
 	sequence uint64
+	index    ordered
+	defs     []Index
+	grants   map[string]map[string]bool
+	access   map[string]uint64
 }
 
 func empty() *state {
-	return &state{nodes: map[string]*node{Root: newNode(Root, "root")}, receipts: map[receiptKey]saved{}}
+	s := &state{grants: map[string]map[string]bool{}, access: map[string]uint64{}, nodes: map[string]*node{Root: newNode(Root, "root")}, receipts: map[receiptKey]saved{}}
+	v := toItem(s.nodes[Root])
+	s.index.set(idkey(Root), &v)
+	s.index.set(kindkey(v.Kind, Root), nil)
+	return s
 }
 
 type change struct{ apply, undo func() }
@@ -97,6 +105,16 @@ func (d *draft) finish() {
 		d.change(func() { n.Topology++ }, func() { n.Topology-- })
 	}
 }
+func (d *draft) summarizeAll() {
+	for id := range d.touched {
+		d.summarize(d.s.nodes[id])
+	}
+	for id := range d.links {
+		if !d.touched[id] {
+			d.summarize(d.s.nodes[id])
+		}
+	}
+}
 func (s *state) run(f *frame) (changes, Receipt, error) {
 	var out Receipt
 	if f.Version != 1 || f.Sequence != s.sequence+1 || !semanticID(f.Digest) || !token(f.Issuer) || !token(f.CommandID) || len(f.Edits) < 1 || len(f.Edits) > MaxEdits {
@@ -117,6 +135,7 @@ func (s *state) run(f *frame) (changes, Receipt, error) {
 		}
 	}
 	d.finish()
+	d.summarizeAll()
 	out = Receipt{f.CommandID, f.Sequence, d.created}
 	d.change(func() { s.sequence++; s.receipts[key] = saved{out, f.Digest} }, func() { s.sequence--; delete(s.receipts, key) })
 	return d.changes, out, nil

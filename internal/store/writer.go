@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/NeoTecDigital/LumberJack/extension"
 )
@@ -102,6 +103,7 @@ func (s *Store) prepare(q *request) candidate {
 // before-images before releasing it. Readers see only the last published batch.
 func (s *Store) commit(batch []*request) {
 	s.mu.Lock()
+	s.leases.expire(time.Now())
 	cs := make([]candidate, 0, len(batch))
 	var last uint64
 	for _, q := range batch {

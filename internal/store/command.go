@@ -36,13 +36,14 @@ type Command struct {
 	Edits    []Edit              `json:"edits"`
 }
 type Edit struct {
-	Op     string          `json:"op"`
-	ID     string          `json:"id,omitempty"`
-	Kind   string          `json:"kind,omitempty"`
-	Key    string          `json:"key,omitempty"`
-	Value  json.RawMessage `json:"value,omitempty"`
-	Parent string          `json:"parent,omitempty"`
-	Child  string          `json:"child,omitempty"`
+	Op        string          `json:"op"`
+	ID        string          `json:"id,omitempty"`
+	Kind      string          `json:"kind,omitempty"`
+	Key       string          `json:"key,omitempty"`
+	Value     json.RawMessage `json:"value,omitempty"`
+	Principal string          `json:"principal,omitempty"`
+	Parent    string          `json:"parent,omitempty"`
+	Child     string          `json:"child,omitempty"`
 }
 type Receipt struct {
 	ID       string   `json:"command_id"`
@@ -130,7 +131,7 @@ func parseCommand(raw []byte, receiptKey []byte) (Command, string, error) {
 	return c, hex.EncodeToString(h.Sum(nil)), nil
 }
 func checkEdit(e Edit, fields map[string]json.RawMessage) error {
-	allowed := map[string]string{"create": " kind id ", "field": " id key value ", "slot": " id key value ", "unset_field": " id key ", "unset_slot": " id key ", "append": " id value ", "link": " parent child ", "unlink": " parent child ", "delete": " id "}
+	allowed := map[string]string{"grant_read": " principal kind ", "revoke_read": " principal kind ", "create": " kind id ", "field": " id key value ", "slot": " id key value ", "unset_field": " id key ", "unset_slot": " id key ", "append": " id value ", "link": " parent child ", "unlink": " parent child ", "delete": " id "}
 	a, ok := allowed[e.Op]
 	if !ok {
 		return ErrInvalid
@@ -141,6 +142,10 @@ func checkEdit(e Edit, fields map[string]json.RawMessage) error {
 		}
 	}
 	switch e.Op {
+	case "grant_read", "revoke_read":
+		if !token(e.Principal) || !token(e.Kind) {
+			return ErrInvalid
+		}
 	case "create":
 		if !token(e.Kind) {
 			return ErrInvalid

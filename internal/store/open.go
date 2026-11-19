@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,9 +21,10 @@ import (
 const banner = "LUMBERJACK-RECORD-1\nresident command journal\n"
 
 type marker struct {
-	Store      string `json:"store"`
-	Owner      string `json:"owner"`
-	ReceiptKey []byte `json:"receipt_key"`
+	Indexes    []Index `json:"indexes,omitempty"`
+	Store      string  `json:"store"`
+	Owner      string  `json:"owner"`
+	ReceiptKey []byte  `json:"receipt_key"`
 }
 
 // A journal is also the fault boundary: after an ambiguous write only recovered,
@@ -36,6 +38,7 @@ type journal interface {
 }
 
 type Store struct {
+	leases cursorCache
 	path   string
 	m      marker
 	s      *state
@@ -49,24 +52,39 @@ type Store struct {
 }
 
 func Open(path, issuer string) (*Store, error) {
-	if !token(issuer) {
-		return nil, ErrDenied
-	}
-	m, err := readMarker(path, issuer)
+	return OpenIndexed(path, issuer, nil, false)
+}
+func OpenIndexed(path, issuer string, decls []Index, reader bool) (*Store, error) {
+	defs, err := normalized(decls)
 	if err != nil {
 		return nil, err
 	}
-	if m.Owner != issuer {
+	if !token(issuer) {
 		return nil, ErrDenied
+	}
+	m, err := readMarker(path, issuer, defs, reader)
+	if err != nil {
+		return nil, err
+	}
+	if !reader && m.Owner != issuer {
+		return nil, ErrDenied
+	}
+	if !slices.Equal(m.Indexes, defs) {
+		return nil, ErrConflict
 	}
 	log, rs, err := openLog(path, 0)
 	if err != nil {
 		return nil, err
 	}
 	s := &Store{path: path, m: m, s: empty(), log: log, queue: make(chan *request, 64), done: make(chan struct{})}
+	s.s.defs = m.Indexes
 	if err = s.replay(rs); err != nil {
 		log.Abandon()
 		return nil, err
+	}
+	if !s.canOpen(issuer, reader) {
+		log.Abandon()
+		return nil, ErrDenied
 	}
 	go s.writer()
 	return s, nil
@@ -101,21 +119,24 @@ func syncPath(p string) error {
 	defer f.Close()
 	return f.Sync()
 }
-func readMarker(path, issuer string) (marker, error) {
+func readMarker(path, issuer string, defs []Index, reader bool) (marker, error) {
 	var m marker
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return createMarker(path, issuer)
+		if reader {
+			return m, ErrDenied
+		}
+		return createMarker(path, issuer, defs)
 	}
 	if err != nil {
 		return m, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 4097))
+	b, err := io.ReadAll(io.LimitReader(f, 65537))
 	if err != nil {
 		return m, err
 	}
-	if len(b) > 4096 || !strings.HasPrefix(string(b), banner) {
+	if len(b) > 65536 || !strings.HasPrefix(string(b), banner) {
 		return m, fmt.Errorf("%w: not a record profile", ErrConflict)
 	}
 	err = Decode(b[len(banner):], &m)
@@ -124,7 +145,7 @@ func readMarker(path, issuer string) (marker, error) {
 	}
 	return m, err
 }
-func createMarker(path, issuer string) (marker, error) {
+func createMarker(path, issuer string, defs []Index) (marker, error) {
 	var m marker
 	// Never adopt an orphaned journal or attach it to another principal.
 	segs, err := filepath.Glob(path + ".log.*")
@@ -135,7 +156,7 @@ func createMarker(path, issuer string) (marker, error) {
 	if _, err = rand.Read(salt[:]); err != nil {
 		return m, err
 	}
-	m = marker{Store: hex.EncodeToString(salt[:]), Owner: issuer, ReceiptKey: make([]byte, 32)}
+	m = marker{Indexes: defs, Store: hex.EncodeToString(salt[:]), Owner: issuer, ReceiptKey: make([]byte, 32)}
 	if _, err = rand.Read(m.ReceiptKey); err != nil {
 		return m, err
 	}
@@ -191,4 +212,23 @@ func (s *Store) Close() error {
 		return s.fault
 	}
 	return s.log.Close()
+}
+
+func (s *Store) canOpen(issuer string, reader bool) bool {
+	return issuer == s.m.Owner || reader && len(s.s.grants[issuer]) != 0
+}
+func (s *Store) MatchOpen(issuer string, defs []Index, reader bool) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.canOpen(issuer, reader) {
+		return ErrDenied
+	}
+	clean, e := normalized(defs)
+	if e != nil {
+		return e
+	}
+	if !slices.Equal(clean, s.m.Indexes) {
+		return ErrConflict
+	}
+	return nil
 }
