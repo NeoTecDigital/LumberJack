@@ -15,6 +15,19 @@ import (
 	"github.com/NeoTecDigital/LumberJack/ffi/abi"
 )
 
+//export ic_lj_record_v2_abi_version
+func ic_lj_record_v2_abi_version() C.uint32_t { return C.uint32_t(C.LJ_RECORD_V2_ABI_VERSION) }
+
+//export ic_lj_record_v2_open
+func ic_lj_record_v2_open(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t) C.lj_status_t {
+	return C.lj_status_t(abi.RecordOpenV2(unsafe.Pointer(req), int64(n), unsafe.Pointer(out)))
+}
+
+//export ic_lj_record_v2_page
+func ic_lj_record_v2_page(h C.lj_handle_t, req C.lj_cstr, reqLen C.int64_t, out *C.char, outCap C.int64_t, outLen *C.int64_t) C.lj_status_t {
+	return C.lj_status_t(abi.RecordIndexedPage(uint64(h), unsafe.Pointer(req), int64(reqLen), unsafe.Pointer(out), int64(outCap), unsafe.Pointer(outLen)))
+}
+
 //export ic_lj_record_abi_version
 func ic_lj_record_abi_version() C.uint32_t { return C.uint32_t(C.LJ_RECORD_ABI_VERSION) }
 

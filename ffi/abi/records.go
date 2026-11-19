@@ -34,9 +34,12 @@ func recordStatus(e error) C.lj_status_t {
 	}
 }
 func RecordOpen(req unsafe.Pointer, n int64, out unsafe.Pointer) int32 {
-	return int32(recordOpen(C.lj_cstr(req), C.int64_t(n), (*C.lj_handle_t)(out)))
+	return int32(recordOpen(C.lj_cstr(req), C.int64_t(n), (*C.lj_handle_t)(out), false))
 }
-func recordOpen(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t) (st C.lj_status_t) {
+func RecordOpenV2(req unsafe.Pointer, n int64, out unsafe.Pointer) int32 {
+	return int32(recordOpen(C.lj_cstr(req), C.int64_t(n), (*C.lj_handle_t)(out), true))
+}
+func recordOpen(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t, v2 bool) (st C.lj_status_t) {
 	defer guard(&st, nil)
 	if out == nil {
 		return statusInvalid
@@ -52,16 +55,25 @@ func recordOpen(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t) (st C.lj_status_
 	if bad != statusOK {
 		return bad
 	}
-	var r struct {
+	type baseConfig struct {
 		Directory  string `json:"directory"`
 		Name       string `json:"name"`
 		Principal  string `json:"principal"`
 		Durability string `json:"durability"`
 	}
-	if err := store.Decode(raw, &r); err != nil || r.Durability != "local-sync" {
+	var r struct {
+		baseConfig
+		Indexes  []embedded.RecordIndex `json:"indexes,omitempty"`
+		ReadOnly bool                   `json:"read_only,omitempty"`
+	}
+	var target any = &r.baseConfig
+	if v2 {
+		target = &r
+	}
+	if err := store.Decode(raw, target); err != nil || r.Durability != "local-sync" {
 		return statusInvalid
 	}
-	h, e := embedded.OpenRecords(r.Directory, r.Name, r.Principal)
+	h, e := embedded.OpenIndexedRecords(r.Directory, r.Name, r.Principal, r.Indexes, r.ReadOnly)
 	if e != nil {
 		return recordStatus(e)
 	}
@@ -80,9 +92,12 @@ func recordClose(h uint64) (st C.lj_status_t) {
 	return recordStatus(v.(*embedded.RecordHandle).Close())
 }
 func RecordData(apply bool, h uint64, req unsafe.Pointer, n int64, out unsafe.Pointer, cap int64, length unsafe.Pointer) int32 {
-	return int32(recordData(apply, h, C.lj_cstr(req), C.int64_t(n), (*C.char)(out), C.int64_t(cap), (*C.int64_t)(length)))
+	return int32(recordData(apply, false, h, C.lj_cstr(req), C.int64_t(n), (*C.char)(out), C.int64_t(cap), (*C.int64_t)(length)))
 }
-func recordData(write bool, id uint64, req C.lj_cstr, n C.int64_t, out *C.char, cap C.int64_t, length *C.int64_t) (st C.lj_status_t) {
+func RecordIndexedPage(h uint64, req unsafe.Pointer, n int64, out unsafe.Pointer, cap int64, length unsafe.Pointer) int32 {
+	return int32(recordData(false, true, h, C.lj_cstr(req), C.int64_t(n), (*C.char)(out), C.int64_t(cap), (*C.int64_t)(length)))
+}
+func recordData(write, indexed bool, id uint64, req C.lj_cstr, n C.int64_t, out *C.char, cap C.int64_t, length *C.int64_t) (st C.lj_status_t) {
 	defer guard(&st, length)
 	if length == nil || out == nil || cap < 0 {
 		return statusInvalid
@@ -103,6 +118,8 @@ func recordData(write bool, id uint64, req C.lj_cstr, n C.int64_t, out *C.char, 
 	var err error
 	if write {
 		b, err = rh.Apply(b)
+	} else if indexed {
+		b, err = rh.IndexedPage(b)
 	} else {
 		b, err = rh.Page(b)
 	}

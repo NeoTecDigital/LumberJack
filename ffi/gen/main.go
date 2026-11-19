@@ -63,6 +63,9 @@ var baseExports = []export{
 
 // recordExports is optional: existing generated base wrappers stay byte-for-byte stable.
 var recordExports = []export{
+	{"ic_lj_record_v2_abi_version", "", "C.uint32_t", "C.uint32_t(C.LJ_RECORD_V2_ABI_VERSION)"},
+	{"ic_lj_record_v2_open", "req C.lj_cstr, n C.int64_t, out *C.lj_handle_t", "C.lj_status_t", "C.lj_status_t(abi.RecordOpenV2(unsafe.Pointer(req), int64(n), unsafe.Pointer(out)))"},
+	dataExport("ic_lj_record_v2_page", "RecordIndexedPage"),
 	{"ic_lj_record_abi_version", "", "C.uint32_t", "C.uint32_t(C.LJ_RECORD_ABI_VERSION)"},
 	{"ic_lj_record_open", "req C.lj_cstr, n C.int64_t, out *C.lj_handle_t", "C.lj_status_t", "C.lj_status_t(abi.RecordOpen(unsafe.Pointer(req), int64(n), unsafe.Pointer(out)))"},
 	{"ic_lj_record_close", "h C.lj_handle_t", "C.lj_status_t", "C.lj_status_t(abi.RecordClose(uint64(h)))"},

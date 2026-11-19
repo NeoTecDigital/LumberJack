@@ -133,6 +133,12 @@ uint32_t ic_lj_abi_version(void);
 
 /* Optional JSON record profile v1. The original ABI version and signatures stay
  * unchanged. Probe the extension independently; see docs/record-commands.md. */
+/* Record v2 adds declared indexes and snapshot cursors. The v1 symbols still
+ * report v1. Both versions use record_apply and record_close. */
+#define LJ_RECORD_V2_ABI_VERSION 2u
+uint32_t ic_lj_record_v2_abi_version(void);
+lj_status_t ic_lj_record_v2_open(lj_cstr req, int64_t n, lj_handle_t *out);
+lj_status_t ic_lj_record_v2_page(lj_handle_t h, lj_cstr req, int64_t n, char *out, int64_t cap, int64_t *length);
 #define LJ_RECORD_ABI_VERSION 1u
 uint32_t ic_lj_record_abi_version(void);
 lj_status_t ic_lj_record_open(lj_cstr req, int64_t n, lj_handle_t *out);
