@@ -63,7 +63,7 @@ nm-check: ffi
 	@printf '%s\n' $(BASE_EXPORTS) $(RECORD_EXPORTS) | sort -u > $(BUILD)/exports.want
 	@diff -u $(BUILD)/exports.want $(BUILD)/exports.txt || { \
 		echo "ERROR: the shipped archive's exports are not exactly the base"; exit 1; }
-	@echo "  nm: the shipped archive exports exactly the $$(wc -l < $(BUILD)/exports.txt) base functions"
+	@echo "  nm: the shipped archive exports exactly $(words $(BASE_EXPORTS)) base and $(words $(RECORD_EXPORTS)) record functions"
 
 # The ABI is real if a C program that knows nothing about Go can drive it.
 smoke: ffi
