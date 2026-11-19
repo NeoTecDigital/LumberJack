@@ -11,7 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/NeoTecDigital/LumberJack/embedded"
-	"github.com/NeoTecDigital/LumberJack/internal/store"
 )
 
 var records sync.Map // uint64 -> *embedded.RecordHandle; numbers share the base token allocator.
@@ -19,15 +18,15 @@ func recordStatus(e error) C.lj_status_t {
 	switch {
 	case e == nil:
 		return statusOK
-	case errors.Is(e, store.ErrInvalid):
+	case errors.Is(e, embedded.ErrRecordInvalid):
 		return statusInvalid
-	case errors.Is(e, store.ErrDenied):
+	case errors.Is(e, embedded.ErrRecordDenied):
 		return statusForbidden
-	case errors.Is(e, store.ErrConflict):
+	case errors.Is(e, embedded.ErrRecordConflict):
 		return statusConflict
-	case errors.Is(e, store.ErrAbsent):
+	case errors.Is(e, embedded.ErrRecordAbsent):
 		return statusNotFound
-	case errors.Is(e, store.ErrUnavailable):
+	case errors.Is(e, embedded.ErrRecordUnavailable):
 		return statusBusy
 	default:
 		return openStatus(e)
@@ -48,32 +47,18 @@ func recordOpen(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t, v2 bool) (st C.l
 	if len(registered()) != 0 {
 		return statusConflict
 	}
-	if n > store.MaxBytes {
+	if n > embedded.MaxRecordRequestBytes {
 		return statusTooLarge
 	}
 	raw, bad := take(req, n)
 	if bad != statusOK {
 		return bad
 	}
-	type baseConfig struct {
-		Directory  string `json:"directory"`
-		Name       string `json:"name"`
-		Principal  string `json:"principal"`
-		Durability string `json:"durability"`
-	}
-	var r struct {
-		baseConfig
-		Indexes  []embedded.RecordIndex `json:"indexes,omitempty"`
-		ReadOnly bool                   `json:"read_only,omitempty"`
-	}
-	var target any = &r.baseConfig
+	version := uint32(1)
 	if v2 {
-		target = &r
+		version = 2
 	}
-	if err := store.Decode(raw, target); err != nil || r.Durability != "local-sync" {
-		return statusInvalid
-	}
-	h, e := embedded.OpenIndexedRecords(r.Directory, r.Name, r.Principal, r.Indexes, r.ReadOnly)
+	h, e := embedded.OpenRecordDocument(version, raw)
 	if e != nil {
 		return recordStatus(e)
 	}
@@ -103,7 +88,7 @@ func recordData(write, indexed bool, id uint64, req C.lj_cstr, n C.int64_t, out 
 		return statusInvalid
 	}
 	*length = 0
-	if n > store.MaxBytes {
+	if n > embedded.MaxRecordRequestBytes {
 		return statusTooLarge
 	}
 	h, ok := records.Load(id)
