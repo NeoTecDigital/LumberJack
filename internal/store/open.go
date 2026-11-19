@@ -59,8 +59,8 @@ func OpenIndexed(path, issuer string, decls []Index, reader bool) (*Store, error
 	if err != nil {
 		return nil, err
 	}
-	if !token(issuer) {
-		return nil, ErrDenied
+	if !ValidPrincipal(issuer) {
+		return nil, ErrInvalid
 	}
 	m, err := readMarker(path, issuer, defs, reader)
 	if err != nil {

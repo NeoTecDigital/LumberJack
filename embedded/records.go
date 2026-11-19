@@ -40,7 +40,7 @@ func OpenRecords(dir, name, principal string) (*RecordHandle, error) {
 type RecordIndex = store.Index
 
 func OpenIndexedRecords(dir, name, principal string, defs []RecordIndex, reader bool) (*RecordHandle, error) {
-	if !filepath.IsAbs(dir) || name == "" || len(name) > 128 || name == "." || name == ".." || strings.ContainsAny(name, "/\\*?[]") || principal == "" {
+	if !filepath.IsAbs(dir) || name == "" || len(name) > 128 || name == "." || name == ".." || strings.ContainsAny(name, "/\\*?[]") || !store.ValidPrincipal(principal) {
 		return nil, store.ErrInvalid
 	}
 	cfg, _ := types.StorageFromEnvironment()
@@ -76,7 +76,7 @@ func OpenIndexedRecords(dir, name, principal string, defs []RecordIndex, reader 
 		rt.refs++
 		return &RecordHandle{rt: rt, issuer: principal, reader: reader}, nil
 	}
-	lock, err := acquireLock(path)
+	lock, err := acquireProfileLock(path, recordProfile)
 	if err != nil {
 		return nil, err
 	}

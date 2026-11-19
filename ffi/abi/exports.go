@@ -60,7 +60,7 @@ func openStatus(err error) C.lj_status_t {
 		return statusLocked
 	case errors.Is(err, embedded.ErrUnguarded):
 		return statusUnguarded
-	case errors.Is(err, embedded.ErrExtensionConflict):
+	case errors.Is(err, embedded.ErrProfileConflict), errors.Is(err, embedded.ErrExtensionConflict):
 		return statusConflict
 	case errors.Is(err, internal.ErrExtensionSet):
 		return statusInvalid

@@ -78,6 +78,10 @@ func Decode(raw []byte, v any) error {
 	}
 	return nil
 }
+
+// ValidPrincipal checks the authenticated issuer without touching the store.
+func ValidPrincipal(s string) bool { return token(s) }
+
 func token(s string) bool {
 	return len(s) > 0 && len(s) <= 256 && strings.TrimSpace(s) == s && !strings.ContainsRune(s, 0)
 }

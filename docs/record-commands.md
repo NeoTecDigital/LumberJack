@@ -98,3 +98,8 @@ Go callers can use `errors.Is` with `embedded.ErrRecordInvalid`, `ErrRecordDenie
 `ErrRecordConflict`, `ErrRecordAbsent`, or `ErrRecordUnavailable`. File-system
 errors are not folded into those categories. A closed or fenced writer cannot
 confirm a command's outcome; retry with the original command ID after recovery.
+
+A malformed principal is invalid before directory or lock creation. Opening the
+same live store under the other profile in this process returns
+`embedded.ErrProfileConflict` (also `ErrRecordConflict`; C: `LJ_CONFLICT`).
+Contention from an unidentified external holder remains `LJ_LOCKED`.
