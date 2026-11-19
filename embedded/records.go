@@ -97,15 +97,17 @@ func (h *RecordHandle) ApplyPermitted(raw []byte, p extension.Permit) ([]byte, e
 	h.mu.RLock()
 	rt := h.rt
 	h.mu.RUnlock()
-	if rt == nil || h.reader {
-		err := store.ErrUnavailable
-		if h.reader {
-			err = store.ErrDenied
-		}
+	if rt == nil {
 		if p != nil {
-			p.Settle(extension.Outcome{State: extension.WriteRefused, Unchanged: true, Err: err})
+			p.Settle(extension.Outcome{State: extension.WriteUnknown, Err: store.ErrUnavailable})
 		}
-		return nil, err
+		return nil, store.ErrUnavailable
+	}
+	if h.reader {
+		if p != nil {
+			p.Settle(extension.Outcome{State: extension.WriteRefused, Unchanged: p.WantsRevision(), Err: store.ErrDenied})
+		}
+		return nil, store.ErrDenied
 	}
 	r, err := rt.store.Apply(h.issuer, raw, p)
 	if err != nil {

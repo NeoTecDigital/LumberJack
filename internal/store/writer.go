@@ -30,11 +30,26 @@ type candidate struct {
 func (s *Store) Apply(issuer string, raw []byte, permit extension.Permit) (Receipt, error) {
 	answer := s.submit(issuer, raw)
 	if permit != nil {
-		permit.Settle(extension.Outcome{State: answer.outcome, Unchanged: answer.outcome == extension.WriteRefused, Err: answer.err, Commit: extension.Commit{Tiered: true, Seq: answer.r.Sequence, Path: s.path}})
+		o := extension.Outcome{State: answer.outcome, Err: answer.err}
+		switch o.State {
+		case extension.WriteDurable:
+			o.Commit = extension.Commit{Tiered: true, Seq: answer.r.Sequence, Path: s.path}
+		case extension.WriteRefused:
+			o.Unchanged = permit.WantsRevision()
+		}
+		permit.Settle(o)
 	}
 	return answer.r, answer.err
 }
 func (s *Store) submit(issuer string, raw []byte) reply {
+	s.life.RLock()
+	defer s.life.RUnlock()
+	s.mu.RLock()
+	fenced := s.fault != nil
+	s.mu.RUnlock()
+	if s.closed || fenced {
+		return reply{err: ErrUnavailable, outcome: extension.WriteUnknown}
+	}
 	if issuer != s.m.Owner {
 		return reply{err: ErrDenied}
 	}
@@ -43,13 +58,7 @@ func (s *Store) submit(issuer string, raw []byte) reply {
 		return reply{err: err}
 	}
 	q := &request{issuer, digest, c, make(chan reply, 1)}
-	s.life.RLock()
-	if s.closed {
-		s.life.RUnlock()
-		return reply{err: ErrUnavailable}
-	}
 	s.queue <- q
-	s.life.RUnlock()
 	return <-q.result
 }
 func (s *Store) writer() {
@@ -74,7 +83,7 @@ func (s *Store) writer() {
 func (s *Store) prepare(q *request) candidate {
 	c := candidate{q: q}
 	if s.fault != nil {
-		c.answer.err = ErrUnavailable
+		c.answer = reply{err: ErrUnavailable, outcome: extension.WriteUnknown}
 		return c
 	}
 	if old, ok := s.s.receipts[receiptKey{q.issuer, q.c.ID}]; ok {
