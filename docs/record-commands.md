@@ -1,9 +1,9 @@
 <!-- Written by Richard Christopher, Copyright 2026 NeoTec, LLC -->
-# Record commands: C interface, version 1
+# Record commands: C interface versions 1 and 2
 
 Use one Go archive per executable. The generic archive exports this family in addition to the unchanged base ABI v2. To include the optional family in a custom archive, run the same wrapper generator a second time, e.g. `go run ./ffi/gen -records -include /../ffi > record_exports.go` from the module with output directed to the archive's main package; set the include directory relative to the generated file. The normal generator output is unchanged. Do not link the generic archive alongside a custom archive.
 
-This implementation is **single owner, plaintext, local sync**. Its acknowledgement survives a successful local durability barrier, not loss of the machine. Do not use it where replicated durability, sealed storage, shared grants or extension hooks are required. Registered base extensions conflict rather than being silently bypassed. Use a fresh dedicated directory: a pointer store, an existing store configuration or an incompatible storage mode is refused. No conversion takes place. The trusted embedding host authenticates the caller, authorizes the selected directory and name, and supplies the principal at open. These are not user-controlled request parameters.
+The v1 interface is **owner-only, plaintext, local sync**. Version 2 also supports read-only grants by kind; neither version implements replicated durability or the proposed permanent erasure protocol. Its acknowledgement survives a successful local durability barrier, not loss of the machine. Do not use it where replicated durability, sealed storage, shared grants or extension hooks are required. Registered base extensions conflict rather than being silently bypassed. Use a fresh dedicated directory: a pointer store, an existing store configuration or an incompatible storage mode is refused. No conversion takes place. The trusted embedding host authenticates the caller, authorizes the selected directory and name, and supplies the principal at open. These are not user-controlled request parameters.
 
 ## Lifecycle
 
@@ -63,4 +63,33 @@ All supplied expectations apply to the state **before** the command. Each touche
 | Direct children | `{"by":"children","id":"root","limit":50}` | Supply `after` from `next` and `sequence`. |
 | Kind | `{"by":"kind","kind":"ticket","limit":50}` | Same; rows ordered by ID. |
 
-The default limit is 50; maximum 256. A continuation is a keyset/offset at the **current** sequence, not a retained snapshot. Restart if the sequence changed. A record absent or tombstoned returns not found. Row summaries never contain a parent's entire child list. The resident implementation scans and sorts for list pages; the API bounds returned rows, not total work or the size of one field.
+The default limit is 50; maximum 256. A continuation is a keyset/offset at the **current** sequence, not a retained snapshot. Restart if the sequence changed. A record absent or tombstoned returns not found. Row summaries never contain a parent's entire child list. Ordered resident postings serve these lists; the limit does not bound the size of a single returned field.
+
+## Record ABI v2: indexed and reverse reads
+
+The independently versioned symbols are `ic_lj_record_v2_abi_version()` (returns **2**), `ic_lj_record_v2_open` and `ic_lj_record_v2_page`. Both families share `ic_lj_record_apply` and `ic_lj_record_close`. Existing binaries and the existing probe remain v1; no signature or return value was changed under a v1 symbol. The optional archive wrapper generator emits both families. All buffer/status conventions are the same. For example, open with this JSON using `ic_lj_record_v2_open(req,strlen(req),&h)`:
+
+```json
+{"directory":"/var/lib/example/records","name":"work","principal":"owner","durability":"local-sync",
+ "indexes":[{"name":"by_score","kind":"ticket","field":"score","type":"int64"}]}
+```
+
+The trusted host authenticates the principal and selects the path. Declarations describe **top-level named record fields**, not slots or arbitrary paths. Up to 16 declarations per store; names (≤48 bytes) are unique, kind and field names ≤64 bytes. Declare once on creation; subsequent opens, including other handles, must supply the same set in any order. A conflicting declaration returns conflict, not an unrequested rebuild. Existing stores without declarations have the built-in kind and edge indexes. Record journals remain the source of truth: indexes and grants reconstruct on open. Older readers that cannot interpret newer marker/command shapes are not downgrade targets.
+
+Supported types: `string` (≤1,024 UTF-8 bytes; bytewise order), `int64` (signed integer without float conversion) and `bool` (false before true). Missing or null values do not make a posting. A non-null value of the wrong type fails the whole command. Setting/unsetting a field or tombstoning a record updates its postings in the same transaction as its source. Kind is immutable. Ties sort by ID.
+
+Pass one of the following to `ic_lj_record_v2_page(h,req,strlen(req),out,cap,&len)`:
+
+| Query | Request example |
+|---|---|
+| ID and current detail | `{"by":"id","id":"root","limit":50}` (entry offset/sequence as in v1) |
+| Kind page | `{"by":"kind","kind":"ticket","limit":50}` |
+| Outgoing placements | `{"by":"children","id":"root","kind":"ticket"}` |
+| Reverse placements | `{"by":"parents","id":"<record-id>","kind":"group"}`; `incoming` is synonymous. These are explicit graph links, not guesses about strings inside payloads. |
+| Declared-key range | `{"by":"key","index":"by_score","from":10,"until":20}` (inclusive lower, exclusive upper; either bound optional) |
+| Exact match | `{"by":"key","index":"by_score","equal":12}` (cannot combine with bounds) |
+| Continue a list | `{"cursor":"<returned-token>","limit":50}`; do not respecify the filter. |
+
+Lists return `{"sequence":17,"items":[...],"cursor":"..."}`; no cursor means no more rows. Maximum 256 summaries (default 50). The first response fixes the ordered membership and summaries; ordinary commits do not mix versions. ID detail is explicitly **current**, not a historical fetch by cursor. A cursor is a random, process-local lookup token bound to the store, issuer, grant generation, query and pinned sequence. Up to 32 outstanding continuation tokens per store, 30 seconds from the first page (not per hop). An expired, evicted or foreign token conflicts; restart rather than silently mixing sequences. A revoked grant is refused, not continued from a cached page. Even when a traversal is truncated at the C buffer boundary the read is not a mutation; retry or restart if the cursor expires.
+
+**Read authority.** Only the owner can issue commands. To authorize a reader, send e.g. `{"command_id":"g1","expected":{"root":{"revision":0}},"edits":[{"op":"grant_read","principal":"auditor","kind":"ticket"}]}` with the current root revision. Revoke with `revoke_read`, a new command ID and the then-current root revision. The trusted host opens with the verified reader principal, the same declarations and `"read_only":true`. This cannot create a store or authorize writes. Recheck live authority on every page, including cursor reuse after regrant. Grants do not inherit across links. For neighbors a non-owner must specify an authorized neighbor kind and be allowed to see the anchor; the owner may omit kind to see all neighbors. A hidden point/anchor is not found. Read authority is not erasure authority.
