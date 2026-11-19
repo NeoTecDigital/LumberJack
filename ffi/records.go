@@ -1,0 +1,35 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
+package main
+
+/*
+#include "lumberjack.h"
+*/
+import "C"
+import (
+	"unsafe"
+
+	"github.com/NeoTecDigital/LumberJack/ffi/abi"
+)
+
+//export ic_lj_record_abi_version
+func ic_lj_record_abi_version() C.uint32_t { return C.LJ_RECORD_ABI_VERSION }
+
+//export ic_lj_record_open
+func ic_lj_record_open(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t) C.lj_status_t {
+	return C.lj_status_t(abi.RecordOpen(unsafe.Pointer(req), int64(n), unsafe.Pointer(out)))
+}
+
+//export ic_lj_record_close
+func ic_lj_record_close(h C.lj_handle_t) C.lj_status_t {
+	return C.lj_status_t(abi.RecordClose(uint64(h)))
+}
+
+//export ic_lj_record_apply
+func ic_lj_record_apply(h C.lj_handle_t, req C.lj_cstr, n C.int64_t, out *C.char, cap C.int64_t, length *C.int64_t) C.lj_status_t {
+	return C.lj_status_t(abi.RecordData(true, uint64(h), unsafe.Pointer(req), int64(n), unsafe.Pointer(out), int64(cap), unsafe.Pointer(length)))
+}
+
+//export ic_lj_record_page
+func ic_lj_record_page(h C.lj_handle_t, req C.lj_cstr, n C.int64_t, out *C.char, cap C.int64_t, length *C.int64_t) C.lj_status_t {
+	return C.lj_status_t(abi.RecordData(false, uint64(h), unsafe.Pointer(req), int64(n), unsafe.Pointer(out), int64(cap), unsafe.Pointer(length)))
+}

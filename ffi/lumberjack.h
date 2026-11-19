@@ -17,11 +17,11 @@
  * `--allow-multiple-definition` does not fix it — it produces two Go runtimes in one
  * address space, which is worse than a link error because it starts.
  *
- * THE EXPORTS ARE THE BASE, AND ONLY THE BASE. The generic archive (`make ffi`) exports exactly
- * the nineteen functions declared here, and `make nm-check` holds it to that list. The fourteen
+ * The generic archive exports the nineteen base functions and the separately versioned
+ * record family below; nm-check checks both. The fourteen
  * product exports the archive carried before the split — the eight ic_lj_domain_* and the six
  * ic_lj_personal_source_* / ic_lj_native_* — are not in it: each product builds its own archive, a
- * SUPERSET of this one, with its own header that includes this file (docs/extension-api.md §6),
+ * superset of the base, with its own header that includes this file (docs/extension-api.md §6),
  * because one binary may hold one Go runtime and so one archive. A product links that archive and
  * no other. The ABI is still 2: no base signature or status changed, and a caller built against
  * the earlier header that calls a product export fails to LINK against this archive, not to run. */
@@ -130,6 +130,15 @@ lj_status_t ic_lj_events_publish(lj_handle_t h, lj_cstr req, int64_t req_len,
 
 /* The ABI version this archive implements. Takes no handle, cannot fail, cannot panic. */
 uint32_t ic_lj_abi_version(void);
+
+/* Optional JSON record profile v1. The original ABI version and signatures stay
+ * unchanged. Probe the extension independently; see docs/record-commands.md. */
+#define LJ_RECORD_ABI_VERSION 1u
+uint32_t ic_lj_record_abi_version(void);
+lj_status_t ic_lj_record_open(lj_cstr req, int64_t n, lj_handle_t *out);
+lj_status_t ic_lj_record_close(lj_handle_t h);
+lj_status_t ic_lj_record_apply(lj_handle_t h, lj_cstr req, int64_t n, char *out, int64_t cap, int64_t *length);
+lj_status_t ic_lj_record_page(lj_handle_t h, lj_cstr req, int64_t n, char *out, int64_t cap, int64_t *length);
 
 /* Open a runtime over a state file and bind a principal, returning a TOKEN for it in *out_handle.
  *
