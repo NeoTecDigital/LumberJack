@@ -566,6 +566,21 @@ curl -X POST http://localhost:8080/nodes \
 }
 ```
 
+#### Create Node Only If Absent
+`If-None-Match: *` makes the create conditional: it succeeds, with the answer above, only if the
+last segment of the path names no node yet, of any type. Missing ancestors are still created. A
+path that already resolves is refused `412` with its canonical path in the message, and nothing is
+written or announced. The check and the create share one forest hold, so of concurrent conditional
+creates of one path exactly one succeeds. Any other `If-None-Match` value is refused `400`; a caller
+who may not write the path is still refused `403`. Embedded: `Handle.CreateNodeExclusive`.
+```bash
+curl -X POST http://localhost:8080/nodes \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -H "If-None-Match: *" \
+  -d '{"path": "work/projects/project-alpha"}'
+```
+
 #### Get Forest
 
 Filtered by the caller's permissions: a node the session may not read is not in the answer, and
@@ -821,6 +836,7 @@ All endpoints return standard HTTP status codes:
 - 403: Forbidden
 - 404: Not Found
 - 409: Conflict (a plan for an event id that has already started)
+- 412: Precondition Failed (`POST /nodes` with `If-None-Match: *` for a path that already exists)
 - 413: Request Entity Too Large (an upload over the attachment size limit, or an object over `max_object_bytes`)
 - 500: Internal Server Error
 
