@@ -134,7 +134,7 @@ func runtimeOpenWait(rt *Runtime) chan struct{} {
 }
 
 func openRuntimeLocked(config Config, key, principal string, exts []extension.Extension) (*Handle, error) {
-	lock, err := acquireLock(key)
+	lock, err := acquireProfileLock(key, pointerProfile)
 	if err != nil {
 		return nil, err
 	}
