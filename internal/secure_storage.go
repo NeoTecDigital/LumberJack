@@ -32,12 +32,13 @@ type storageAccountKey struct {
 }
 
 // secureStorage seals one store. label is the one its envelope was read under, and the one it is
-// written under: legacy for a new store in this release, so a store keeps the label it has. level
+// written under. New stores default to neutral. level
 // is the state level its envelope version carried at the last decode.
 type secureStorage struct {
 	wrapper  storageKeyWrapper
 	id       string
 	accounts map[string]storageAccountKey
+	labels   []compat.Label
 	label    compat.Label
 	level    int
 }
@@ -81,7 +82,7 @@ func (server *Server) storageCodec() (*secureStorage, error) {
 			return
 		}
 		server.storage = &secureStorage{wrapper: wrapper, id: hex.EncodeToString(id), accounts: map[string]storageAccountKey{},
-			label: writeLabel(config)}
+			label: writeLabel(config), labels: hostLabels(config)}
 	})
 	return server.storage, server.storageErr
 }
@@ -103,13 +104,6 @@ func (server *Server) storageConfig() types.StorageConfig {
 	return server.storageSettings
 }
 
-// writeLabel is the label a configuration writes a store under.
-func writeLabel(config types.StorageConfig) compat.Label {
-	if config.WriteLabel == types.StorageLabelNeutral {
-		return compat.LabelNeutral
-	}
-	return compat.LabelLegacy
-}
 func (s *secureStorage) aad(purpose string) []byte {
 	return []byte(s.label.StatePrefix() + s.id + "/" + purpose)
 }
@@ -308,16 +302,16 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, errors.New("invalid encrypted state envelope")
 	}
-	label, level, known := compat.EnvelopeLabel(envelope.Version)
+	neutral, level, known := compat.EnvelopeFormat(envelope.Version)
 	if !known || len(envelope.ID) != 64 {
 		return nil, errors.New("unsupported encrypted state format")
 	}
-	s.id, s.label, s.level = envelope.ID, label, level
-	master, err := s.wrapper.Unwrap(context.Background(), envelope.Key, s.aad("snapshot"))
+	label, master, err := unwrapLabel(s.wrapper, s.labels, neutral, envelope.Key, envelope.ID, "snapshot")
 	if err != nil {
 		return nil, err
 	}
 	defer clear(master)
+	s.id, s.label, s.level = envelope.ID, label, level
 	compressed, err := storageOpen(master, envelope.Payload, s.aad("snapshot"))
 	if err != nil {
 		return nil, err
@@ -365,7 +359,7 @@ func (server *Server) readEncryptedState(file *os.File) (*core.Node, bool, error
 		return nil, true, err
 	}
 	if storage == nil {
-		return nil, true, errors.New("encrypted state requires configured storage encryption")
+		return nil, true, fmt.Errorf("encrypted state requires configured storage encryption: %w", ErrSealingLabel)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxDecompressedState+1))
 	if err != nil {
@@ -395,8 +389,8 @@ func (server *Server) readEncryptedState(file *os.File) (*core.Node, bool, error
 // label when a rewrap is asked for. Either way the store is written back before it serves.
 func (server *Server) rewrapOnOpen(storage *secureStorage) error {
 	config := server.storageConfig()
-	if writeLabel(config) == compat.LabelNeutral && storage.label != compat.LabelNeutral {
-		if err := storage.relabel(context.Background(), compat.LabelNeutral); err != nil {
+	if config.WriteLabel == types.StorageLabelNeutral && storage.label != (compat.Label{}) {
+		if err := storage.relabel(context.Background(), compat.Label{}); err != nil {
 			return err
 		}
 		server.storageRewrite = true

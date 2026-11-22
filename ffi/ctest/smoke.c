@@ -363,6 +363,7 @@ static void threads(const char *parent) {
 
 int main(void) {
     assert(ic_lj_abi_version() == LJ_ABI_VERSION);
+    assert(ic_lj_sealing_labels_version() == 1u);
 
     /* The echo convention, end to end. */
     char echo[64]; int64_t elen = -1;

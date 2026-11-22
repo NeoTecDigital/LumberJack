@@ -205,7 +205,7 @@ func TestEncryptedFixturesWrittenLegacyGiveEqualRecords(t *testing.T) {
 				t.Fatal(err)
 			}
 			loaded := compatLoadEncrypted(t, compatRead(t, entry))
-			server := reloadServer(t, dir)
+			server := reloadWithStorage(t, dir, cutStorageConfig(t))
 			if err := server.persistState(server.statePath()); err != nil {
 				t.Fatal(err)
 			}

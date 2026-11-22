@@ -2,7 +2,6 @@
 package types
 
 import (
-	"fmt"
 	"os"
 )
 
@@ -20,24 +19,10 @@ type StorageConfig struct {
 	MigrateLegacy bool `json:"migrate_legacy,omitempty" yaml:"migrate_legacy" mapstructure:"migrate_legacy"`
 	// RewrapKeys wraps every account key again on open.
 	RewrapKeys bool `json:"rewrap_keys,omitempty" yaml:"rewrap_keys" mapstructure:"rewrap_keys"`
-	// WriteLabel is the sealing label written: StorageLabelLegacy (the default for this release)
-	// or StorageLabelNeutral. A store read under the neutral label stays neutral.
+	// Labels supplies the host's AAD prefixes for pre-neutral wire versions.
+	Labels []SealingLabel `json:"labels,omitempty" yaml:"labels,omitempty" mapstructure:"labels"`
+	// WriteLabel selects a configured label for new stores. Empty means neutral.
 	WriteLabel string `json:"write_label,omitempty" yaml:"write_label" mapstructure:"write_label"`
-}
-
-// The sealing labels a store may be written under (docs/extension-api.md §7.5).
-const (
-	StorageLabelLegacy  = "legacy"
-	StorageLabelNeutral = "neutral"
-)
-
-// Validate refuses a label no build writes.
-func (c StorageConfig) Validate() error {
-	switch c.WriteLabel {
-	case "", StorageLabelLegacy, StorageLabelNeutral:
-		return nil
-	}
-	return fmt.Errorf("storage write_label %q: use %q or %q", c.WriteLabel, StorageLabelLegacy, StorageLabelNeutral)
 }
 
 // storageEnvironment is each StorageConfig field's variable, and the deprecated name it replaces.

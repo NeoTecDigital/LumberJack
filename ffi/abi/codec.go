@@ -17,6 +17,7 @@ import (
 	"strconv"
 
 	"github.com/NeoTecDigital/LumberJack/embedded"
+	"github.com/NeoTecDigital/LumberJack/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -95,10 +96,33 @@ func decodeYAML(document []byte, into interface{}) error {
 // openRequest is the YAML body of ic_lj_open: enough config to name a state file, and the principal
 // the handle acts as.
 type openRequest struct {
-	Organization string `json:"organization"`
-	DatabasePath string `json:"database_path"`
-	Name         string `json:"name"`
-	Principal    string `json:"principal"`
+	Storage      *openStorage `json:"storage,omitempty"`
+	Organization string       `json:"organization"`
+	DatabasePath string       `json:"database_path"`
+	Name         string       `json:"name"`
+	Principal    string       `json:"principal"`
+}
+
+// Unknown fields in a trusted storage policy must not silently select defaults.
+type openStorage struct {
+	Mode         string               `json:"mode"`
+	KMSKey       string               `json:"kms_key"`
+	LocalKeyFile string               `json:"local_key_file"`
+	Labels       []types.SealingLabel `json:"labels"`
+	WriteLabel   string               `json:"write_label"`
+}
+
+func (s *openStorage) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	type wire openStorage // no recursive UnmarshalJSON
+	return decoder.Decode((*wire)(s))
+}
+func (s *openStorage) resolve() (*types.StorageConfig, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return types.ResolveOpenStorage(&types.StorageConfig{Mode: s.Mode, KMSKey: s.KMSKey, LocalKeyFile: s.LocalKeyFile, Labels: s.Labels, WriteLabel: s.WriteLabel})
 }
 
 // adoptRequest is the YAML body of ic_lj_adopt: only what names a state file. No organization and no

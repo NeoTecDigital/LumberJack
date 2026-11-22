@@ -35,7 +35,7 @@ on the user, or its id under the root's preserved `account_security` — is refu
 kept as the bytes the file held and written back in place. A node carrying an ownership marker is
 hidden from every generic read, and an ordinary write that would change its subtree is refused 403.
 
-**The C ABI** exports the nineteen base functions `ffi/lumberjack.h` declares, and no others
+**The C ABI** exports the twenty base functions `ffi/lumberjack.h` declares, plus its separately versioned record profile
 (`make nm-check`). The ABI version is still 2. A caller that used an `ic_lj_domain_*`,
 `ic_lj_personal_source_*` or `ic_lj_native_*` export links its product's archive instead.
 
@@ -187,19 +187,18 @@ environment:
 | `LUMBERJACK_STORAGE_LOCAL_KEY_FILE` | a private 32-byte key file, for `local-test` |
 | `LUMBERJACK_STORAGE_MIGRATE_LEGACY` | `1` lets a plaintext store be sealed on open |
 | `LUMBERJACK_STORAGE_REWRAP_KEYS` | `1` wraps every account key again on open |
-| `LUMBERJACK_STORAGE_WRITE_LABEL` | `legacy` (the default) or `neutral` |
+| `LUMBERJACK_STORAGE_WRITE_LABEL` | `neutral` (new-store default) or a host-configured label name |
 | `LUMBERJACK_ADMIN_RECONCILE` | `1` lets `application_configure` reset the configured admin's password |
 
 The `CORRESPONDER_STORAGE_*` and `CORRESPONDER_ADMIN_RECONCILE` names are still read, for this
 release only, when the new name is not set; each use is logged as deprecated.
 
-**Sealing labels.** Every store sealed so far carries the legacy label (envelope versions 3 and 4,
-object key file version 1, object record flag 1), and that stays the default for this release.
-`LUMBERJACK_STORAGE_WRITE_LABEL=neutral` writes the product-free label instead: envelope 5 or 6,
-key file version 2 for a new object store, flag 2 for new objects. The first neutral write wraps
-every account key again under the new label. It is a one-way door: a build from before the split
-refuses a neutral envelope and does not serve a flag-2 object. A store read under the neutral label
-stays neutral. Both labels are read forever.
+**Sealing labels.** New encrypted stores use the neutral format (state 5/6, object key 2).
+To open older formats (state 3/4 or object key 1), the host supplies its original AAD
+prefixes as `storage.labels` on open. Set `storage.write_label` to a configured name to
+create fixtures or stores readable by that earlier host. Registering a reader does not
+re-seal an existing store. An explicit neutral migration is not readable by the old build.
+See [configuration, authentication and rollback](docs/extension-api.md#75-encrypted-state-and-the-sealing-label-table).
 
 ### Migrating an existing database
 

@@ -17,7 +17,7 @@ CANON_CORPUS ?= ../../crates/intercessor/tests/corpus/canon_corpus.json
 
 # The generic archive's exports, exactly: the base a product archive is a superset of
 # (docs/extension-api.md §6). nm-check refuses an archive with any other ic_lj_ export.
-BASE_EXPORTS := ic_lj_abi_version ic_lj_echo ic_lj_open ic_lj_adopt ic_lj_close ic_lj_node_create \
+BASE_EXPORTS := ic_lj_abi_version ic_lj_sealing_labels_version ic_lj_echo ic_lj_open ic_lj_adopt ic_lj_close ic_lj_node_create \
 	ic_lj_event_plan ic_lj_event_start ic_lj_event_append ic_lj_event_end ic_lj_event_entries \
 	ic_lj_query ic_lj_aggregate ic_lj_forest ic_lj_stream_poll ic_lj_events_publish \
 	ic_lj_application_configure ic_lj_application_call ic_lj_application_free
@@ -120,15 +120,15 @@ rollback-check: | $(BUILD)
 # A product archive in miniature (docs/extension-api.md §6): ffi/testdata/example is a main package
 # of the generated base wrappers, one export of its own and an extension registered in init. It is
 # built as ONE c-archive and driven from C, which proves the composition and that the product export
-# resolves handles ic_lj_open issued; its exports are the nineteen base functions plus its own.
+# resolves handles ic_lj_open issued; its exports are the twenty base functions plus its own.
 EXAMPLE_ARCHIVE := $(BUILD)/libexample.a
 product-archive-example: | $(BUILD)
 	@CGO_ENABLED=1 $(GO) build -buildmode=c-archive -trimpath -o $(EXAMPLE_ARCHIVE) ./ffi/testdata/example
 	@$(CC) $(CFLAGS) -I ffi -I ffi/testdata/example -I $(BUILD) -o $(BUILD)/example ffi/ctest/example.c $(EXAMPLE_ARCHIVE) $(CLIBS)
 	@$(BUILD)/example
-	@test "$$($(NM) -g --defined-only $(EXAMPLE_ARCHIVE) | awk '$$2 == "T" && $$3 ~ /^ic_lj_/ { print $$3 }' | sort -u | wc -l)" = 20 || { \
+	@test "$$($(NM) -g --defined-only $(EXAMPLE_ARCHIVE) | awk '$$2 == "T" && $$3 ~ /^ic_lj_/ { print $$3 }' | sort -u | wc -l)" = 21 || { \
 		echo "ERROR: the example archive does not export the base plus its one export"; exit 1; }
-	@echo "  example: a product archive exports the 19 base functions and its own, over one handle table"
+	@echo "  example: a product archive exports the 20 base functions and its own, over one handle table"
 
 .PHONY: smoke-records
 smoke-records: ffi

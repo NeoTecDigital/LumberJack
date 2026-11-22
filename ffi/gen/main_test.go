@@ -25,13 +25,13 @@ func TestGeneratedWrappersAreCurrent(t *testing.T) {
 	}
 }
 
-// The generator writes the nineteen base exports and nothing else.
-func TestGeneratorWritesTheNineteenBaseExports(t *testing.T) {
+// The generator writes the twenty base exports and nothing else.
+func TestGeneratorWritesTheTwentyBaseExports(t *testing.T) {
 	var out bytes.Buffer
 	if err := Write(&out, "main", ""); err != nil {
 		t.Fatal(err)
 	}
-	if count := bytes.Count(out.Bytes(), []byte("//export ic_lj_")); count != 19 || len(baseExports) != 19 {
+	if count := bytes.Count(out.Bytes(), []byte("//export ic_lj_")); count != 20 || len(baseExports) != 20 {
 		t.Fatalf("%d exports generated, %d declared", count, len(baseExports))
 	}
 }
