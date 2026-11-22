@@ -54,6 +54,11 @@ func encodeWholeNode(node *core.Node, children []string) ([]byte, error) {
 // detectChangeSet finds what changed since the last commit by encoding every node and comparing
 // it with the bytes the cache holds, and answers the record for it, or nil when nothing changed.
 // The caller holds the forest exclusively.
+//
+// THE CACHE MOVES ONLY WITH A RECORD. It is updated after the whole walk has encoded, never part
+// way: a node that failed to encode leaves the cache describing the state at the last record, so
+// the next detection still finds every change this one could not log, and the cold writer, which
+// writes the state file from the cache, never writes a change the log does not hold.
 func (t *tier) detectChangeSet(forest *core.Node) ([]byte, error) {
 	set := changeSet{Root: forest.ID, Nodes: map[string]json.RawMessage{}}
 	visited := make(map[string]bool, len(t.cache))
@@ -71,7 +76,6 @@ func (t *tier) detectChangeSet(forest *core.Node) ([]byte, error) {
 		if held, known := t.cache[node.ID]; known && string(held) == string(encoded) {
 			return
 		}
-		t.cache[node.ID] = encoded
 		set.Nodes[node.ID] = encoded
 	})
 	if failure != nil {
@@ -80,14 +84,26 @@ func (t *tier) detectChangeSet(forest *core.Node) ([]byte, error) {
 	for id := range t.cache {
 		if !visited[id] {
 			set.Deleted = append(set.Deleted, id)
-			delete(t.cache, id)
 		}
 	}
+	t.settle(set)
 	if len(set.Nodes) == 0 && len(set.Deleted) == 0 {
 		return nil, nil
 	}
 	sort.Strings(set.Deleted)
 	return json.Marshal(set)
+}
+
+// settle moves the cache to the state a detected change set describes: what the forest holds once
+// its record is staged. The cache then describes the whole forest again.
+func (t *tier) settle(set changeSet) {
+	for id, encoded := range set.Nodes {
+		t.cache[id] = encoded
+	}
+	for _, id := range set.Deleted {
+		delete(t.cache, id)
+	}
+	t.root, t.partial = set.Root, false
 }
 
 // applyChangeSet merges one record into a table during recovery.

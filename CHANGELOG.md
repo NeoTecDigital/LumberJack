@@ -73,8 +73,17 @@ exactly what every earlier build did.
   as before, every `cold_every_commits` commits or `cold_every_seconds` seconds, and on a clean
   shutdown. The state file names the last log sequence it contains, inside the document, so it is
   written atomically with it. Log segments are deleted only once a durable state file wholly
-  covers them. The forest is held only for the encode, so a commit during a snapshot waits for
-  one encode and not for the disk.
+  covers them.
+- **A cold snapshot no longer holds the forest while it encodes.** It encoded the whole forest
+  under the exclusive hold, and on a 425 MB store every read and commit waited 0.4–0.85 s once a
+  snapshot. The change cache already holds every node as the state codec encodes it at the newest
+  staged record; the writer now copies its index under a shared hold, with the sequence, and
+  encodes, hashes and writes with the forest free. The file is byte for byte what encoding the
+  forest at that sequence wrote, and recovery is unchanged. A cache seeded from a file it could not
+  wholly encode falls back to encoding the forest, under a shared hold, until the next commit.
+- **A change that could not be encoded is logged by the next commit.** Change detection updated
+  its cache node by node and kept what it had updated when a later node failed to encode, so the
+  next record left those nodes out and a restart lost them. The cache now moves only with a record.
 - **Recovery.** The state file is loaded and the log is replayed past its sequence, in order. A
   torn tail in the last segment is cut. Damage anywhere else, an intact record out of sequence, or
   a log that begins past the state file refuses to open, naming the segment and offset.

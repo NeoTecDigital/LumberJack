@@ -26,10 +26,13 @@ import (
 // written for `none`. The forest lock covers the mutation and the ENCODING OF THE CHANGE, and the
 // disk is outside it, exactly as the snapshot writer arranged.
 //
-// THE COLD WRITER HOLDS THE FOREST ONLY TO ENCODE IT. The hash, the gzip, the write and the
-// fsyncs happen with the forest free, so a commit during a snapshot waits for one encode of the
-// forest and not for the disk. The state file names the log sequence it contains; segments the
-// file wholly covers are deleted after it is durable, never before.
+// THE COLD WRITER DOES NOT ENCODE THE FOREST UNDER THE HOLD. The change cache already holds every
+// node as the state codec encodes it, at the newest staged record, and its entries are replaced,
+// never written into. Under a SHARED hold the writer takes the log sequence and a copy of the
+// cache's index, which is the state at that sequence and nothing after it; the encode, the hash,
+// the gzip, the write and the fsyncs all happen with the forest free, so reads and commits go on
+// through the whole snapshot. The state file names the log sequence it contains; segments the file
+// wholly covers are deleted after it is durable, never before.
 type tier struct {
 	config types.PersistenceConfig
 	log    *persist.Log
@@ -37,6 +40,15 @@ type tier struct {
 	// detection compares a node against to find whether a commit changed it. It is read and
 	// written under the exclusive forest hold only.
 	cache map[string][]byte
+	// root is the root id of the state the cache describes.
+	root string
+	// partial says the cache does not describe the whole forest: seeding it from the state file
+	// could not encode some node. The next whole-forest detection clears it; until then the cold
+	// writer encodes the forest itself, under a shared hold.
+	partial bool
+	// beforeEncode, when set, runs once the cold writer has captured its image and released the
+	// forest, before the image is encoded. Tests hold an encode open with it.
+	beforeEncode func()
 
 	commits  atomic.Int64
 	lastCold atomic.Uint64
@@ -186,15 +198,18 @@ func (server *Server) refuseWholeStateWriterUnderTier(what string) error {
 // seedCache fills the change cache from a table: the file's own bytes where the node came from
 // the file untouched, a fresh encoding where the log changed it.
 func (t *tier) seedCache(table *stateTable) {
+	t.root = table.Root
 	for id, record := range table.records {
 		if raw, held := table.Nodes[id]; held {
 			t.cache[id] = raw
 			continue
 		}
 		encoded, err := encodeWholeNode(record.Node, record.Children)
-		if err == nil {
-			t.cache[id] = encoded
+		if err != nil {
+			t.partial = true
+			continue
 		}
+		t.cache[id] = encoded
 	}
 }
 
@@ -289,22 +304,22 @@ func (t *tier) startCold(snapshot func() (uint64, error), report func(error)) {
 	}()
 }
 
-// snapshotCold writes the state file for everything staged so far. The forest is held only for
-// the encode. It answers the sequence the file now covers.
+// snapshotCold writes the state file for everything staged so far. The forest is held, shared, only
+// to capture the image of it at the newest staged sequence; the encode and the disk are outside the
+// hold. It answers the sequence the file now covers.
 func (server *Server) snapshotCold() (uint64, error) {
 	t := server.tier
 	t.snapshotting.Lock()
 	defer t.snapshotting.Unlock()
 
-	server.forestMutex.Lock()
-	seq := t.log.LastStaged()
-	if seq == t.lastCold.Load() {
-		server.forestMutex.Unlock()
-		return seq, nil
+	image, due, err := server.captureCold()
+	if err != nil {
+		return 0, err
 	}
-	data, err := encodeStateAt(server.forest, seq)
-	t.log.RollAfter(seq)
-	server.forestMutex.Unlock()
+	if !due {
+		return image.seq, nil
+	}
+	data, err := t.encodeImage(image)
 	if err != nil {
 		return 0, err
 	}
@@ -313,11 +328,63 @@ func (server *Server) snapshotCold() (uint64, error) {
 	if err := server.publishState(server.statePath(), hash[:], data); err != nil {
 		return 0, err
 	}
-	t.lastCold.Store(seq)
-	if err := t.log.Trim(seq); err != nil {
-		server.logger.Warn("Could not trim the log after the snapshot at %d: %v", seq, err)
+	t.lastCold.Store(image.seq)
+	if err := t.log.Trim(image.seq); err != nil {
+		server.logger.Warn("Could not trim the log after the snapshot at %d: %v", image.seq, err)
 	}
-	return seq, nil
+	return image.seq, nil
+}
+
+// coldImage is the forest at one log sequence, as the cold writer captured it: each node as the
+// change cache holds it, or, when the cache could not describe the whole forest, the document
+// already encoded.
+type coldImage struct {
+	seq   uint64
+	root  string
+	nodes map[string]json.RawMessage
+	data  []byte
+}
+
+// captureCold takes the image of the forest at the newest staged sequence, under a shared hold, and
+// asks the log to start a new segment after it. It answers false when the state file already holds
+// that sequence.
+//
+// The shared hold is what makes the image the state AT the sequence: a record is staged and the
+// cache moved to it only under the exclusive hold, so neither can move while this runs. Readers
+// share the hold; a commit waits only for the copy of the cache's index, not for an encode.
+func (server *Server) captureCold() (coldImage, bool, error) {
+	t := server.tier
+	server.forestMutex.RLock()
+	defer server.forestMutex.RUnlock()
+
+	image := coldImage{seq: t.log.LastStaged(), root: t.root}
+	if image.seq == t.lastCold.Load() {
+		return image, false, nil
+	}
+	var err error
+	if t.partial {
+		image.data, err = encodeStateAt(server.forest, image.seq)
+	} else {
+		image.nodes = make(map[string]json.RawMessage, len(t.cache))
+		for id, encoded := range t.cache {
+			image.nodes[id] = encoded
+		}
+	}
+	t.log.RollAfter(image.seq)
+	return image, err == nil, err
+}
+
+// encodeImage is the state document of an image: the same bytes encodeStateAt writes for the forest
+// at the image's sequence, because each node is the state codec's own encoding of it and the
+// document's keys are sorted the same way. It runs with the forest free.
+func (t *tier) encodeImage(image coldImage) ([]byte, error) {
+	if t.beforeEncode != nil {
+		t.beforeEncode()
+	}
+	if image.nodes == nil {
+		return image.data, nil
+	}
+	return json.Marshal(stateTable{Version: stateVersion, Root: image.root, LogSequence: image.seq, Nodes: image.nodes})
 }
 
 // closeStore takes the clean-shutdown snapshot and closes the log. Shutdown calls it last, with
