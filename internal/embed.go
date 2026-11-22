@@ -67,12 +67,25 @@ func (e *apiError) Status() int { return e.status }
 
 // CreateNode makes the node a path names and returns where it lives.
 func (server *Server) CreateNode(userID string, request CreateNodeRequest) (NodeAnswer, error) {
+	return server.createNode(userID, request, createOrReuse)
+}
+
+// CreateNodeExclusive is CreateNode refusing a path whose last segment already names a node: the
+// embedded twin of POST /nodes with `If-None-Match: *`. The refusal carries Status 412 and the
+// existing canonical path, and nothing is written or announced. A separate method rather than a
+// field on CreateNodeRequest, so the request's json and yaml shapes stay exactly what they were.
+func (server *Server) CreateNodeExclusive(userID string, request CreateNodeRequest) (NodeAnswer, error) {
+	return server.createNode(userID, request, createIfAbsent)
+}
+
+// createNode is the one body of both: the type read the way the route reads it, then the hold.
+func (server *Server) createNode(userID string, request CreateNodeRequest, mode createMode) (NodeAnswer, error) {
 	nodeType, err := nodeTypeFrom(request)
 	if err != nil {
 		return NodeAnswer{}, err
 	}
 
-	created, err := server.createNodeUnderHold(request.Path, nodeType, userID)
+	created, err := server.createNodeUnderHold(request.Path, nodeType, userID, mode)
 	if err != nil {
 		return NodeAnswer{}, err
 	}

@@ -134,6 +134,22 @@ object never rewrites `.dat`, takes no forest lock and announces nothing on `/st
   wrapped under a store master key in `<name>.objects/key`. The id stays the BLAKE3 of the plaintext.
   A plaintext object store under an encrypted mode, or a sealed one under none, is refused.
 
+### Conditional node create
+
+`POST /nodes` can create a node only if it is not already there. Without the header the route is
+unchanged: idempotent, answering the node already at the path.
+
+- **`If-None-Match: *`** makes the create conditional on the last segment of the path naming no
+  node, of any type. A path that already resolves is refused `412 Precondition Failed`, naming its
+  canonical path, and nothing is written or announced. Missing ancestors are still created as
+  branches.
+- **One hold.** The check and the create run under the same exclusive forest hold, so of concurrent
+  conditional creates of one path exactly one answers `200` and every other `412`.
+- **Any other `If-None-Match`** (an entity tag, a list, an empty value) is refused `400`. A caller
+  without write permission on the path is still refused `403`, not `412`.
+- **Embedded.** `CreateNodeExclusive` on `embedded.Handle` is the same create; its refusal's
+  `Status()` is 412. `CreateNode` and the C ABI are unchanged.
+
 ## 0.3.2
 
 The last release before the changelog. See the git history.

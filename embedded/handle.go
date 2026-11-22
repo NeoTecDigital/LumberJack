@@ -107,6 +107,16 @@ func (h *Handle) CreateNode(request CreateNodeRequest) (NodeAnswer, error) {
 	return h.runtime.server.CreateNode(h.actor(), request)
 }
 
+// CreateNodeExclusive is CreateNode refusing a path whose last segment already names a node, with an
+// error whose Status is 412 — the embedded twin of POST /nodes with `If-None-Match: *`. Of concurrent
+// exclusive creates of one path, exactly one succeeds.
+func (h *Handle) CreateNodeExclusive(request CreateNodeRequest) (NodeAnswer, error) {
+	if err := h.ensureOpen(); err != nil {
+		return NodeAnswer{}, err
+	}
+	return h.runtime.server.CreateNodeExclusive(h.actor(), request)
+}
+
 // PlanEvent schedules a future event and returns the mutation it announced.
 func (h *Handle) PlanEvent(request PlanEventRequest) (MutationEvent, error) {
 	if err := h.ensureOpen(); err != nil {

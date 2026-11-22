@@ -29,6 +29,15 @@ const (
 //
 // It is IDEMPOTENT, so a client that creates the same path twice does not have to distinguish
 // "I made it" from "it was already there".
+//
+// UNLESS IT ASKS TO TELL THEM APART. `If-None-Match: *` (RFC 9110 §13.1.2) makes the create
+// conditional on the LAST segment naming nothing yet, of any type: a path that already resolves is
+// answered 412 with its canonical path, and nothing is written or announced. Missing ancestors are
+// still created as above. A client claiming a name — the first of two concurrent claims wins, the
+// second is told — cannot get that from the idempotent default, which answers both 200 with the same
+// node. The check and the create are one hold (see createNodeUnderHold), so of N concurrent
+// conditional creates of one path exactly one succeeds. Any other If-None-Match value is a 400: this
+// route has no entity tags to compare.
 func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	server.logger.Enter("CreateNode")
 	defer server.logger.Exit("CreateNode")
@@ -36,6 +45,12 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	userID, ok := userIDFrom(r)
 	if !ok {
 		http.Error(w, "No user in session", http.StatusUnauthorized)
+		return
+	}
+
+	mode, err := createModeFrom(r)
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 
@@ -54,7 +69,7 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	// branch hint, and markBranch writes Type under a DIFFERENT request's hold. Two ordinary
 	// POST /nodes — one making `work/n` and one making `work/n/c` — were therefore a write to Type
 	// against this handler's read of it.
-	created, err := server.createNodeUnderHold(path, nodeType, userID)
+	created, err := server.createNodeUnderHold(path, nodeType, userID, mode)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -64,6 +79,36 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	server.logger.Success("Created node at %s", path)
 }
 
+// createMode is what a create does when the last segment of its path already names a node.
+type createMode int
+
+const (
+	// createOrReuse answers the node already there. It is the default, and what keeps the route
+	// idempotent.
+	createOrReuse createMode = iota
+	// createIfAbsent refuses it with 412: the caller asked for the node to be NEW, not merely there.
+	createIfAbsent
+)
+
+// ifNoneMatchAny is the one If-None-Match value POST /nodes understands: "no current node at all".
+const ifNoneMatchAny = "*"
+
+// createModeFrom reads the precondition a POST /nodes carries. No If-None-Match is the default; `*`
+// is a create-if-absent. Anything else names entity tags, which a node does not carry, so it is
+// refused rather than ignored — a client that believes it sent a condition must not be answered as
+// though it sent none.
+func createModeFrom(r *http.Request) (createMode, error) {
+	values := r.Header.Values("If-None-Match")
+	if len(values) == 0 {
+		return createOrReuse, nil
+	}
+	if len(values) == 1 && values[0] == ifNoneMatchAny {
+		return createIfAbsent, nil
+	}
+	return createOrReuse, apiErrorf(http.StatusBadRequest,
+		"unsupported If-None-Match %q: POST /nodes accepts only %q", strings.Join(values, ", "), ifNoneMatchAny)
+}
+
 // createNodeUnderHold makes the path, ANNOUNCES it, and reports what the answer needs to say about
 // it.
 //
@@ -71,10 +116,18 @@ func (server *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 // event functions: HTTP and the embedded API call this one function, so neither can forget to
 // announce and both announce identically. It happens after changeForest has persisted, never
 // before — an announcement of something not written is the same lie as a 200 for it.
-func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, userID string) (nodeAnswer, error) {
+//
+// THE CONDITION IS CHECKED UNDER THE SAME HOLD AS THE CREATE. Checked before it, two concurrent
+// createIfAbsent of one path would both see nothing, and both would be answered 200 for one node. A
+// refused condition returns an error out of the change, so changeForest persists nothing and this
+// publishes nothing.
+func (server *Server) createNodeUnderHold(path string, nodeType core.NodeType, userID string, mode createMode) (nodeAnswer, error) {
 	var created nodeAnswer
 
 	err := server.changeForest(func() error {
+		if err := server.refuseExistingLocked(path, userID, mode); err != nil {
+			return err
+		}
 		node, err := server.createNodePath(path, nodeType, userID)
 		if err != nil {
 			server.logger.Failure("Failed to create node %s: %v", path, err)
@@ -186,6 +239,35 @@ func (server *Server) createNodePath(path string, nodeType core.NodeType, userID
 	}
 
 	return parent, nil
+}
+
+// refuseExistingLocked answers 412 for a createIfAbsent whose path already resolves, and nil
+// otherwise. The caller holds the forest exclusively.
+//
+// It ONLY READS, and it runs BEFORE createNodePath, because createNodePath writes on its way down —
+// an existing ancestor is given the branch hint — and a refused create must leave the forest as it
+// found it. A path resolves exactly when its last segment exists, since that segment's parent then
+// exists too.
+//
+// It reads with the same WRITE check createNodePath makes on each parent, and stands aside on a
+// refusal: createNodePath then answers the 403 it always has. A caller who may not grow a branch is
+// not told what is on it by a 412 it could not otherwise have earned.
+func (server *Server) refuseExistingLocked(path, userID string, mode createMode) error {
+	parts := server.segmentsFrom(path)
+	if mode != createIfAbsent || len(parts) == 0 {
+		return nil
+	}
+
+	node := server.forest
+	for _, part := range parts {
+		if !node.CheckPermission(userID, core.WritePermission) {
+			return nil
+		}
+		if node = node.ChildNamed(part); node == nil {
+			return nil
+		}
+	}
+	return apiErrorf(http.StatusPreconditionFailed, "node already exists: %s", server.canonicalPath(path))
 }
 
 // nodeTypeOf reads the type a request asked for. An unstated type is a leaf: events need one, and
