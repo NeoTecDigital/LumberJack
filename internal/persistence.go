@@ -83,6 +83,14 @@ func resolveStoreConfig(config *types.ServerConfig) error {
 // openStore brings persistence up over a table read from the state file, or over nothing for a
 // fresh store, and installs the forest it recovers. In snapshot mode the forest is simply linked.
 func (server *Server) openStore(table *stateTable) error {
+	if err := server.storageConfig().Validate(); err != nil {
+		return err
+	}
+	if table == nil {
+		if err := server.verifyExistingObjectKey(); err != nil {
+			return err
+		}
+	}
 	if err := resolveStoreConfig(&server.config); err != nil {
 		return err
 	}

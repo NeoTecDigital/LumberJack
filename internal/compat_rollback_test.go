@@ -28,13 +28,13 @@ func TestWriteRollbackStores(t *testing.T) {
 	for _, entry := range compatManifest(t) {
 		switch entry.Kind {
 		case "plain", "encrypted", "nested":
-			rollbackWrite(t, out, entry, compat.LabelLegacy, "open")
+			rollbackWrite(t, out, entry, cutLabel(t), "open")
 		case "tiered-snapshot":
 			rollbackWriteTiered(t, out, entry)
 		}
 	}
 	for _, name := range []string{"enc-v3", "enc-v4"} {
-		rollbackWrite(t, out, rollbackEntry(t, name), compat.LabelNeutral, "refuse")
+		rollbackWrite(t, out, rollbackEntry(t, name), (compat.Label{}), "refuse")
 	}
 	rollbackWriteObjects(t, out)
 }
@@ -66,7 +66,11 @@ func rollbackWrite(t *testing.T, out string, entry compatManifestEntry, label co
 	if err := os.WriteFile(StateLockPath(path), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server := reloadServer(t, dir)
+	var config *types.StorageConfig
+	if entry.Kind == "encrypted" {
+		config = cutStorageConfig(t)
+	}
+	server := reloadWithStorage(t, dir, config)
 	if server.storage != nil {
 		if err := server.storage.relabel(context.Background(), label); err != nil {
 			t.Fatal(err)
@@ -77,7 +81,7 @@ func rollbackWrite(t *testing.T, out string, entry compatManifestEntry, label co
 	}
 	_ = server.Shutdown(context.Background())
 	name := entry.Fixture
-	if label == compat.LabelNeutral {
+	if label == (compat.Label{}) {
 		name += "-neutral"
 	}
 	rollbackKeep(t, out, name, expect, map[string]string{"": path})
@@ -135,7 +139,7 @@ func rollbackWriteObjects(t *testing.T, out string) {
 			}
 		}
 	}
-	store := openTestStoreWith(t, dir, &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}})
+	store := openTestStoreWith(t, dir, cutStorage(t, key))
 	store.sealer.writeFlag = objectSealedNeutral
 	mustPut(t, store, []byte("a record the cut build cannot open"))
 	store.close()

@@ -69,17 +69,6 @@ type objectSealer struct {
 	writeFlag byte
 }
 
-// objectSealerFor is the sealer of a key file version, or false for a version no build wrote.
-func objectSealerFor(version int, id string) (*objectSealer, bool) {
-	switch version {
-	case compat.ObjectKeyFileLegacy:
-		return &objectSealer{id: id, label: compat.LabelLegacy, writeFlag: objectSealed}, true
-	case compat.ObjectKeyFileNeutral:
-		return &objectSealer{id: id, label: compat.LabelNeutral, writeFlag: objectSealedNeutral}, true
-	}
-	return nil, false
-}
-
 func (s *objectSealer) aad(purpose string) []byte {
 	return []byte(s.label.ObjectsPrefix() + s.id + "/" + purpose)
 }
@@ -88,7 +77,7 @@ func (s *objectSealer) aad(purpose string) []byte {
 // under the neutral label for flag 2.
 func (s *objectSealer) recordAAD(flag byte, purpose string) []byte {
 	if flag == objectSealedNeutral {
-		return []byte(compat.LabelNeutral.ObjectsPrefix() + s.id + "/" + purpose)
+		return []byte((compat.Label{}).ObjectsPrefix() + s.id + "/" + purpose)
 	}
 	return s.aad(purpose)
 }
@@ -145,27 +134,53 @@ func openObjectSealer(dir string, storage *secureStorage, hasSegments bool) (*ob
 	case err != nil:
 		return nil, fmt.Errorf("object store key: %w", err)
 	}
+	return authenticateObjectKey(data, storage)
+}
+
+// Authenticate an existing key before any state rewrite or segment repair.
+func authenticateObjectKey(data []byte, storage *secureStorage) (*objectSealer, error) {
 	if storage == nil {
-		return nil, errors.New("encrypted object store requires configured storage encryption")
+		return nil, fmt.Errorf("encrypted object store requires configured storage encryption: %w", ErrSealingLabel)
 	}
-	var envelope objectKeyEnvelope
-	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.ID) != 64 {
+	var e objectKeyEnvelope
+	if err := json.Unmarshal(data, &e); err != nil || len(e.ID) != 64 || (e.Version != compat.ObjectKeyFileLegacy && e.Version != compat.ObjectKeyFileNeutral) {
 		return nil, errors.New("unsupported object store key format")
 	}
-	sealer, known := objectSealerFor(envelope.Version, envelope.ID)
-	if !known {
-		return nil, errors.New("unsupported object store key format")
-	}
-	if storage.label == compat.LabelNeutral {
-		// Neutral mode writes flag 2 even beside a version-1 key file, which is rewrapped only on an
-		// explicit rewrap: its flag-1 records stay readable forever.
-		sealer.writeFlag = objectSealedNeutral
-	}
-	sealer.master, err = storage.wrapper.Unwrap(context.Background(), envelope.Key, sealer.aad("master"))
+	neutral := e.Version == compat.ObjectKeyFileNeutral
+	label, master, err := unwrapLabel(storage.wrapper, storage.labels, neutral, e.Key, e.ID, "master")
 	if err != nil {
 		return nil, fmt.Errorf("object store key: %w", err)
 	}
-	return sealer, nil
+	flag := byte(objectSealed)
+	if neutral || storage.label == (compat.Label{}) {
+		flag = objectSealedNeutral
+	}
+	return &objectSealer{id: e.ID, master: master, label: label, writeFlag: flag}, nil
+}
+
+// A key can outlive its state file. Never create, rewrite or repair either on a label refusal.
+func (server *Server) verifyExistingObjectKey() error {
+	raw, err := os.ReadFile(filepath.Join(ObjectsPath(server.config), objectKeyFileName))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	storage, err := server.storageCodec()
+	if err != nil {
+		return err
+	}
+	key, err := authenticateObjectKey(raw, storage)
+	if err == nil {
+		clear(key.master)
+		// A host-format state and its host-format key must authenticate the same supplied
+		// pair. Neutral state may still accompany this key after an explicit migration.
+		if key.label != (compat.Label{}) {
+			storage.labels = []compat.Label{key.label}
+		}
+	}
+	return err
 }
 
 // createObjectSealer mints a store's master, wraps it, and publishes the key file the way the state
@@ -180,11 +195,12 @@ func createObjectSealer(dir, path string, storage *secureStorage) (*objectSealer
 		return nil, err
 	}
 	version := compat.ObjectKeyFileLegacy
-	if storage.label == compat.LabelNeutral {
+	flag := byte(objectSealed)
+	if storage.label == (compat.Label{}) {
+		flag = objectSealedNeutral
 		version = compat.ObjectKeyFileNeutral
 	}
-	sealer, _ := objectSealerFor(version, hex.EncodeToString(id))
-	sealer.master = master
+	sealer := &objectSealer{id: hex.EncodeToString(id), label: storage.label, writeFlag: flag, master: master}
 	wrapped, err := storage.wrapper.Wrap(context.Background(), master, sealer.aad("master"))
 	if err != nil {
 		return nil, fmt.Errorf("object store key: %w", err)

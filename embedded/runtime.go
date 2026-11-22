@@ -18,6 +18,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,12 +35,13 @@ import (
 // Its fields are set once at Open and never change except refs, which the registry mutex guards. The
 // server pointer is what two handles over one path SHARE.
 type Runtime struct {
-	server *internal.Server
-	path   string   // canonical state path — the registry key; the flock is on its <state>.lock sidecar
-	lock   *os.File // the file description holding the sidecar flock, released on the last Close
-	epoch  uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
-	refs   int      // open handles over this runtime; guarded by registryMu
-	closed chan struct{}
+	storagePolicy types.StorageConfig
+	server        *internal.Server
+	path          string   // canonical state path — the registry key; the flock is on its <state>.lock sidecar
+	lock          *os.File // the file description holding the sidecar flock, released on the last Close
+	epoch         uint64   // this run's sequence numbering, so a cursor from a past run is not resumed
+	refs          int      // open handles over this runtime; guarded by registryMu
+	closed        chan struct{}
 
 	// extensions names the extension set the runtime was opened with (internal.ExtensionSetIdentity);
 	// extended is whether it holds any. closing is set, under registryMu, when an extended runtime
@@ -108,6 +111,15 @@ func OpenWith(config Config, principal string, exts ...extension.Extension) (*Ha
 	if err != nil {
 		return nil, err
 	}
+	effective, _ := types.StorageFromEnvironment()
+	if config.Storage != nil {
+		effective = *config.Storage
+	}
+	effective.Labels = slices.Clone(effective.Labels)
+	if err := effective.Validate(); err != nil {
+		return nil, err
+	}
+	config.Storage = &effective
 	registryMu.Lock()
 	for wait := runtimeOpenWait(registry[key]); wait != nil; wait = runtimeOpenWait(registry[key]) {
 		registryMu.Unlock()
@@ -116,6 +128,9 @@ func OpenWith(config Config, principal string, exts ...extension.Extension) (*Ha
 	}
 	defer registryMu.Unlock()
 	if rt, ok := registry[key]; ok {
+		if !reflect.DeepEqual(rt.storagePolicy, effective) {
+			return nil, errors.Join(ErrProfileConflict, types.ErrSealingLabel)
+		}
 		if rt.extensions != internal.ExtensionSetIdentity(exts) {
 			return nil, ErrExtensionConflict
 		}
@@ -157,7 +172,7 @@ func openRuntimeLocked(config Config, key, principal string, exts []extension.Ex
 		releaseLock(lock)
 		return nil, err
 	}
-	rt := &Runtime{server: server, path: key, lock: lock, epoch: newEpoch(), refs: 1,
+	rt := &Runtime{storagePolicy: *config.Storage, server: server, path: key, lock: lock, epoch: newEpoch(), refs: 1,
 		closed: make(chan struct{}), systemDefault: systemDefault,
 		extensions: internal.ExtensionSetIdentity(exts), extended: len(exts) > 0}
 	registry[key] = rt

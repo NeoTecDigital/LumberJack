@@ -38,7 +38,11 @@ func baseOpen(req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t) (status
 		return statusCodec
 	}
 
-	config := embedded.Config{Organization: r.Organization, Process: types.ProcessInfo{DatabasePath: r.DatabasePath, Name: r.Name}}
+	storage, err := r.Storage.resolve()
+	if err != nil {
+		return statusInvalid
+	}
+	config := embedded.Config{Storage: storage, Organization: r.Organization, Process: types.ProcessInfo{DatabasePath: r.DatabasePath, Name: r.Name}}
 	handle, err := embedded.OpenWith(config, r.Principal, registered()...)
 	if err != nil {
 		return openStatus(err)
@@ -56,6 +60,8 @@ func openStatus(err error) C.lj_status_t {
 	switch {
 	case err == nil:
 		return statusOK
+	case errors.Is(err, internal.ErrSealingLabel):
+		return statusSealingLabel
 	case errors.Is(err, embedded.ErrLocked):
 		return statusLocked
 	case errors.Is(err, embedded.ErrUnguarded):

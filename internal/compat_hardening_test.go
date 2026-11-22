@@ -194,7 +194,7 @@ func TestNeutralEnvelopesAreRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		writer := &secureStorage{wrapper: &localStorageWrapper{key: key}, id: strings.Repeat("b", 64), accounts: map[string]storageAccountKey{}, label: compat.LabelNeutral}
+		writer := &secureStorage{wrapper: &localStorageWrapper{key: key}, id: strings.Repeat("b", 64), accounts: map[string]storageAccountKey{}, label: (compat.Label{})}
 		sealed, err := writer.encode(source)
 		if err != nil {
 			t.Fatal(err)
@@ -208,8 +208,8 @@ func TestNeutralEnvelopesAreRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("neutral envelope %d not read: %v", want, err)
 		}
-		if reader.label != compat.LabelNeutral || reader.level != map[bool]int{false: 2, true: 3}[refs] {
-			t.Fatalf("envelope %d read as label %d level %d", want, reader.label, reader.level)
+		if reader.label != (compat.Label{}) || reader.level != map[bool]int{false: 2, true: 3}[refs] {
+			t.Fatalf("envelope %d read as label %v level %d", want, reader.label, reader.level)
 		}
 		if !bytes.Contains(opened, []byte(`"price":1.50`)) {
 			t.Fatalf("neutral envelope lost the literal: %s", opened)
@@ -221,7 +221,7 @@ func TestNeutralEnvelopesAreRead(t *testing.T) {
 // and a version-2 key file writes flag 2 (§7.8.8, read side; writes stay legacy for legacy stores).
 func TestNeutralObjectRecordsAndKeyFileAreRead(t *testing.T) {
 	key := compatUseFixtureKey(t)
-	storage := &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}}
+	storage := cutStorage(t, key)
 	dir := filepath.Join(t.TempDir(), "store.objects")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func compatNeutralKeyFile(t *testing.T, storage *secureStorage) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sealer, _ := objectSealerFor(compat.ObjectKeyFileNeutral, strings.Repeat("c", 64))
+	sealer := &objectSealer{id: strings.Repeat("c", 64)}
 	master := bytes.Repeat([]byte{3}, 32)
 	wrapped, err := storage.wrapper.Wrap(t.Context(), master, sealer.aad("master"))
 	if err != nil {
@@ -268,8 +268,8 @@ func compatNeutralKeyFile(t *testing.T, storage *secureStorage) {
 		t.Fatal(err)
 	}
 	store := openTestStoreWith(t, dir, storage)
-	if store.sealer.writeFlag != objectSealedNeutral || store.sealer.label != compat.LabelNeutral {
-		t.Fatalf("a version-2 key file opened as label %d flag %d", store.sealer.label, store.sealer.writeFlag)
+	if store.sealer.writeFlag != objectSealedNeutral || store.sealer.label != (compat.Label{}) {
+		t.Fatalf("a version-2 key file opened as label %v flag %d", store.sealer.label, store.sealer.writeFlag)
 	}
 	receipt := mustPut(t, store, []byte("under a neutral key file"))
 	store.close()

@@ -30,7 +30,7 @@ func TestStorageEnvironmentPrefersNewNamesAndAcceptsOldOnes(t *testing.T) {
 	t.Setenv("LUMBERJACK_STORAGE_WRITE_LABEL", StorageLabelNeutral)
 	config, deprecated := StorageFromEnvironment()
 	want := StorageConfig{Mode: "local-test", LocalKeyFile: "/new/key", MigrateLegacy: true, WriteLabel: StorageLabelNeutral}
-	if config != want {
+	if !reflect.DeepEqual(config, want) {
 		t.Fatalf("read %+v, want %+v", config, want)
 	}
 	if !reflect.DeepEqual(deprecated, []string{"CORRESPONDER_STORAGE_MODE", "CORRESPONDER_STORAGE_MIGRATE_LEGACY"}) {
@@ -60,10 +60,25 @@ func TestAdminReconcileAlias(t *testing.T) {
 	}
 }
 
-func TestStorageWriteLabelIsOneOfTwo(t *testing.T) {
-	for label, valid := range map[string]bool{"": true, StorageLabelLegacy: true, StorageLabelNeutral: true, "unknown": false} {
+func TestStorageWriteLabelMustBeConfigured(t *testing.T) {
+	for label, valid := range map[string]bool{"": true, "legacy": false, StorageLabelNeutral: true, "unknown": false} {
 		if err := (StorageConfig{WriteLabel: label}).Validate(); (err == nil) != valid {
 			t.Errorf("label %q: %v", label, err)
 		}
+	}
+}
+
+func TestHostSealingLabelValidation(t *testing.T) {
+	good := SealingLabel{"fixture", "fixture/state/", "fixture/objects/"}
+	for _, labels := range [][]SealingLabel{
+		{good, good}, {{"neutral", "a", "b"}}, {{"", "a", "b"}}, {{"x", "a", "a"}}, {{"x", "a", ""}}, {{"x", "lumberjack/storage/v5/", "b"}},
+	} {
+		if err := (StorageConfig{Mode: "local-test", Labels: labels}).Validate(); err == nil {
+			t.Fatal("invalid policy accepted")
+		}
+	}
+	c := StorageConfig{Mode: "kms", Labels: []SealingLabel{good}, WriteLabel: good.Name}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

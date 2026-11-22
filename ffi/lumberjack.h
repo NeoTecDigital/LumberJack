@@ -17,7 +17,7 @@
  * `--allow-multiple-definition` does not fix it — it produces two Go runtimes in one
  * address space, which is worse than a link error because it starts.
  *
- * The generic archive exports the nineteen base functions and the separately versioned
+ * The generic archive exports the twenty base functions and the separately versioned
  * record family below; nm-check checks both. The fourteen
  * product exports the archive carried before the split — the eight ic_lj_domain_* and the six
  * ic_lj_personal_source_* / ic_lj_native_* — are not in it: each product builds its own archive, a
@@ -81,6 +81,7 @@ typedef const char *lj_cstr;
 #define LJ_LOCKED         14   /* open: another runtime holds this state file; RETRY      */
 #define LJ_BUSY           15   /* 429 — the worker pool is saturated; retry                */
 #define LJ_UNGUARDED      16   /* open: a state file with no lock sidecar; DO NOT RETRY    */
+#define LJ_SEALING_LABEL  17   /* open: missing sealing configuration or failed host label */
 
 /* LJ_LOCKED and LJ_UNGUARDED are two statuses because they call for opposite actions. LJ_LOCKED is
  * transient: another process has the sidecar flocked now, and the refusal lifts when it lets go, so
@@ -131,6 +132,10 @@ lj_status_t ic_lj_events_publish(lj_handle_t h, lj_cstr req, int64_t req_len,
 /* The ABI version this archive implements. Takes no handle, cannot fail, cannot panic. */
 uint32_t ic_lj_abi_version(void);
 
+/* Probe before supplying storage on open: earlier ABI-2 libraries ignore unknown fields. */
+#define LJ_SEALING_LABELS_VERSION 1u
+uint32_t ic_lj_sealing_labels_version(void);
+
 /* Optional JSON record profile v1. The original ABI version and signatures stay
  * unchanged. Probe the extension independently; see docs/record-commands.md. */
 /* Record v2 adds declared indexes and snapshot cursors. The v1 symbols still
@@ -148,8 +153,10 @@ lj_status_t ic_lj_record_page(lj_handle_t h, lj_cstr req, int64_t n, char *out, 
 
 /* Open a runtime over a state file and bind a principal, returning a TOKEN for it in *out_handle.
  *
- * `req` is a YAML document carrying the config (organization, process.database_path, process.name)
- * and the principal to act as. Idempotent per state path WITHIN a process: a second open of the same
+ * `req` is a YAML document carrying organization, database_path, name and principal.
+ * Trusted callers may also supply storage: {labels: [{name, state_prefix, objects_prefix}],
+ * write_label}, inheriting the wrapper or supplying mode plus kms_key/local_key_file. An absent
+ * block keeps ambient storage and the neutral default. See docs/extension-api.md §7.5. Idempotent per state path WITHIN a process: a second open of the same
  * file shares one refcounted runtime, and the last close tears it down. Another PROCESS holding the
  * same file is refused LJ_LOCKED — the lock is a sidecar `<state>.lock` that survives the snapshot
  * rename a persist performs — and a state file with NO sidecar beside it is refused LJ_UNGUARDED,

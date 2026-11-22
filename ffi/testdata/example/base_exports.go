@@ -19,6 +19,9 @@ import (
 //export ic_lj_abi_version
 func ic_lj_abi_version() C.uint32_t { return C.uint32_t(abi.AbiVersion()) }
 
+//export ic_lj_sealing_labels_version
+func ic_lj_sealing_labels_version() C.uint32_t { return C.uint32_t(C.LJ_SEALING_LABELS_VERSION) }
+
 //export ic_lj_open
 func ic_lj_open(req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t) C.lj_status_t {
 	return C.lj_status_t(abi.Open(unsafe.Pointer(req), int64(reqLen), unsafe.Pointer(outHandle)))

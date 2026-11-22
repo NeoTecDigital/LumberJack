@@ -10,12 +10,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/types"
 	"lukechampine.com/blake3"
 )
@@ -117,8 +120,42 @@ func compatRead(t *testing.T, entry compatManifestEntry) []byte {
 	return data
 }
 
-// compatKeyFile copies the fixture wrapping key to a private file, since a checkout cannot carry
-// the 0600 mode the local-test wrapper insists on, and selects local-test storage with it.
+func cutPrefix(t *testing.T, path, pattern string) string {
+	t.Helper()
+	// The frozen encrypted fixtures and the rollback reader have the same immutable producer.
+	// Read its wire constants as fixture metadata, not as defaults in the current library.
+	data, err := exec.Command("git", "show", "da93661:"+path).Output()
+	if err != nil {
+		t.Fatalf("fixture producer da93661 (%s): %v", path, err)
+	}
+	match := regexp.MustCompile(pattern).FindSubmatch(data)
+	if len(match) != 2 {
+		t.Fatalf("missing AAD metadata in fixture producer %s", path)
+	}
+	return string(match[1])
+}
+
+func cutLabel(t *testing.T) compat.Label {
+	t.Helper()
+	return compat.Label{
+		HostState:   cutPrefix(t, "internal/secure_storage.go", `return \[\]byte\("([^"]+)" \+ s\.id`),
+		HostObjects: cutPrefix(t, "internal/object_store_seal.go", `objectSealerAADPrefix = "([^"]+)"`),
+	}
+}
+
+func cutStorageConfig(t *testing.T) *types.StorageConfig {
+	t.Helper()
+	config, _ := types.StorageFromEnvironment()
+	l := cutLabel(t)
+	config.Labels = []types.SealingLabel{{Name: "fixture", StatePrefix: l.HostState, ObjectsPrefix: l.HostObjects}}
+	return &config
+}
+
+func cutStorage(t *testing.T, key []byte) *secureStorage {
+	l := cutLabel(t)
+	return &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}, label: l, labels: []compat.Label{l}}
+}
+
 func compatUseFixtureKey(t *testing.T) []byte {
 	t.Helper()
 	key, err := os.ReadFile(filepath.Join(compatFixtureDir, "local-test.key"))
@@ -168,6 +205,7 @@ func compatLoadEncrypted(t *testing.T, data []byte) []byte {
 	t.Helper()
 	compatUseFixtureKey(t)
 	server := compatBareServer(t, t.TempDir())
+	server.config.Storage = cutStorageConfig(t)
 	path := filepath.Join(t.TempDir(), "enc.ljstate")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -328,7 +366,7 @@ func TestCompatSealedObjectsRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	storage := &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}}
+	storage := cutStorage(t, key)
 	store, err := openObjectStore(dir, 1<<20, storage)
 	if err != nil {
 		t.Fatal(err)

@@ -564,7 +564,7 @@ archive, not at run time. That is the header's own rule for "additive" changes r
 Checks per archive:
 
 - `header-check` (spec header against generated header);
-- `nm-check`: the generic archive exports exactly the 19 base names, and none of the 14;
+- `nm-check`: the generic archive exports exactly the 20 base names, and none of the 14;
 - `smoke`;
 - a `product-archive-example` test under `ffi/testdata/example` that builds base plus one dummy
   export with a test extension. It proves the composition, and that `abi.Lookup` sees handles
@@ -653,12 +653,31 @@ preserved verbatim. That is the state a crash at that moment would also leave.
 
 ### 7.5 Encrypted state and the sealing-label table
 
+The trusted host can pass `storage` on `ic_lj_open` (or `ServerConfig.Storage` in Go):
+```json
+{"storage":{"mode":"local-test","local_key_file":"/private/fixture-key",
+ "labels":[{"name":"tenant","state_prefix":"tenant/state/","objects_prefix":"tenant/objects/"}],
+ "write_label":"tenant"}}
+```
+Callers supplying this optional block must first require
+`ic_lj_sealing_labels_version() == 1`: older ABI-2 binaries ignore unrecognized fields.
+A supplied storage policy always requires an encrypted wrapper (explicit or inherited).
+No host label is built in. A fresh encrypted store defaults to neutral. An existing
+host-format store keeps its authenticated label unless the host explicitly requests
+neutral. A neutral store never downgrades. Input names select writes, not keys: old
+envelopes carry no label identifier, so reads try only the supplied prefixes (at most
+16) and require successful authenticated unwrap. A missing or incorrect label returns
+`ErrSealingLabel` / `LJ_SEALING_LABEL` before any state rewrite or segment recovery.
+Do not remove a prefix while any version-1 object key still needs it. The native host
+can omit wrapper fields to inherit its configured wrapper; passing labels alone never
+enables encryption, and an explicit wrapper cannot replace a different ambient one.
+
 | Artefact | Selector | Label (AAD prefix) | Read | Write |
 |---|---|---|---|---|
-| encrypted state | envelope `version` 3 (no references), 4 (references) | `LabelLegacy.StatePrefix()` + `<id>/` | yes | only while `Storage.WriteLabel = legacy` (default for the transition release) |
-| encrypted state | `version` **5**, **6** (references) | `lumberjack/storage/v5/<id>/` | yes | when `WriteLabel = neutral` |
+| encrypted state | envelope `version` 3 (no references), 4 (references) | supplied state prefix + `<id>/` | yes | new stores only with a named host write label; existing host format preserved by default |
+| encrypted state | `version` **5**, **6** (references) | `lumberjack/storage/v5/<id>/` | yes | new-store default or an explicit neutral migration |
 | account key wraps (`accounts`) | envelope version of the file | same as above | yes | rewrapped under the neutral label on the first neutral write (one KMS wrap per account) |
-| object key file | `version` 1 | `LabelLegacy.ObjectsPrefix()` + `<id>/` | yes, forever | never written for new stores once neutral |
+| object key file | `version` 1 | supplied objects prefix + `<id>/` | yes, forever | never written for new stores once neutral |
 | object key file | `version` **2** | `lumberjack/objects/v2/<id>/` | yes | new stores when neutral; an existing v1 file is rewrapped only on an explicit rewrap |
 | object record | flag 1 (`objectSealed`) | the key file's label | yes, forever (append-only) | legacy mode |
 | object record | flag **2** | `lumberjack/objects/v2/<id>/` | yes | neutral mode |
@@ -670,8 +689,7 @@ Purposes under the prefix are unchanged:
 - objects: `master`, `key/<oid>`, `object/<oid>`.
 
 Older builds refuse versions 5/6 ("unsupported encrypted state format"). They index flag-2 records
-as corrupt and never serve them (`object_store_scan.go:129-131,172-177`). Both fail closed. Q3 is
-when to make `neutral` the default, because that is a one-way door for rollback.
+as corrupt and never serve them (`object_store_scan.go:129-131,172-177`). Both fail closed; explicit migration is a one-way door for rollback.
 
 The `conversations` section:
 
@@ -742,7 +760,7 @@ registration without linking any particular application into the store.
 |---|---|---|---|
 | Q1 | Who implements mandatory second-factor enrollment? | A registered second factor or built-in policy | A registered factor; without one, already-enrolled accounts fail closed. |
 | Q2 | Promote `internal/core` to public `core`? | (a) promote; products keep writing `*core.Node` under `Tx`; (b) an opaque node API | (a). The model is already product-free once five fields leave, and (b) means a rewrite of every product |
-| Q3 | When does the neutral sealing label become the write default? | (a) legacy default for one release, neutral opt-in; (b) neutral immediately | (a). Neutral writes cannot be opened by the cut build |
+| Q3 | Sealing-label ownership and default | Host supplies historical prefixes; engine knows neutral only | New stores write neutral unless the host selects a configured name. See §7.5. |
 | Q4 | Encrypted `conversations` section | (a) fold into the backend-only root and read the section for compatibility; (b) a `SealedSection` seam to keep per-member wraps | (a). Nothing reads `account_keys`; (b) would be a seam the engine never exercises |
 | Q5 | A `main`-only outbox is fed only by `/access` share notices | (a) accept; (b) add generic `POST /subscriptions` | (a). It is still a correct, idle dispatch |
 | Q6 | Owned scopes | (d1) keep the whole owned-scope engine in `main`; (d2) keep only the marker rule and subtree guard | (d2) |
@@ -760,7 +778,7 @@ the invariants of §5.
 | # | Step | Design said | Done instead | Why |
 |---|---|---|---|---|
 | D2 | P3b-0, P3b-1 | "today's code re-encodes each plaintext fixture byte-identically" | it does not: 3 of 5 plaintext fixtures drift. A product stores a receipt as a Go struct, the load reads it back as a map, and the map re-marshals with its keys sorted. The P3b-0 test pins what the cut build wrote back (`reencode_sha256` in `MANIFEST.jsonl`). P3b-1 makes the byte identity true: a node whose encoding is unchanged since load is written back as the bytes it was read from (`core/node_loaded.go`, `nodeRecord.MarshalJSON`) | §7.1's result, "an untouched store re-encodes to identical document bytes", is what the fixtures gate on; without this the legacy order table alone cannot deliver it for typed values inside `command_receipts` |
-| D3 | P3b-1 | label read side only; writes stay legacy | a store keeps the label its envelope or key file was read under; a new store is written legacy | a neutral (v5/v6, key file v2) store written back as legacy would need every account wrap re-wrapped and would reopen the rollback door the neutral label closed. The opt-in switch for legacy stores is P3b-9 |
+| D3 | Sealing | Legacy wire versions do not store a label name | Select a supplied prefix by authenticated unwrap; never guess a name from a path | Older envelope, key-file and record bytes remain valid. |
 | D4 | P3b-3 | remove all 2,570 Activity lines | `activation_config.go`, `activation_protocol.go` and `activation_json.go` stay until P3b-7, trimmed of Activity's engine API (`ConfigureActivation`, `ValidateActivationConfig`, `DecodeActivationConfig`); `application_business_scope.go` stays until P3b-5 | the domain engine builds its verifier from `ActivationConfig`, `activationVerifier.validActor` and `strictActivationJSON`, and the workspace's message operations read `AuthenticatedContentScope`. Removing them first would mean editing product code; they leave with their last user |
 | D5 | P3b-3 | – | `endApplicationSessionLocked` (sign-out ends a delegated session's family) moved from `application_session_admit.go` to `application_session.go` | it is the generic session registry's, and `/session` DELETE calls it |
 | D6 | P3b-3 | an undeclared part is refused | a part whose value is `null` counts as present | the cut build refused a `null` part too; ignoring it would be the silent path §4.7 rules out |
@@ -781,6 +799,6 @@ the invariants of §5.
 | D22 | P3b-8 | – | `TestAccessWallClockExpiry…` no longer asserts per-member conversation wraps | owner decision Q4(a): the conversations section is no longer written, so there are no per-member wraps to keep; the slot is sealed inside the backend-only root |
 | D23 | P3b-8 | the rollback job opens the stores with "all product fields intact" | its baseline is the cut build's own result of the same unrelated write, compared record by record, key by key | the engine recomputes some keys on every write (materialized access grants, entry ids) in both builds; comparing against the fixture's raw records would blame the codec for the engine's own rules. The job is `make rollback-check`, part of `make all` |
 | D24 | P3b-8 | the label write switch at P3b-9 | `secureStorage.relabel` (rewrap every account key under the new label) lands at P3b-8 | the rollback job needs neutral-label stores to prove the cut build refuses them; P3b-9 adds the configuration that selects it |
-| D25 | P3b-9 | "`LUMBERJACK_STORAGE_*` read by `cmd`/`ffi`" | `types.StorageFromEnvironment` reads them (and, for one release, the `CORRESPONDER_STORAGE_*` aliases, each logged as deprecated) whenever `ServerConfig.Storage` is nil — the path the CLI, the C ABI and `embedded` all take. A non-nil `Storage` is explicit and the environment is not read. The label switch is `storage.write_label` / `LUMBERJACK_STORAGE_WRITE_LABEL` (`legacy` default, `neutral` opt-in), and `ServerConfig.AdminReconcile` / `LUMBERJACK_ADMIN_RECONCILE` replaces `CORRESPONDER_ADMIN_RECONCILE` | one reader for every entry point, so the three cannot drift; the engine itself never reads a variable name directly |
+| D25 | P3b-9 | "`LUMBERJACK_STORAGE_*` read by `cmd`/`ffi`" | `types.StorageFromEnvironment` reads them (and, for one release, the `CORRESPONDER_STORAGE_*` aliases, each logged as deprecated) whenever `ServerConfig.Storage` is nil — the path the CLI, the C ABI and `embedded` all take. A non-nil `Storage` is explicit and the environment is not read. The label switch is `storage.write_label` / `LUMBERJACK_STORAGE_WRITE_LABEL` (now neutral by default, or a host-supplied name; §7.5 supersedes the cut-era default), and `ServerConfig.AdminReconcile` / `LUMBERJACK_ADMIN_RECONCILE` replaces `CORRESPONDER_ADMIN_RECONCILE` | one reader for every entry point, so the three cannot drift; the engine itself never reads a variable name directly |
 | D26 | P3b-10 | `abi.Open(req []byte) (uint64, Status)`, … | the entry points take the C arguments as Go values — each pointer an `unsafe.Pointer`, each length an `int64` — and answer the status as an `int32` | a cgo type belongs to the package that declares it, so a product's `main` cannot hand `abi` its `C.lj_cstr`; passing pointers keeps the whole buffer convention (bounds, truncation, no partial document, the panic guard) inside `abi`, once, for every archive |
 | D27 | P3b-10 | – | the example product archive's C driver is `ffi/ctest/example.c`, not inside `ffi/testdata/example` | cgo compiles every `.c` file in a package's directory into the package |

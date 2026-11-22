@@ -28,8 +28,12 @@ import (
 // reloadServer brings the state file back up the way a restart does.
 func reloadServer(t *testing.T, dir string) *Server {
 	t.Helper()
+	return reloadWithStorage(t, dir, nil)
+}
 
-	loaded, err := LoadServer(types.ServerConfig{
+func reloadWithStorage(t *testing.T, dir string, storage *types.StorageConfig) *Server {
+	t.Helper()
+	loaded, err := LoadServer(types.ServerConfig{Storage: storage,
 		Organization: "test_org",
 		Process: types.ProcessInfo{
 			ID:           "stock_process",

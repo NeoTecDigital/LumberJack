@@ -24,70 +24,52 @@ const (
 	StateLevelReferences = 3 // LUMBERJACK-STATE-3; envelope 4 (legacy label) or 6 (neutral)
 )
 
-// Label selects the additional-data prefixes an encrypted store is sealed under.
-type Label uint8
+// Label holds the authenticated prefixes chosen by the host. Zero is the built-in neutral format.
+type Label struct{ HostState, HostObjects string }
 
-const (
-	// LabelLegacy is the label every encrypted store written before the split carries. It stays the
-	// write default for the transition release (owner decision Q3(a)).
-	LabelLegacy Label = iota
-	// LabelNeutral is the product-free label. A store written under it cannot be opened by the cut
-	// build, which is why it is opt-in.
-	LabelNeutral
-)
-
-// StatePrefix is the additional-data prefix of an encrypted state file under the label.
-func (label Label) StatePrefix() string {
-	if label == LabelNeutral {
+func (l Label) StatePrefix() string {
+	if l == (Label{}) {
 		return "lumberjack/storage/v5/"
 	}
-	return "momentum/storage/v3/"
+	return l.HostState
 }
 
-// ObjectsPrefix is the additional-data prefix of an object store's key file under the label.
-func (label Label) ObjectsPrefix() string {
-	if label == LabelNeutral {
+func (l Label) ObjectsPrefix() string {
+	if l == (Label{}) {
 		return "lumberjack/objects/v2/"
 	}
-	return "momentum/objects/v1/"
+	return l.HostObjects
 }
 
-// EnvelopeVersion is the encrypted state envelope version for a label and a state level.
-func (label Label) EnvelopeVersion(level int) int {
+func (l Label) EnvelopeVersion(level int) int {
 	version := 3
 	if level >= StateLevelReferences {
-		version = 4
+		version++
 	}
-	if label == LabelNeutral {
+	if l == (Label{}) {
 		version += 2
 	}
 	return version
 }
 
-// EnvelopeLabel reads an envelope version back into its label and state level; ok is false for a
-// version no build has written.
-func EnvelopeLabel(version int) (label Label, level int, ok bool) {
-	switch version {
-	case 3, 4:
-		label = LabelLegacy
-	case 5, 6:
-		label = LabelNeutral
-	default:
-		return LabelLegacy, 0, false
+// EnvelopeFormat identifies only the wire family. The old family did not store a label name.
+func EnvelopeFormat(version int) (neutral bool, level int, known bool) {
+	if version < 3 || version > 6 {
+		return false, 0, false
 	}
 	level = StateLevelTable
 	if version%2 == 0 {
 		level = StateLevelReferences
 	}
-	return label, level, true
+	return version >= 5, level, true
 }
 
 // Object key file versions and record flags (docs/extension-api.md §7.5).
 const (
-	ObjectKeyFileLegacy  = 1 // label LabelLegacy
-	ObjectKeyFileNeutral = 2 // label LabelNeutral
+	ObjectKeyFileLegacy  = 1 // a host label
+	ObjectKeyFileNeutral = 2 // neutral label
 	ObjectRecordLegacy   = 1 // sealed under the key file's label
-	ObjectRecordNeutral  = 2 // sealed under LabelNeutral's prefix
+	ObjectRecordNeutral  = 2 // sealed under the neutral prefix
 )
 
 // OwnedScopeMarker is the CommandReceipts key that marks the root of an owned scope in a store

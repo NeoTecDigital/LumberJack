@@ -34,9 +34,10 @@ func dataExport(name, function string) export {
 	return export{name, dataParams, "C.lj_status_t", "C.lj_status_t(abi." + function + "(" + dataArgs + "))"}
 }
 
-// baseExports are the nineteen, in the order lumberjack.h declares them.
+// baseExports are the twenty, in the order lumberjack.h declares them.
 var baseExports = []export{
 	{"ic_lj_abi_version", "", "C.uint32_t", "C.uint32_t(abi.AbiVersion())"},
+	{"ic_lj_sealing_labels_version", "", "C.uint32_t", "C.uint32_t(C.LJ_SEALING_LABELS_VERSION)"},
 	{"ic_lj_open", "req C.lj_cstr, reqLen C.int64_t, outHandle *C.lj_handle_t", "C.lj_status_t",
 		"C.lj_status_t(abi.Open(unsafe.Pointer(req), int64(reqLen), unsafe.Pointer(outHandle)))"},
 	{"ic_lj_adopt", "req C.lj_cstr, reqLen C.int64_t", "C.lj_status_t", "C.lj_status_t(abi.Adopt(unsafe.Pointer(req), int64(reqLen)))"},

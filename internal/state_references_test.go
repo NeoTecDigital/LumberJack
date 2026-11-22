@@ -150,15 +150,15 @@ func encryptedEnvelopeVersion(t *testing.T, path string) int {
 }
 
 // The build before references accepts envelope version 3 and refuses every other.
-func TestEncryptedStateRefusesTheOlderBuildOnlyOnceAReferenceExists(t *testing.T) {
+func TestNeutralEncryptedStateSignalsReferences(t *testing.T) {
 	t.Setenv("CORRESPONDER_STORAGE_MODE", "local-test")
 	t.Setenv("CORRESPONDER_STORAGE_LOCAL_KEY_FILE", storageTestKey(t))
 	server, addReference := referencesFixture(t)
-	if version := encryptedEnvelopeVersion(t, server.statePath()); version != 3 {
+	if version := encryptedEnvelopeVersion(t, server.statePath()); version != 5 {
 		t.Fatalf("a forest with no reference has envelope version %d", version)
 	}
 	addReference()
-	if version := encryptedEnvelopeVersion(t, server.statePath()); version != 4 {
+	if version := encryptedEnvelopeVersion(t, server.statePath()); version != 6 {
 		t.Fatalf("a forest holding a reference has envelope version %d", version)
 	}
 	if _, err := reloadServer(t, server.config.Process.DatabasePath).getNodeFromPath("copy"); err != nil {

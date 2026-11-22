@@ -35,6 +35,10 @@ func (server *Server) loadFromFile(filename string) error {
 	}
 	defer file.Close()
 
+	if err := server.verifyExistingObjectKey(); err != nil {
+		return err
+	}
+
 	table, err := server.readState(file)
 	if err != nil {
 		return err
