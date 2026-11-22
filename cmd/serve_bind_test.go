@@ -7,7 +7,7 @@ import (
 	"github.com/NeoTecDigital/LumberJack/internal"
 )
 
-// `serve` is how the Momentum stack starts the engine, so whatever this resolves is what actually
+// `serve` is the CLI entry point for starting the engine, so whatever this resolves is what actually
 // gets bound. The three answers are ordered, and the LAST of them is the one that matters: an
 // operator who says nothing gets loopback, never every interface.
 //

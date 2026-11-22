@@ -6,11 +6,8 @@ The LumberJack API provides a hierarchical event tracking system where nodes can
 ## A generic store, and the seams products build on
 
 LumberJack is the generic store: the forest, events and entries, queries, the object log, the
-session registry, `/access` sharing, the hub's outbox, and storage encryption. Product code — the
-domain engine and its products, Momentum's personal source, workspace and second factor, and
-Activity's runtime — is not in it. Each product is preserved, whole and unchanged, on its own
-`product/*` branch with a `HANDOFF.md` that says what it used and how to rebuild it
-(`docs/keep-move.md`).
+session registry, `/access` sharing, the hub's outbox, and storage encryption. Application-specific routes, permissions, fixtures and integrations belong in
+the consuming repository. See [the ownership rule](docs/keep-move.md).
 
 What a product builds on is public:
 
@@ -31,8 +28,7 @@ The design is `docs/extension-api.md`; what the implementation did differently i
 **Signing in without a second factor.** A store with no `SecondFactor` registered signs a user in
 with a password. An account that was enrolled in a second factor before the split — `mfa_enabled`
 on the user, or its id under the root's preserved `account_security` — is refused with
-`401 second factor required` until a product that implements one is linked. `MOMENTUM_REQUIRE_MFA`
-is no longer read.
+`401 second factor required` until an extension implementing the factor is linked.
 
 **Data a missing product owns is kept.** Keys a product wrote on a record (`personal_bindings`,
 `conversations`, `account_security`, `mfa_challenges`, `admitted_commands`, the outbox's `feed`) are

@@ -61,7 +61,7 @@ func TestAdminReconcileAlias(t *testing.T) {
 }
 
 func TestStorageWriteLabelIsOneOfTwo(t *testing.T) {
-	for label, valid := range map[string]bool{"": true, StorageLabelLegacy: true, StorageLabelNeutral: true, "momentum": false} {
+	for label, valid := range map[string]bool{"": true, StorageLabelLegacy: true, StorageLabelNeutral: true, "unknown": false} {
 		if err := (StorageConfig{WriteLabel: label}).Validate(); (err == nil) != valid {
 			t.Errorf("label %q: %v", label, err)
 		}

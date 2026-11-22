@@ -8,8 +8,8 @@ import (
 
 // The two halves of the server agree about what a path is.
 //
-// THE DEFECT: POST /query answered node paths as `forest/momentum/x` while GET and PATCH
-// /nodes/{path} answered 404 for that string and accepted only `momentum/x`. The `scope` parameter
+// THE DEFECT: POST /query answered node paths as `forest/branch/x` while GET and PATCH
+// /nodes/{path} answered 404 for that string and accepted only `branch/x`. The `scope` parameter
 // of /query behaved like the second and its results like the first, so /query's own output could
 // not be fed back into /query. A client had to carry a translation layer between one route's output
 // and another's input.
