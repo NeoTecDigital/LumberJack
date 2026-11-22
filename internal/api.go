@@ -306,6 +306,11 @@ const SystemUserID = "system"
 // holding both `system` and a real user. changeForest persists whether or not it seeded; that one
 // write when opening a loaded forest is the price of the invariant being true under concurrency.
 func (server *Server) EnsureSystemUser() (bool, error) {
+	var populated bool
+	server.readForest(func() { populated = len(server.forest.Users) != 0 })
+	if populated {
+		return false, nil
+	}
 	seeded := false
 	err := server.changeForest(func() error {
 		if len(server.forest.Users) > 0 {

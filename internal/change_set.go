@@ -43,7 +43,7 @@ type changeSet struct {
 // markers it refuses.
 type logNode struct {
 	ChildrenKept  bool `json:"children_kept,omitempty"`
-	EntriesBefore int  `json:"entries_before,omitempty"`
+	EntriesBefore *int `json:"entries_before,omitempty"`
 }
 
 // encodeWholeNode encodes a node exactly as the state codec does.
@@ -117,7 +117,7 @@ func mergeLogNode(table *stateTable, seq uint64, id string, raw json.RawMessage)
 	if err := json.Unmarshal(raw, &incoming); err != nil {
 		return fmt.Errorf("log record %d: node %q: %v", seq, id, err)
 	}
-	if incoming.ChildrenKept || incoming.EntriesBefore != 0 {
+	if incoming.ChildrenKept || incoming.EntriesBefore != nil {
 		return fmt.Errorf("log record %d: node %q is a partial node (children_kept or entries_before), which this "+
 			"build does not apply; shut the store down cleanly with the build that wrote it to fold the log into "+
 			"the state file", seq, id)

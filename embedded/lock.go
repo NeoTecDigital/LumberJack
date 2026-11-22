@@ -71,6 +71,10 @@ func lockPathFor(statePath string) string {
 // user's bcrypt hash). Creating parents at 0755 here and narrowing only the leaf there is what keeps
 // a shared parent out of it.
 func acquireLock(statePath string) (*os.File, error) {
+	return acquireProfileLock(statePath, unclassifiedProfile)
+}
+
+func acquireProfileLock(statePath string, profile storeProfile) (*os.File, error) {
 	lockPath := lockPathFor(statePath)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, err
@@ -81,11 +85,8 @@ func acquireLock(statePath string) (*os.File, error) {
 		return nil, err
 	}
 
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockProfile(file, profile); err != nil {
 		file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, ErrLocked
-		}
 		return nil, err
 	}
 	return file, nil
@@ -203,6 +204,9 @@ func releaseLock(file *os.File) error {
 	if file == nil {
 		return nil
 	}
+	profileMu.Lock()
+	defer profileMu.Unlock()
+	delete(profileHolders, file)
 	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 	return file.Close()
 }

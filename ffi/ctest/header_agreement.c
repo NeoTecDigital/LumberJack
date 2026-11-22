@@ -34,6 +34,16 @@ static lj_status_t (*const check_adopt)(lj_cstr, int64_t) = ic_lj_adopt;
 
 /* The data operations. Every one is held to the same shape; a changed parameter fails to compile. */
 typedef lj_status_t (*lj_data_op)(lj_handle_t, lj_cstr, int64_t, char *, int64_t, int64_t *);
+/* The independently versioned record profiles share data and close signatures. */
+static uint32_t (*const check_record_abi_version)(void) = ic_lj_record_abi_version;
+static lj_status_t (*const check_record_open)(lj_cstr, int64_t, lj_handle_t *) = ic_lj_record_open;
+static lj_status_t (*const check_record_close)(lj_handle_t) = ic_lj_record_close;
+static const lj_data_op check_record_apply = ic_lj_record_apply;
+static const lj_data_op check_record_page = ic_lj_record_page;
+static uint32_t (*const check_record_v2_abi_version)(void) = ic_lj_record_v2_abi_version;
+static lj_status_t (*const check_record_v2_open)(lj_cstr, int64_t, lj_handle_t *) = ic_lj_record_v2_open;
+static const lj_data_op check_record_v2_page = ic_lj_record_v2_page;
+
 static const lj_data_op check_node_create   = ic_lj_node_create;
 static const lj_data_op check_event_plan    = ic_lj_event_plan;
 static const lj_data_op check_event_start   = ic_lj_event_start;
@@ -65,6 +75,8 @@ _Static_assert(LJ_GAP == 13, "LJ_GAP");
 _Static_assert(LJ_LOCKED == 14, "LJ_LOCKED");
 _Static_assert(LJ_BUSY == 15, "LJ_BUSY");
 _Static_assert(LJ_UNGUARDED == 16, "LJ_UNGUARDED");
+_Static_assert(LJ_RECORD_ABI_VERSION == 1u, "LJ_RECORD_ABI_VERSION");
+_Static_assert(LJ_RECORD_V2_ABI_VERSION == 2u, "LJ_RECORD_V2_ABI_VERSION");
 _Static_assert(LJ_ABI_VERSION == 2u, "LJ_ABI_VERSION");
 _Static_assert(LJ_MUTATION_OUT_MIN > LJ_MAX_PATH, "a mutation's buffer floor must exceed its path cap");
 _Static_assert(LJ_MAX_IN_LEN > LJ_MUTATION_OUT_MIN, "the inbound cap must exceed the mutation buffer floor");
@@ -73,6 +85,14 @@ _Static_assert(LJ_MAX_IN_LEN > LJ_MUTATION_OUT_MIN, "the inbound cap must exceed
  * addresses is the whole point, and this is the one place that reads them. */
 const void *const lj_header_agreement[] = {
     (const void *)&check_abi_version,
+    (const void *)&check_record_abi_version,
+    (const void *)&check_record_open,
+    (const void *)&check_record_close,
+    (const void *)&check_record_apply,
+    (const void *)&check_record_page,
+    (const void *)&check_record_v2_abi_version,
+    (const void *)&check_record_v2_open,
+    (const void *)&check_record_v2_page,
     (const void *)&check_echo,
     (const void *)&check_open,
     (const void *)&check_close,
