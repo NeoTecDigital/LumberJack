@@ -37,8 +37,9 @@ type tier struct {
 	config types.PersistenceConfig
 	log    *persist.Log
 	// cache holds each node as the state codec last encoded it, by id: what the whole-forest change
-	// detection compares a node against to find whether a commit changed it. It is read and
-	// written under the exclusive forest hold only.
+	// detection compares a node against to find whether a commit changed it. It is written under
+	// the exclusive forest hold only; the cold writer also reads it under a shared hold
+	// (captureCold), which the exclusive hold excludes.
 	cache map[string][]byte
 	// root is the root id of the state the cache describes.
 	root string
@@ -336,8 +337,8 @@ func (server *Server) snapshotCold() (uint64, error) {
 }
 
 // coldImage is the forest at one log sequence, as the cold writer captured it: each node as the
-// change cache holds it, or, when the cache could not describe the whole forest, the document
-// already encoded.
+// change cache holds it, or, when the cache could not describe the whole forest (partial, or an
+// entry with no encoding), the document already encoded.
 type coldImage struct {
 	seq   uint64
 	root  string
@@ -362,16 +363,29 @@ func (server *Server) captureCold() (coldImage, bool, error) {
 		return image, false, nil
 	}
 	var err error
-	if t.partial {
+	if !t.partial {
+		image.nodes = t.cacheImage()
+	}
+	if image.nodes == nil {
 		image.data, err = encodeStateAt(server.forest, image.seq)
-	} else {
-		image.nodes = make(map[string]json.RawMessage, len(t.cache))
-		for id, encoded := range t.cache {
-			image.nodes[id] = encoded
-		}
 	}
 	t.log.RollAfter(image.seq)
 	return image, err == nil, err
+}
+
+// cacheImage copies the cache's index for the cold writer, or answers nil when some entry holds no
+// encoding. Such an entry would be written as `null`, which the loader skips: a file that decodes,
+// is missing the node, and is followed by trimming the log that held it. The caller encodes the
+// forest instead.
+func (t *tier) cacheImage() map[string]json.RawMessage {
+	nodes := make(map[string]json.RawMessage, len(t.cache))
+	for id, encoded := range t.cache {
+		if encoded == nil {
+			return nil
+		}
+		nodes[id] = encoded
+	}
+	return nodes
 }
 
 // encodeImage is the state document of an image: the same bytes encodeStateAt writes for the forest

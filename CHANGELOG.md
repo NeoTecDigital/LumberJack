@@ -80,7 +80,9 @@ exactly what every earlier build did.
   staged record; the writer now copies its index under a shared hold, with the sequence, and
   encodes, hashes and writes with the forest free. The file is byte for byte what encoding the
   forest at that sequence wrote, and recovery is unchanged. A cache seeded from a file it could not
-  wholly encode falls back to encoding the forest, under a shared hold, until the next commit.
+  wholly encode falls back to encoding the forest, under a shared hold, until the next commit. So
+  does a cache entry that holds no encoding: written as `null`, the loader would skip the node and
+  the log that held it would be trimmed.
 - **A change that could not be encoded is logged by the next commit.** Change detection updated
   its cache node by node and kept what it had updated when a later node failed to encode, so the
   next record left those nodes out and a restart lost them. The cache now moves only with a record.

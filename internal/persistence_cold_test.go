@@ -322,3 +322,46 @@ func TestAChangeThatCouldNotBeEncodedIsLoggedByTheNextCommit(t *testing.T) {
 		t.Fatalf("the change the refused commit made, logged by the next one, was lost: %v %v", node, err)
 	}
 }
+
+// A cache entry that holds no encoding (the tracked path on the pdl branches writes one) is not
+// written as `null`, which the loader skips: the cold writer encodes the forest instead, so the file
+// holds the node and is byte for byte the forest at its sequence.
+func TestANilCacheEntryFallsBackToEncodingTheForest(t *testing.T) {
+	config := tieredConfig(t, types.HotSyncNone)
+	server := newServerWith(t, config)
+	seedNodes(t, server, 5)
+	if _, err := server.snapshotCold(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createColdNode(server, adminID(t, server), "c-due"); err != nil {
+		t.Fatal(err)
+	}
+	victim := ""
+	server.readForest(func() {
+		for id := range server.tier.cache {
+			if id != server.tier.root {
+				victim = id
+				break
+			}
+		}
+	})
+	server.forestMutex.Lock()
+	server.tier.cache[victim] = nil
+	server.forestMutex.Unlock()
+	captured, expected, err := expectedState(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if seq, err := server.snapshotCold(); err != nil || seq != captured {
+		t.Fatalf("snapshot: %d (want %d) %v", seq, captured, err)
+	}
+	document := documentOnDisk(t, server)
+	table, err := decodeTable(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := table.records[victim]; !held || !bytes.Equal(document, expected) {
+		t.Fatalf("node %s held: %v; the file is not the forest at %d", victim, held, captured)
+	}
+}
