@@ -92,8 +92,7 @@ const (
 
 // OwnedScopeMarker is the CommandReceipts key that marks the root of an owned scope in a store
 // written before the split. Generic LumberJack hides every node carrying it from generic reads and
-// guards its subtree (docs/extension-api.md §4.2); its owners are manifest-domain and
-// momentum-personal.
+// guards its subtree even when its owning extension is absent (docs/extension-api.md §4.2).
 const OwnedScopeMarker = "lumberjack.staged.scope/v1"
 
 // RecordOrder is the order a node record's keys were written in by the builds that carried

@@ -26,7 +26,7 @@ func compareHashes(a, b []byte) bool {
 // getNodeFromPath traverses the forest to find a node by its path.
 //
 // The path may arrive in either form — see node_path.go. It is reduced to the segments BELOW the
-// root before anything is looked up, so `forest/momentum/x` and `momentum/x` reach the same node
+// root before anything is looked up, so `forest/branch/x` and `branch/x` reach the same node
 // instead of one of them answering 404, and `forest` names the root rather than a child that is not
 // there.
 func (server *Server) getNodeFromPath(path string) (*core.Node, error) {

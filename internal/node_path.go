@@ -6,8 +6,8 @@ import "strings"
 // form of it.
 //
 // THE DEFECT: there were two, and nothing reconciled them. POST /query answered
-// `forest/momentum/x`, because the walk names its starting point after the root it started from;
-// GET and PATCH /nodes/{path} answered 404 for that exact string and accepted only `momentum/x`,
+// `forest/branch/x`, because the walk names its starting point after the root it started from;
+// GET and PATCH /nodes/{path} answered 404 for that exact string and accepted only `branch/x`,
 // because the lookup resolves relative to the root and does not expect to be told about it. The
 // `scope` parameter of /query behaved like the second while its results looked like the first, so a
 // path could not even be round-tripped through the query surface. A client had to carry a
@@ -28,7 +28,7 @@ import "strings"
 // resolution strips one leading segment equal to the root's name and resolves the rest from the
 // root. Every path therefore has exactly one meaning, including the awkward ones — `forest` is the
 // root, `forest/forest` is a child of the root that happens to be called `forest`, and
-// `momentum/x` and `forest/momentum/x` are the same node.
+// `branch/x` and `forest/branch/x` are the same node.
 
 // pathSegments splits a path on its separators.
 //

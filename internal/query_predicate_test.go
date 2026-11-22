@@ -22,7 +22,7 @@ func at(day int) time.Time {
 func sample() candidate {
 	return candidate{
 		Kind:     selectEvents,
-		NodePath: "momentum/backend",
+		NodePath: "branch/backend",
 		ID:       "event-1",
 		Index:    -1,
 		Status:   "ongoing",
