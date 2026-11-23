@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/NeoTecDigital/LumberJack/core"
 )
@@ -81,9 +82,12 @@ type Sessions interface {
 	RetireCredentials(tx Tx, userID string) // the credential-epoch bump
 }
 
-// SessionOptions says which credential a login answers with.
+// SessionOptions says which credential a login answers with, and for a browser session any
+// narrower absolute lifetime or external source-session revocation group.
 type SessionOptions struct {
-	Transport string // "bearer": a session and refresh JWT pair, as /login; "browser": an ms_ token, as POST /session
+	Transport     string        // "bearer": a session and refresh JWT pair, as /login; "browser": an ms_ token, as POST /session
+	Lifetime      time.Duration // browser only: 0 uses the 24h default; < 1s or > 24h is refused
+	SourceSession string        // browser only: non-empty printable key (<= 256 bytes, no whitespace/control) marks Delegated and joins that revocation group
 }
 
 // TokenPair is an issued session. A bearer issue fills SessionToken and RefreshToken; a browser

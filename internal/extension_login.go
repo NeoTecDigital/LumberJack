@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/extension"
@@ -120,10 +122,54 @@ func (sessions extensionSessions) locked(tx extension.Tx) error {
 	return nil
 }
 
+const maxSourceSessionBytes = 256
+
+func validSourceSessionKey(key string) bool {
+	if key == "" || len(key) > maxSourceSessionBytes || !utf8.ValidString(key) {
+		return false
+	}
+	for _, r := range key {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateSessionOptions(o extension.SessionOptions) (sessionRegistration, error) {
+	if o.Transport != "" && o.Transport != "bearer" && o.Transport != "browser" {
+		return sessionRegistration{}, &extension.Error{Status: http.StatusBadRequest, Message: "invalid session transport"}
+	}
+	if o.Transport != "browser" {
+		if o.Lifetime != 0 || o.SourceSession != "" {
+			return sessionRegistration{}, &extension.Error{Status: http.StatusBadRequest, Message: "browser session options are not valid for bearer tokens"}
+		}
+		return sessionRegistration{}, nil
+	}
+	var reg sessionRegistration
+	if o.Lifetime != 0 {
+		if o.Lifetime < time.Second || o.Lifetime > applicationSessionTTL*time.Second {
+			return sessionRegistration{}, &extension.Error{Status: http.StatusBadRequest, Message: "invalid session lifetime"}
+		}
+		reg.ttl = int64(o.Lifetime / time.Second)
+	}
+	if o.SourceSession != "" {
+		if !validSourceSessionKey(o.SourceSession) {
+			return sessionRegistration{}, &extension.Error{Status: http.StatusBadRequest, Message: "invalid source session"}
+		}
+		reg.sourceSession = o.SourceSession
+	}
+	return reg, nil
+}
+
 // Issue registers a session for the account under the hold of tx's change, so the session and the
 // change that earned it are one durable snapshot.
 func (sessions extensionSessions) Issue(tx extension.Tx, userID string, o extension.SessionOptions) (extension.TokenPair, error) {
 	if err := sessions.locked(tx); err != nil {
+		return extension.TokenPair{}, err
+	}
+	reg, err := validateSessionOptions(o)
+	if err != nil {
 		return extension.TokenPair{}, err
 	}
 	server := sessions.server
@@ -131,12 +177,12 @@ func (sessions extensionSessions) Issue(tx extension.Tx, userID string, o extens
 	if err != nil {
 		return extension.TokenPair{}, err
 	}
-	session, err := server.registerSessionLocked(userID, nil, token)
+	session, err := server.registerSessionWithOptionsLocked(userID, nil, token, reg)
 	if err != nil {
 		return extension.TokenPair{}, err
 	}
 	if o.Transport == "browser" {
-		return extension.TokenPair{SessionToken: token, ExpiresAt: min(session.ExpiresAt, time.Now().Unix()+applicationSessionIdleTTL)}, nil
+		return extension.TokenPair{SessionToken: token, ExpiresAt: applicationSessionDeadline(session)}, nil
 	}
 	profile, err := server.forest.GetUserProfile(userID)
 	if err != nil {
