@@ -70,18 +70,10 @@ func (tx forestTx) Slot(nodeID, key string) (any, bool) {
 	if !held {
 		return nil, false
 	}
-	if value.HasDecoded {
-		return value.Decoded, true
-	}
 	if declared.Codec == nil {
 		return append(json.RawMessage(nil), value.Raw...), true
 	}
-	decoded, err := declared.Codec.Decode(value.Raw)
-	if err != nil {
-		return nil, false
-	}
-	value.Decoded, value.HasDecoded = decoded, true
-	return decoded, true
+	return value.Decode(declared.Codec.Decode)
 }
 
 func (tx forestTx) SetSlot(nodeID, key string, v any) error {
@@ -97,7 +89,7 @@ func (tx forestTx) SetSlot(nodeID, key string, v any) error {
 	if store == nil {
 		return &extension.Error{Status: http.StatusNotFound, Message: "node not found: " + nodeID}
 	}
-	store.Set(key, &slots.Value{Raw: raw, Decoded: v, HasDecoded: declared.Codec != nil})
+	store.Set(key, slots.NewValue(raw, v, declared.Codec != nil))
 	return nil
 }
 
