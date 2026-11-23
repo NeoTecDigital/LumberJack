@@ -200,23 +200,12 @@ func (s *Server) handleApplicationChanges(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Invalid cursor", 400)
 		return
 	}
-	visible := map[string]bool{}
-	valid := false
-	// Permission resolution, cursor polling and projection share one read hold.
-	// Revocation cannot interleave between collecting access and filtering paths.
+	// Permission resolution, cursor polling, scoped EventDelivery and projection
+	// share one read hold. Revocation cannot interleave between collecting access
+	// and filtering delivery.
 	s.forestMutex.RLock()
 	defer s.forestMutex.RUnlock()
-	func() {
-		_, err := s.forest.GetUserProfile(userID)
-		valid = err == nil
-		if valid {
-			_ = s.walkScope("", nil, func(at visit) {
-				if at.node.CheckPermission(userID, core.ReadPermission) {
-					visible[at.path] = true
-				}
-			})
-		}
-	}()
+	visible, valid := s.collectVisiblePathsLocked(userID)
 	if !valid {
 		http.Error(w, "Account unavailable", 401)
 		return
@@ -236,14 +225,15 @@ func (s *Server) handleApplicationChanges(w http.ResponseWriter, r *http.Request
 		after = sequence
 		events = nil
 	}
-	delivered := []mutationEvent{}
-	for _, event := range events {
-		if visible[event.NodePath] {
-			delivered = append(delivered, event)
-		}
-	}
+	delivered := s.filterApplicationEventsLocked(events, userID, visible)
+	paths, resync := sortedPathsAndResync(visible, query.Visible, caughtUp)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"events": delivered, "epoch": epoch, "after": after, "caught_up": caughtUp, "resync": resync, "visible": paths})
+}
+
+func sortedPathsAndResync(visible map[string]bool, prior []string, caughtUp bool) ([]string, bool) {
 	resync := !caughtUp
-	for _, path := range query.Visible {
+	for _, path := range prior {
 		if !visible[path] {
 			resync = true
 			break
@@ -254,6 +244,34 @@ func (s *Server) handleApplicationChanges(w http.ResponseWriter, r *http.Request
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"events": delivered, "epoch": epoch, "after": after, "caught_up": caughtUp, "resync": resync, "visible": paths})
+	return paths, resync
+}
+
+func (s *Server) collectVisiblePathsLocked(userID string) (map[string]bool, bool) {
+	if _, err := s.forest.GetUserProfile(userID); err != nil {
+		return nil, false
+	}
+	visible := map[string]bool{}
+	_ = s.walkScope("", nil, func(at visit) {
+		if at.node.CheckPermission(userID, core.ReadPermission) {
+			visible[at.path] = true
+		}
+	})
+	return visible, true
+}
+
+func (s *Server) filterApplicationEventsLocked(events []mutationEvent, userID string, visible map[string]bool) []mutationEvent {
+	delivered := make([]mutationEvent, 0, len(events))
+	for _, event := range events {
+		if event.isScoped() {
+			if s.canDeliverScopedLocked(event, userID) {
+				delivered = append(delivered, event)
+			}
+			continue
+		}
+		if visible[event.NodePath] {
+			delivered = append(delivered, event)
+		}
+	}
+	return delivered
 }

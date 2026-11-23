@@ -3,6 +3,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -15,6 +16,11 @@ import (
 // write path; Read is readForest. Neither may be called from inside a locked callback.
 
 var errExtensionsClosed = errors.New("lumberjack: the runtime's extensions are closed")
+
+const (
+	maxEventKindBytes  = 256
+	maxEventScopeBytes = 512
+)
 
 type extensionHost struct {
 	server *Server
@@ -47,6 +53,75 @@ func (host *extensionHost) Change(ctx context.Context, op extension.WriteOp, fn 
 
 func (host *extensionHost) Publish(kind, path string) {
 	host.server.publish(mutation(kind, path))
+}
+
+func (host *extensionHost) PublishScoped(kind, scope string, payload json.RawMessage) error {
+	if host.server.extensionsClosed.Load() {
+		return errExtensionsClosed
+	}
+	if host.name == "" {
+		return errors.New("lumberjack: scoped publish requires an extension owner")
+	}
+	if !validEventKind(kind) {
+		return errors.New("lumberjack: invalid scoped event kind")
+	}
+	if !validEventScope(scope) {
+		return errors.New("lumberjack: invalid scoped event scope")
+	}
+	if len(payload) == 0 || len(payload) > extension.MaxEventPayloadBytes {
+		return errors.New("lumberjack: scoped event payload must be 1..4096 bytes")
+	}
+	if !json.Valid(payload) {
+		return errors.New("lumberjack: scoped event payload is not valid JSON")
+	}
+	cloned := append(json.RawMessage(nil), payload...)
+	host.server.publish(scopedMutation(host.name, kind, scope, cloned))
+	return nil
+}
+
+func validEventKind(kind string) bool {
+	if len(kind) == 0 || len(kind) > maxEventKindBytes {
+		return false
+	}
+	for i := 0; i < len(kind); i++ {
+		if kind[i] <= 0x20 || kind[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validEventScope(scope string) bool {
+	if len(scope) == 0 || len(scope) > maxEventScopeBytes {
+		return false
+	}
+	for i := 0; i < len(scope); i++ {
+		if scope[i] < 0x20 || scope[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// canDeliverScopedLocked reports whether a scoped mutation event may be delivered to userID under
+// the caller's shared or exclusive forest hold. Missing owners, missing checks, errors and panics
+// all fail closed.
+func (s *Server) canDeliverScopedLocked(event mutationEvent, userID string) (deliver bool) {
+	if !event.isScoped() || userID == "" || s.extensions == nil || s.extensionsClosed.Load() {
+		return false
+	}
+	check := s.extensions.eventDelivery[event.extensionOwner]
+	if check == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			deliver = false
+		}
+	}()
+	payload := append(json.RawMessage(nil), event.Payload...)
+	ok, err := check(forestTx{server: s, owner: event.extensionOwner}, userID, event.scope, payload)
+	return err == nil && ok
 }
 
 func (host *extensionHost) Sessions() extension.Sessions {

@@ -50,12 +50,17 @@ type Extension interface {
 }
 
 type Spec struct {
-	Name        string      // stable, [a-z0-9-]+; namespaces grant ids, config parts, errors
-	Slot        SlotSpec    // persisted keys this extension owns (§4.5)
-	Markers     []string    // CommandReceipts keys that mark a node as owned by this extension
-	ConfigParts []string    // application_configure parts it consumes, e.g. "admission"
-	Persistence Persistence // AnyPersistence | SnapshotOnly (refused under tiered persistence)
+	Scope                StoreScope        // AllStores | HubStore | RecordStore
+	Name                 string            // stable, [a-z0-9-]+; namespaces grant ids, config parts, errors
+	Slot                 SlotSpec          // persisted keys this extension owns (§4.5)
+	Markers              []string          // CommandReceipts keys that mark a node as owned by this extension
+	ConfigParts          []string          // application_configure parts it consumes, e.g. "admission"
+	Persistence          Persistence       // AnyPersistence | SnapshotOnly (refused under tiered persistence)
+	PresentationMetadata []string          // metadata keys whose changes alone queue no outbox notice
+	EventDelivery        EventDeliveryFunc // optional poll-time gate for scoped events (§4.7)
 }
+
+type EventDeliveryFunc func(tx ReadTx, principal, scope string, payload json.RawMessage) (bool, error)
 
 // Instance is the per-forest object. It may implement any of the optional capability interfaces
 // in §4. The engine type-asserts each one once, at Attach.
@@ -396,6 +401,10 @@ slot. The answer is 401 with body `second factor required`, and it is not counte
 Invariants:
 
 - A `Refused` claim never falls through to another credential type.
+- Guarded (`Access: Session`) routes receive `extension.PrincipalFrom(r.Context())` identically
+  whether the request was accepted by a `RequestAuthenticator` or by the engine's native browser
+  (`ms_`) or bearer session guard. Native sessions leave `Principal.Projection` `nil` so
+  `GET /principal` continues answering the engine's `{id, username, admin}` projection.
 - A second factor never mints a session except through `Sessions.Issue`, so registry, idle deadline
   and epoch rules hold.
 - Grants are additive. Revocation and expiry are honoured at read time by `CheckPermission`.
@@ -490,10 +499,13 @@ Generic tests:
 ### 4.7 Host
 
 ```go
+const MaxEventPayloadBytes = 4096
+
 type Host interface {
 	Read(fn func(ReadTx) error) error                                          // shared hold
 	Change(ctx context.Context, op WriteOp, fn func(Tx) error) (Commit, error) // §4.1, the one write path
 	Publish(kind, path string)                                                 // mutation stream; call only after Change returned
+	PublishScoped(kind, scope string, payload json.RawMessage) error           // scoped event (<= MaxEventPayloadBytes JSON); call only after Change returned
 	Sessions() Sessions
 	Logger() types.Logger
 }
@@ -520,6 +532,22 @@ type Configurable interface {
 }
 ```
 
+`PublishScoped` appends a scoped event to the shared mutation ring after validating a non-empty
+printable `kind` (`<= 256` bytes, no whitespace or control characters), a non-empty printable
+`scope` (`<= 512` bytes, no control characters), and valid JSON `payload` (`1..4096` bytes); the
+payload slice is cloned before publication. Scoped and unscoped events share one sequence cursor on
+`/changes` and `/stream`:
+
+- On `/changes` and `/stream`, `Spec.EventDelivery(tx, principal, scope, payload)` is evaluated
+  live at poll time under the engine's shared forest read hold (`forestMutex.RLock`), using a
+  cloned payload copy and the publishing extension's `ReadTx`.
+- If the publishing extension declared no `EventDelivery`, or `EventDelivery` returns `false`, an
+  error or panics, the event is withheld (fail closed) while `/changes` `after` still advances
+  monotonically past its sequence without reordering or stalling the cursor.
+- Delivered scoped events carry `"payload"` verbatim with `node_path: ""` and `entry_index: -1`
+  (`extensionOwner` and `scope` are never serialized); unscoped events omit `"payload"` completely
+  and retain node `ReadPermission` filtering and `visible`/`resync` semantics unchanged.
+
 `ffi/activation.go:19-45` and `embedded.ConfigureApplication` dispatch each non-empty part to the
 extension that declared it. An undeclared part is refused, never ignored, and the FFI answers
 `LJ_INVALID`.
@@ -531,13 +559,13 @@ A `*core.Node` obtained from a `ReadTx` or `Tx` must not outlive the callback. T
 
 | Invariant | Statement | How it is held |
 |---|---|---|
-| Durability | Nothing is acknowledged, published to `/stream` or answered 2xx before the change is durable (snapshot fsynced, or hot-log record synced). A failed persist is `Unknown`, never `Refused` | `Host.Change` returns only after `land()`; `Publish` is documented as after-`Change`; `Settle(Durable)` precedes the caller's acknowledgement; routes cannot write except through `Change` |
+| Durability | Nothing is acknowledged, published to `/stream` or answered 2xx before the change is durable (snapshot fsynced, or hot-log record synced). A failed persist is `Unknown`, never `Refused` | `Host.Change` returns only after `land()`; `Publish` and `PublishScoped` are documented as after-`Change`; `Settle(Durable)` precedes the caller's acknowledgement; routes cannot write except through `Change` |
 | Permit ordering | `Acquire` happens before `forestMutex` is taken and never under it. Exactly one `Settle` per `Acquire`, after the outcome is known, with neither `forestMutex` nor `stateWriter.mutex` held. At most one provider | `changeForest` shape in §4.1; one-provider check at Open; `TestPermitAcquiredBeforeHoldAndSettledAfterDurable` |
 | One write path | Every mutation, engine or extension, in snapshot or tiered mode, passes `runChangeLocked` | `Host.Change` is the only extension write; the tier path already shares `runChangeLocked` (`persistence.go:221`) |
-| Lock discipline | `forestMutex` is the one forest lock, taken only by the engine. Hooks, filters, sources, codecs and listeners run under it and must not take it, block, do I/O or call `Host`. Go's RWMutex deadlocks a nested `RLock` behind a waiting writer (`forest_lock.go:36-38`) | documented contract, plus a test build tag that panics on `Host` reentry from a locked callback |
+| Lock discipline | `forestMutex` is the one forest lock, taken only by the engine. Hooks, filters, sources, codecs, listeners and `EventDelivery` checks run under it and must not take it, block, do I/O or call `Host`. Go's RWMutex deadlocks a nested `RLock` behind a waiting writer (`forest_lock.go:36-38`) | documented contract, plus a test build tag that panics on `Host` reentry from a locked callback |
 | Disk outside the hold | No seam callback runs inside the disk write | `land()` and `Settle` run unheld, as in `forest_lock.go:131-148` |
 | Visibility | A hidden node is absent from every generic read, uniformly | the sweep test in §4.2 |
-| Fail closed | Data whose owner is absent is preserved and, where it is security-bearing, closes the door it guarded | §4.2 marker rule, §4.4 login rule, §4.7 config refusal |
+| Fail closed | Data whose owner is absent is preserved and, where it is security-bearing, closes the door it guarded | §4.2 marker rule, §4.4 login rule, §4.7 config refusal and scoped event delivery |
 
 ## 6. FFI: per-product cgo archives
 

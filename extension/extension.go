@@ -33,7 +33,18 @@ type Spec struct {
 	// PresentationMetadata are node metadata keys whose changes are presentation, not news: a change
 	// to them alone queues no notification for the node's subscribers.
 	PresentationMetadata []string
+
+	// EventDelivery gates delivery of scoped events published by this extension at poll time, under
+	// the engine's shared forest read hold. Without one, scoped events from this extension are never
+	// delivered.
+	EventDelivery EventDeliveryFunc
 }
+
+// EventDeliveryFunc reports whether a scoped event published by this extension may be delivered to
+// principal at poll time, under the engine's shared forest read hold. Like VisibilityFilter,
+// GrantSource and OutboxEntitlement, it must not call Host.Read or Host.Change, block, or do I/O;
+// it reads forest and slot state through tx.
+type EventDeliveryFunc func(tx ReadTx, principal, scope string, payload json.RawMessage) (bool, error)
 
 // StoreScope declares where an extension's contract must be honored. The zero
 // value preserves existing registrations: a journal cannot bypass their hooks.

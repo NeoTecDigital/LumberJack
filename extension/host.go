@@ -3,11 +3,15 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/NeoTecDigital/LumberJack/core"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
+
+// MaxEventPayloadBytes bounds the JSON payload of a scoped mutation event (4 KiB).
+const MaxEventPayloadBytes = 4096
 
 // Host is the engine as an extension instance sees it. Every write goes through Change, which is the
 // engine's one write path: the same permit, hooks, guard and durability as an engine route.
@@ -15,6 +19,7 @@ type Host interface {
 	Read(fn func(ReadTx) error) error                                          // shared hold
 	Change(ctx context.Context, op WriteOp, fn func(Tx) error) (Commit, error) // the one write path
 	Publish(kind, path string)                                                 // mutation stream; call only after Change returned
+	PublishScoped(kind, scope string, payload json.RawMessage) error           // scoped event (<= MaxEventPayloadBytes JSON); call only after Change returned
 	Sessions() Sessions
 	Logger() types.Logger
 }

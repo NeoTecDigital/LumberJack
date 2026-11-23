@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NeoTecDigital/LumberJack/extension"
 	"github.com/golang-jwt/jwt"
 )
 
@@ -28,6 +29,7 @@ func (server *Server) serveBearerAuth(next http.HandlerFunc, w http.ResponseWrit
 		return
 	}
 	ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
+	ctx = extension.WithPrincipal(ctx, extension.Principal{UserID: claims.UserID})
 	if claims.ExpiresAt > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, time.Unix(claims.ExpiresAt, 0))
