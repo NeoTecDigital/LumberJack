@@ -1,7 +1,10 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
 package embedded
 
-import "github.com/NeoTecDigital/LumberJack/internal/store"
+import (
+	"github.com/NeoTecDigital/LumberJack/internal/store"
+	"github.com/NeoTecDigital/LumberJack/types"
+)
 
 // Record errors are stable categories for errors.Is; operating-system errors remain distinct.
 var (
@@ -29,8 +32,9 @@ func OpenRecordDocument(version uint32, raw []byte) (*RecordHandle, error) {
 	}
 	var r struct {
 		baseConfig
-		Indexes  []RecordIndex `json:"indexes,omitempty"`
-		ReadOnly bool          `json:"read_only,omitempty"`
+		Indexes  []RecordIndex        `json:"indexes,omitempty"`
+		Storage  *types.StorageConfig `json:"storage,omitempty"`
+		ReadOnly bool                 `json:"read_only,omitempty"`
 	}
 	var target any = &r.baseConfig
 	if version == 2 {
@@ -39,5 +43,9 @@ func OpenRecordDocument(version uint32, raw []byte) (*RecordHandle, error) {
 	if err := store.Decode(raw, target); err != nil || r.Durability != "local-sync" {
 		return nil, ErrRecordInvalid
 	}
-	return OpenIndexedRecords(r.Directory, r.Name, r.Principal, r.Indexes, r.ReadOnly)
+	cfg, err := types.ResolveOpenStorage(r.Storage)
+	if err != nil {
+		return nil, err
+	}
+	return OpenIndexedRecordsWithStorage(r.Directory, r.Name, r.Principal, r.Indexes, r.ReadOnly, cfg)
 }

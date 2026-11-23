@@ -1,0 +1,8 @@
+// Written by Richard Christopher, Copyright 2026 NeoTec, LLC
+package embedded
+import("errors";"os";"testing")
+func TestPriorRecordReader(t *testing.T){
+ dir:=os.Getenv("LJ_FIXTURE_OLD_READER")
+ control,e:=OpenRecords(dir,"plain","owner");if e!=nil{t.Fatal(e)};control.Close()
+ h,e:=OpenRecords(dir,"sealed","owner");if h!=nil||!errors.Is(e,ErrRecordConflict){t.Fatalf("previous reader accepted or mistook sealed journal: %v",e)}
+}

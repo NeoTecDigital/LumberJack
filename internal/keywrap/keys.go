@@ -1,5 +1,5 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
-package internal
+package keywrap
 
 import (
 	"context"
@@ -14,18 +14,18 @@ import (
 	"github.com/NeoTecDigital/LumberJack/types"
 )
 
-type wrappedStorageKey struct {
+type Wrapped struct {
 	Key        string `json:"key"`
 	Ciphertext []byte `json:"ciphertext"`
 }
-type storageKeyWrapper interface {
-	Wrap(context.Context, []byte, []byte) (wrappedStorageKey, error)
-	Unwrap(context.Context, wrappedStorageKey, []byte) ([]byte, error)
+type Wrapper interface {
+	Wrap(context.Context, []byte, []byte) (Wrapped, error)
+	Unwrap(context.Context, Wrapped, []byte) ([]byte, error)
 }
 
 // GCM generates a fresh random nonce for every key and content encryption. The
 // resource identity and format version are authenticated as additional data.
-func storageSeal(key, plaintext, aad []byte) ([]byte, error) {
+func Seal(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -40,7 +40,7 @@ func storageSeal(key, plaintext, aad []byte) ([]byte, error) {
 	}
 	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
-func storageOpen(key, sealed, aad []byte) ([]byte, error) {
+func Open(key, sealed, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -58,29 +58,29 @@ func storageOpen(key, sealed, aad []byte) ([]byte, error) {
 	}
 	return result, nil
 }
-func storageRandomKey() ([]byte, error) {
+func Random() ([]byte, error) {
 	key := make([]byte, 32)
 	_, err := rand.Read(key)
 	return key, err
 }
 
-// localStorageWrapper is deliberately available only under local-test. It is
+// Local is deliberately available only under local-test. It is
 // for disposable isolated fixtures, never an automatic KMS outage fallback.
-type localStorageWrapper struct{ key []byte }
+type Local struct{ Key []byte }
 
-func (w *localStorageWrapper) Wrap(_ context.Context, key, aad []byte) (wrappedStorageKey, error) {
-	ciphertext, err := storageSeal(w.key, key, aad)
-	return wrappedStorageKey{Key: "local-test/v1", Ciphertext: ciphertext}, err
+func (w *Local) Wrap(_ context.Context, key, aad []byte) (Wrapped, error) {
+	ciphertext, err := Seal(w.Key, key, aad)
+	return Wrapped{Key: "local-test/v1", Ciphertext: ciphertext}, err
 }
-func (w *localStorageWrapper) Unwrap(_ context.Context, key wrappedStorageKey, aad []byte) ([]byte, error) {
+func (w *Local) Unwrap(_ context.Context, key Wrapped, aad []byte) ([]byte, error) {
 	if key.Key != "local-test/v1" {
 		return nil, errors.New("storage key wrapper does not match")
 	}
-	return storageOpen(w.key, key.Ciphertext, aad)
+	return Open(w.Key, key.Ciphertext, aad)
 }
 
-// storageWrapperFor is the key wrapper a storage configuration names, or nil for plaintext.
-func storageWrapperFor(config types.StorageConfig) (storageKeyWrapper, error) {
+// For is the key wrapper a storage configuration names, or nil for plaintext.
+func For(config types.StorageConfig) (Wrapper, error) {
 	switch config.Mode {
 	case "":
 		return nil, nil
@@ -103,7 +103,7 @@ func storageWrapperFor(config types.StorageConfig) (storageKeyWrapper, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &localStorageWrapper{key: key}, nil
+		return &Local{Key: key}, nil
 	default:
 		return nil, errors.New("unsupported LUMBERJACK_STORAGE_MODE (storage.mode); use kms or explicit local-test")
 	}

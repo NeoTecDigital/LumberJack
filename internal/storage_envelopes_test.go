@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"os"
 	"testing"
 
@@ -16,23 +17,23 @@ import (
 // The baseline has no secureStorage codec; the file-level regression's observed
 // red is recorded in secure_storage_test.go. These exercise its trust boundaries.
 type storageTestWrapper struct {
-	localStorageWrapper
+	keywrap.Local
 	fail  bool
 	wraps int
 }
 
-func (w *storageTestWrapper) Wrap(ctx context.Context, key, aad []byte) (wrappedStorageKey, error) {
+func (w *storageTestWrapper) Wrap(ctx context.Context, key, aad []byte) (keywrap.Wrapped, error) {
 	if w.fail {
-		return wrappedStorageKey{}, errors.New("key service unavailable")
+		return keywrap.Wrapped{}, errors.New("key service unavailable")
 	}
 	w.wraps++
-	return w.localStorageWrapper.Wrap(ctx, key, aad)
+	return w.Local.Wrap(ctx, key, aad)
 }
 
 func TestStorageEnvelopesGrantHistoryAndTampering(t *testing.T) {
 	// The exclusive-boundary fixture failed before the 2026-09-21 correction:
 	// "message history/invitation key scope wrong". Sequence == From is private.
-	wrapper := &storageTestWrapper{localStorageWrapper: localStorageWrapper{key: bytes.Repeat([]byte{9}, 32)}}
+	wrapper := &storageTestWrapper{Local: keywrap.Local{Key: bytes.Repeat([]byte{9}, 32)}}
 	codec := &secureStorage{wrapper: wrapper, id: string(bytes.Repeat([]byte{'a'}, 64)), accounts: map[string]storageAccountKey{}}
 	forest := &core.Node{ID: "root", Name: "private security", Users: []core.User{{ID: "alice"}, {ID: "bob"}, {ID: "eve"}}, Children: map[string]*core.Node{}}
 	node := &core.Node{ID: "node", Name: "private attachment title", Users: []core.User{{ID: "alice", Permissions: []core.Permission{core.AdminPermission}}, {ID: "bob", Permissions: []core.Permission{core.ReadPermission}}}}
@@ -60,7 +61,7 @@ func TestStorageEnvelopesGrantHistoryAndTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	zipped, err := storageOpen(master, outer.Payload, codec.aad("snapshot"))
+	zipped, err := keywrap.Open(master, outer.Payload, codec.aad("snapshot"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestStorageEnvelopesGrantHistoryAndTampering(t *testing.T) {
 	}
 	_ = json.Unmarshal(encoded, &outer)
 	master, _ = wrapper.Unwrap(context.Background(), outer.Key, codec.aad("snapshot"))
-	zipped, _ = storageOpen(master, outer.Payload, codec.aad("snapshot"))
+	zipped, _ = keywrap.Open(master, outer.Payload, codec.aad("snapshot"))
 	raw, _ = readCappedGzip(bytes.NewReader(zipped), maxDecompressedState)
 	doc = encryptedStateDocument{}
 	_ = json.Unmarshal(raw, &doc)
@@ -150,8 +151,8 @@ func TestEncryptedStorageMigrationAndFailureAreAtomic(t *testing.T) {
 	}
 	storage, _ := migrated.storageCodec()
 	original := storage.wrapper
-	key, _ := storageRandomKey()
-	storage.wrapper = &storageTestWrapper{localStorageWrapper: localStorageWrapper{key: key}, fail: true}
+	key, _ := keywrap.Random()
+	storage.wrapper = &storageTestWrapper{Local: keywrap.Local{Key: key}, fail: true}
 	migrated.forest.Name = "unacknowledged mutation"
 	if err = migrated.persistState(migrated.statePath()); err == nil {
 		t.Fatal("key-service failure acknowledged")

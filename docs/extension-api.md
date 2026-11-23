@@ -802,3 +802,12 @@ the invariants of §5.
 | D25 | P3b-9 | "`LUMBERJACK_STORAGE_*` read by `cmd`/`ffi`" | `types.StorageFromEnvironment` reads them (and, for one release, the `CORRESPONDER_STORAGE_*` aliases, each logged as deprecated) whenever `ServerConfig.Storage` is nil — the path the CLI, the C ABI and `embedded` all take. A non-nil `Storage` is explicit and the environment is not read. The label switch is `storage.write_label` / `LUMBERJACK_STORAGE_WRITE_LABEL` (now neutral by default, or a host-supplied name; §7.5 supersedes the cut-era default), and `ServerConfig.AdminReconcile` / `LUMBERJACK_ADMIN_RECONCILE` replaces `CORRESPONDER_ADMIN_RECONCILE` | one reader for every entry point, so the three cannot drift; the engine itself never reads a variable name directly |
 | D26 | P3b-10 | `abi.Open(req []byte) (uint64, Status)`, … | the entry points take the C arguments as Go values — each pointer an `unsafe.Pointer`, each length an `int64` — and answer the status as an `int32` | a cgo type belongs to the package that declares it, so a product's `main` cannot hand `abi` its `C.lj_cstr`; passing pointers keeps the whole buffer convention (bounds, truncation, no partial document, the panic guard) inside `abi`, once, for every archive |
 | D27 | P3b-10 | – | the example product archive's C driver is `ffi/ctest/example.c`, not inside `ffi/testdata/example` | cgo compiles every `.c` file in a package's directory into the package |
+
+### Sealed record journals and offline account sealing
+
+The optional record family accepts the same host wrapper and labels on v2 opens, including
+reader opens. Probe `ic_lj_sealed_records_version` (1) before relying on this. The trusted
+offline `ic_lj_record_seal` operation accepts `{directory, hub_directory, name, principal,
+storage}`; success sets its output byte to 0 (converted) or 1 (verified already sealed).
+It refuses while either store is held. See [record commands](record-commands.md#sealed-indexed-journals-record-profile-v2-open)
+for journal framing, conversion boundaries, filesystem requirements and rollback.

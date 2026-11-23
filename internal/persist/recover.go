@@ -162,3 +162,26 @@ func cutSegment(s *segment, offset int64, reason string) error {
 func isPrefix(data []byte, of string) bool {
 	return len(data) <= len(of) && string(data) == of[:len(data)]
 }
+
+// Inspect reads a complete unapplied journal without opening a writer or repairing a torn tail.
+// Offline transformations cannot discard bytes or certify a repaired prefix as the original.
+func Inspect(path string) ([]Record, error) {
+	segments, err := listSegments(path)
+	if err != nil {
+		return nil, err
+	}
+	var all []Record
+	next := uint64(1)
+	for _, seg := range segments {
+		if seg.first != next {
+			return nil, fmt.Errorf("unexpected segment start %d", seg.first)
+		}
+		records, err := readSegment(seg, next, false)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, records...)
+		next += uint64(len(records))
+	}
+	return all, nil
+}

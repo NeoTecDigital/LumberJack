@@ -40,12 +40,18 @@ func OpenRecords(dir, name, principal string) (*RecordHandle, error) {
 type RecordIndex = store.Index
 
 func OpenIndexedRecords(dir, name, principal string, defs []RecordIndex, reader bool) (*RecordHandle, error) {
+	return OpenIndexedRecordsWithStorage(dir, name, principal, defs, reader, nil)
+}
+func OpenIndexedRecordsWithStorage(dir, name, principal string, defs []RecordIndex, reader bool, policy *types.StorageConfig) (*RecordHandle, error) {
 	if !filepath.IsAbs(dir) || name == "" || len(name) > 128 || name == "." || name == ".." || strings.ContainsAny(name, "/\\*?[]") || !store.ValidPrincipal(principal) {
 		return nil, store.ErrInvalid
 	}
 	cfg, _ := types.StorageFromEnvironment()
-	if cfg.Mode != "" || cfg.MigrateLegacy || cfg.RewrapKeys {
+	if policy == nil && (cfg.Mode != "" || cfg.MigrateLegacy || cfg.RewrapKeys) {
 		return nil, store.ErrDenied
+	}
+	if policy != nil && (policy.Mode == "" || policy.MigrateLegacy || policy.RewrapKeys || policy.Validate() != nil) {
+		return nil, types.ErrSealingLabel
 	}
 	// Do not silently open an encrypted, replicated or differently configured store.
 	if _, err := os.Stat(filepath.Join(dir, types.StoreConfigFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
@@ -70,6 +76,9 @@ func OpenIndexedRecords(dir, name, principal string, defs []RecordIndex, reader 
 	recordMu.Lock()
 	defer recordMu.Unlock()
 	if rt := recordRuntimes[path]; rt != nil {
+		if err := rt.store.VerifyPolicy(policy); err != nil {
+			return nil, err
+		}
 		if err := rt.store.MatchOpen(principal, defs, reader); err != nil {
 			return nil, err
 		}
@@ -80,7 +89,7 @@ func OpenIndexedRecords(dir, name, principal string, defs []RecordIndex, reader 
 	if err != nil {
 		return nil, err
 	}
-	s, err := store.OpenIndexed(path, principal, defs, reader)
+	s, err := store.OpenWithStorage(path, principal, defs, reader, policy)
 	if err != nil {
 		releaseLock(lock)
 		return nil, err

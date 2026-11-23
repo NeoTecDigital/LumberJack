@@ -82,3 +82,10 @@ func TestHostSealingLabelValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHostOpenCannotInheritOfflineMaintenance(t *testing.T) {
+	t.Setenv("LUMBERJACK_STORAGE_MIGRATE_LEGACY", "1")
+	if _, e := ResolveOpenStorage(&StorageConfig{Mode: "local-test", LocalKeyFile: "fixture"}); e == nil {
+		t.Fatal("host open inherited migration")
+	}
+}

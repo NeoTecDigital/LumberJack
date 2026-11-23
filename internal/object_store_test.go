@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,6 +260,36 @@ func TestParseObjectIDAcceptsOneSpelling(t *testing.T) {
 	for _, bad := range []string{"", good[:63], good + "0", "G" + good[1:], "0X" + good[2:]} {
 		if _, err := parseObjectID(bad); !errors.Is(err, ErrInvalidObjectID) {
 			t.Fatalf("parseObjectID(%q): %v, want ErrInvalidObjectID", bad, err)
+		}
+	}
+}
+
+func TestSealObjectCopyPreservesEveryContentID(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "fixture.objects")
+	s := openTestStore(t, dir, DefaultMaxObjectBytes)
+	bodies := [][]byte{[]byte("synthetic object requiring encryption"), {}}
+	receipts := make([]objectReceipt, len(bodies))
+	for i, b := range bodies {
+		receipts[i] = mustPut(t, s, b)
+	}
+	s.close()
+	codec := &secureStorage{wrapper: &keywrap.Local{Key: randomBytes(t, 32)}}
+	if err := sealObjectCopy(dir, codec, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := sealObjectCopy(dir, codec, true); err != nil {
+		t.Fatal(err)
+	}
+	final, err := checkedObjects(dir, codec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer final.close()
+	for i, r := range receipts {
+		id, _ := parseObjectID(r.ID)
+		b, e := final.get(id)
+		if e != nil || !bytes.Equal(b, bodies[i]) {
+			t.Fatal(e)
 		}
 	}
 }

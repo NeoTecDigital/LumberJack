@@ -22,7 +22,7 @@ BASE_EXPORTS := ic_lj_abi_version ic_lj_sealing_labels_version ic_lj_echo ic_lj_
 	ic_lj_query ic_lj_aggregate ic_lj_forest ic_lj_stream_poll ic_lj_events_publish \
 	ic_lj_application_configure ic_lj_application_call ic_lj_application_free
 
-RECORD_EXPORTS := ic_lj_record_v2_abi_version ic_lj_record_v2_open ic_lj_record_v2_page ic_lj_record_abi_version ic_lj_record_open ic_lj_record_close ic_lj_record_apply ic_lj_record_page
+RECORD_EXPORTS := ic_lj_sealed_records_version ic_lj_record_seal ic_lj_record_marker ic_lj_record_v2_abi_version ic_lj_record_v2_open ic_lj_record_v2_page ic_lj_record_abi_version ic_lj_record_open ic_lj_record_close ic_lj_record_apply ic_lj_record_page
 
 # The libraries a cgo archive needs on Linux. pthread and dl fold into libc on glibc >= 2.34
 # and are no-ops there; they are named because an older glibc still wants them and the
@@ -32,7 +32,7 @@ CLIBS   := -lpthread -ldl -lresolv
 .PHONY: rollback-check product-archive-example
 .PHONY: all test ffi header-check nm-check smoke smoke-lock smoke-panic canon-check clean
 
-all: smoke-indexed-records smoke-records test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check product-archive-example rollback-check
+all: smoke-indexed-records smoke-records test ffi header-check nm-check smoke smoke-lock smoke-panic smoke-publication canon-check product-archive-example rollback-check record-rollback-check
 
 test:
 	@$(GO) test ./... -count=1
@@ -139,3 +139,7 @@ smoke-records: ffi
 smoke-indexed-records: ffi
 	@$(CC) $(CFLAGS) -I ffi -o $(BUILD)/smoke_indexed_records ffi/ctest/smoke_indexed_records.c $(ARCHIVE) $(CLIBS)
 	@$(BUILD)/smoke_indexed_records
+
+.PHONY: record-rollback-check
+record-rollback-check: | $(BUILD)
+	@bash tools/check-record-rollback.sh

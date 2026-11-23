@@ -4,6 +4,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 
 	"github.com/NeoTecDigital/LumberJack/internal/compat"
 	"github.com/NeoTecDigital/LumberJack/types"
@@ -30,7 +31,7 @@ func writeLabel(config types.StorageConfig) compat.Label {
 
 // The wire family has no plaintext selector among host labels. Only successful authenticated
 // unwrap can choose one. Neutral formats never try host prefixes, and vice versa.
-func unwrapLabel(w storageKeyWrapper, labels []compat.Label, neutral bool, wrapped wrappedStorageKey, id, purpose string) (compat.Label, []byte, error) {
+func unwrapLabel(w keywrap.Wrapper, labels []compat.Label, neutral bool, wrapped keywrap.Wrapped, id, purpose string) (compat.Label, []byte, error) {
 	if neutral {
 		labels = []compat.Label{{}}
 	}

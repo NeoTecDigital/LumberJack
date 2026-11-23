@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,7 +154,7 @@ func cutStorageConfig(t *testing.T) *types.StorageConfig {
 
 func cutStorage(t *testing.T, key []byte) *secureStorage {
 	l := cutLabel(t)
-	return &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}, label: l, labels: []compat.Label{l}}
+	return &secureStorage{wrapper: &keywrap.Local{Key: key}, accounts: map[string]storageAccountKey{}, label: l, labels: []compat.Label{l}}
 }
 
 func compatUseFixtureKey(t *testing.T) []byte {

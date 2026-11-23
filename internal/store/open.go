@@ -2,16 +2,15 @@
 package store
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/NeoTecDigital/LumberJack/internal/persist"
@@ -38,6 +37,7 @@ type journal interface {
 }
 
 type Store struct {
+	key    *journalKey
 	leases cursorCache
 	path   string
 	m      marker
@@ -55,6 +55,14 @@ func Open(path, issuer string) (*Store, error) {
 	return OpenIndexed(path, issuer, nil, false)
 }
 func OpenIndexed(path, issuer string, decls []Index, reader bool) (*Store, error) {
+	return OpenWithStorage(path, issuer, decls, reader, nil)
+}
+func OpenWithStorage(path, issuer string, decls []Index, reader bool, cfg *types.StorageConfig) (*Store, error) {
+	if cfg != nil {
+		if cfg.Mode == "" || cfg.MigrateLegacy || cfg.RewrapKeys || cfg.Validate() != nil {
+			return nil, types.ErrSealingLabel
+		}
+	}
 	defs, err := normalized(decls)
 	if err != nil {
 		return nil, err
@@ -62,7 +70,7 @@ func OpenIndexed(path, issuer string, decls []Index, reader bool) (*Store, error
 	if !ValidPrincipal(issuer) {
 		return nil, ErrInvalid
 	}
-	m, err := readMarker(path, issuer, defs, reader)
+	m, key, err := readMarker(path, issuer, defs, reader, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +84,7 @@ func OpenIndexed(path, issuer string, decls []Index, reader bool) (*Store, error
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{path: path, m: m, s: empty(), log: log, queue: make(chan *request, 64), done: make(chan struct{})}
+	s := &Store{key: key, path: path, m: m, s: empty(), log: log, queue: make(chan *request, 64), done: make(chan struct{})}
 	s.s.defs = m.Indexes
 	if err = s.replay(rs); err != nil {
 		log.Abandon()
@@ -119,75 +127,92 @@ func syncPath(p string) error {
 	defer f.Close()
 	return f.Sync()
 }
-func readMarker(path, issuer string, defs []Index, reader bool) (marker, error) {
-	var m marker
+func readMarker(path, issuer string, defs []Index, reader bool, cfg *types.StorageConfig) (marker, *journalKey, error) {
 	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) && !reader {
+		return createMarker(path, issuer, defs, cfg)
+	}
 	if errors.Is(err, os.ErrNotExist) {
-		if reader {
-			return m, ErrDenied
-		}
-		return createMarker(path, issuer, defs)
+		return marker{}, nil, ErrDenied
 	}
 	if err != nil {
-		return m, err
+		return marker{}, nil, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 65537))
+	data, err := io.ReadAll(io.LimitReader(f, 131073))
 	if err != nil {
-		return m, err
+		return marker{}, nil, err
 	}
-	if len(b) > 65536 || !strings.HasPrefix(string(b), banner) {
-		return m, fmt.Errorf("%w: not a record profile", ErrConflict)
+	if len(data) > 131072 || (bytes.HasPrefix(data, []byte(banner)) && len(data) > 65536) {
+		return marker{}, nil, ErrInvalid
 	}
-	err = Decode(b[len(banner):], &m)
+	m, key, err := decodeMarker(data, cfg)
 	if err == nil && (!semanticID(m.Store) || !token(m.Owner) || len(m.ReceiptKey) != 32) {
 		err = ErrInvalid
 	}
-	return m, err
+	return m, key, err
 }
-func createMarker(path, issuer string, defs []Index) (marker, error) {
+
+// Verify the actual wrapper, not just its pathname, before reusing a resident handle.
+func (s *Store) VerifyPolicy(cfg *types.StorageConfig) error {
+	if cfg == nil && s.key == nil {
+		return nil
+	}
+	if (cfg == nil) != (s.key == nil) {
+		return types.ErrSealingLabel
+	}
+	m, k, e := readMarker(s.path, "", nil, true, cfg)
+	if e != nil || k == nil || !bytes.Equal(k.key, s.key.key) || m.Store != s.m.Store {
+		return types.ErrSealingLabel
+	}
+	return nil
+}
+func createMarker(path, issuer string, defs []Index, cfg *types.StorageConfig) (marker, *journalKey, error) {
 	var m marker
-	// Never adopt an orphaned journal or attach it to another principal.
 	segs, err := filepath.Glob(path + ".log.*")
 	if err != nil || len(segs) != 0 {
-		return m, ErrConflict
+		return m, nil, ErrConflict
 	}
 	var salt [32]byte
 	if _, err = rand.Read(salt[:]); err != nil {
-		return m, err
+		return m, nil, err
 	}
 	m = marker{Indexes: defs, Store: hex.EncodeToString(salt[:]), Owner: issuer, ReceiptKey: make([]byte, 32)}
 	if _, err = rand.Read(m.ReceiptKey); err != nil {
-		return m, err
+		return m, nil, err
 	}
-	raw, err := json.Marshal(m)
+	raw, key, err := markerBytes(m, cfg)
 	if err != nil {
-		return m, err
+		return m, nil, err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".record-format-*")
 	if err != nil {
-		return m, err
+		return m, nil, err
 	}
 	defer os.Remove(f.Name())
-	if _, err = f.Write(append([]byte(banner), raw...)); err == nil {
+	if _, err = f.Write(raw); err == nil {
 		err = f.Sync()
 	}
 	ce := f.Close()
 	if err != nil {
-		return m, err
+		return m, nil, err
 	}
 	if ce != nil {
-		return m, ce
+		return m, nil, ce
 	}
 	if err = os.Link(f.Name(), path); err != nil {
-		return m, err
+		return m, nil, err
 	}
-	return m, syncPath(filepath.Dir(path))
+	return m, key, syncPath(filepath.Dir(path))
 }
 func (s *Store) replay(rs []persist.Record) error {
 	for _, r := range rs {
 		var f frame
-		if err := Decode(r.Body, &f); err != nil {
+		raw, err := s.key.frame(false, r.Seq, r.Body)
+		if err != nil {
+			return err
+		}
+		if err := Decode(raw, &f); err != nil {
 			return err
 		}
 		if f.Store != s.m.Store || f.Issuer != s.m.Owner || f.Sequence != r.Seq {
@@ -231,4 +256,10 @@ func (s *Store) MatchOpen(issuer string, defs []Index, reader bool) error {
 		return ErrConflict
 	}
 	return nil
+}
+
+// MarkerOwner authenticates an existing marker without opening its log, taking a lease or writing.
+func MarkerOwner(path string, cfg *types.StorageConfig) (string, error) {
+	m, _, e := readMarker(path, "", nil, true, cfg)
+	return m.Owner, e
 }

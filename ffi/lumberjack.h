@@ -141,6 +141,11 @@ uint32_t ic_lj_sealing_labels_version(void);
 /* Record v2 adds declared indexes and snapshot cursors. The v1 symbols still
  * report v1. Both versions use record_apply and record_close. */
 #define LJ_RECORD_V2_ABI_VERSION 2u
+#define LJ_SEALED_RECORDS_VERSION 1u
+uint32_t ic_lj_sealed_records_version(void);
+/* Offline, caller holds no open handle. Authenticated owner and explicit wrapper required. */
+lj_status_t ic_lj_record_seal(lj_cstr req, int64_t n, uint8_t *already);
+lj_status_t ic_lj_record_marker(lj_cstr req, int64_t n, char *out, int64_t cap, int64_t *length);
 uint32_t ic_lj_record_v2_abi_version(void);
 lj_status_t ic_lj_record_v2_open(lj_cstr req, int64_t n, lj_handle_t *out);
 lj_status_t ic_lj_record_v2_page(lj_handle_t h, lj_cstr req, int64_t n, char *out, int64_t cap, int64_t *length);

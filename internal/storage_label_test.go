@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -89,7 +90,7 @@ func rollbackFixture(t *testing.T, fixture string) compatManifestEntry {
 func TestObjectStoreWritesTheLabelAskedFor(t *testing.T) {
 	key := bytes.Repeat([]byte{5}, 32)
 	for _, label := range []compat.Label{cutLabel(t), (compat.Label{})} {
-		storage := &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}, label: label, labels: []compat.Label{label}}
+		storage := &secureStorage{wrapper: &keywrap.Local{Key: key}, accounts: map[string]storageAccountKey{}, label: label, labels: []compat.Label{label}}
 		dir := filepath.Join(t.TempDir(), "store.objects")
 		store := openTestStoreWith(t, dir, storage)
 		receipt := mustPut(t, store, []byte("labelled"))
@@ -106,7 +107,7 @@ func TestObjectStoreWritesTheLabelAskedFor(t *testing.T) {
 	legacy := cutStorage(t, key)
 	dir := filepath.Join(t.TempDir(), "store.objects")
 	first := mustPut(t, openTestStoreWith(t, dir, legacy), []byte("flag one"))
-	neutral := &secureStorage{wrapper: &localStorageWrapper{key: key}, accounts: map[string]storageAccountKey{}, labels: []compat.Label{cutLabel(t)}}
+	neutral := &secureStorage{wrapper: &keywrap.Local{Key: key}, accounts: map[string]storageAccountKey{}, labels: []compat.Label{cutLabel(t)}}
 	store := openTestStoreWith(t, dir, neutral)
 	if store.sealer.writeFlag != objectSealedNeutral || objectKeyVersion(t, dir) != compat.ObjectKeyFileLegacy {
 		t.Fatal("a version-1 store asked for neutral did not keep its key file and write flag 2")
