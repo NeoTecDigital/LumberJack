@@ -44,8 +44,8 @@ func recordOpen(req C.lj_cstr, n C.int64_t, out *C.lj_handle_t, v2 bool) (st C.l
 		return statusInvalid
 	}
 	*out = 0
-	if len(registered()) != 0 {
-		return statusConflict
+	if err := embedded.CheckRecordExtensions(registered()); err != nil {
+		return recordStatus(err)
 	}
 	if n > embedded.MaxRecordRequestBytes {
 		return statusTooLarge

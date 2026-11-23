@@ -14,6 +14,8 @@ import "C"
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"sync/atomic"
 
 	"github.com/NeoTecDigital/LumberJack/extension"
@@ -26,7 +28,9 @@ var writes atomic.Int64
 // counter is the example's extension: a write hook that counts.
 type counter struct{}
 
-func (counter) Spec() extension.Spec { return extension.Spec{Name: "example-counter"} }
+func (counter) Spec() extension.Spec {
+	return extension.Spec{Name: "example-counter", Scope: extension.HubStore}
+}
 
 func (counter) Attach(extension.Host) (extension.Instance, error) { return counter{}, nil }
 
@@ -35,6 +39,14 @@ func (counter) Close(context.Context) error { return nil }
 func (counter) BeforeChangeLocked(extension.Tx, extension.WriteOp) (extension.After, error) {
 	writes.Add(1)
 	return nil, nil
+}
+
+// Routes lets an embedding host observe the same probe through the application ABI.
+func (counter) Routes(router extension.Router) error {
+	return router.Handle(extension.Route{Method: http.MethodGet, Pattern: "/example/writes",
+		Access: extension.Session, Transport: extension.Application,
+		Handler: func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(writes.Load()) },
+	})
 }
 
 func init() { abi.Register(counter{}) }
