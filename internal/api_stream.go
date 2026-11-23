@@ -107,10 +107,28 @@ func (server *Server) subscribeReader(userID string, after uint64, resuming bool
 	return client, visible
 }
 
+// canSendScopedStreamEvent checks under the read hold whether a live /stream subscriber still
+// exists and is entitled to a scoped extension event.
+func (server *Server) canSendScopedStreamEvent(event mutationEvent, userID string) bool {
+	allowed := false
+	server.readForest(func() {
+		if _, err := server.forest.GetUserProfile(userID); err == nil {
+			allowed = server.canDeliverScopedLocked(event, userID)
+		}
+	})
+	return allowed
+}
+
 // streamSender writes an event the reader may read, and a resync where a path it could see has gone
 // out of its reach.
 func (server *Server) streamSender(w http.ResponseWriter, userID string, visible map[string]bool) func(mutationEvent) {
 	return func(event mutationEvent) {
+		if event.isScoped() {
+			if server.canSendScopedStreamEvent(event, userID) {
+				writeEvent(w, event)
+			}
+			return
+		}
 		allowed := false
 		server.readForest(func() {
 			if _, err := server.forest.GetUserProfile(userID); err != nil {

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -57,8 +58,11 @@ type mutationEvent struct {
 	// PreviousEventID is set only by a rename, and names what the event was called before it. A
 	// client holding the old id has no other way to learn that the event it is watching is the one
 	// that just appeared under a new name.
-	PreviousEventID string    `json:"previous_event_id,omitempty"`
-	Timestamp       time.Time `json:"timestamp"`
+	PreviousEventID string          `json:"previous_event_id,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+	Timestamp       time.Time       `json:"timestamp"`
+	extensionOwner  string
+	scope           string
 }
 
 // replayBufferSize is how far back a reconnecting client can be caught up.
@@ -246,7 +250,9 @@ func (server *Server) publish(event mutationEvent) mutationEvent {
 	// that names a node differently depending on which route changed it cannot be joined against
 	// anything the query surface returned. See node_path.go. It is canonicalised even on an
 	// embedded server with no stream, so the returned event names the node the way every read does.
-	event.NodePath = server.canonicalPath(event.NodePath)
+	if !event.isScoped() {
+		event.NodePath = server.canonicalPath(event.NodePath)
+	}
 	if server.mutations == nil {
 		return event
 	}
@@ -308,4 +314,19 @@ func (server *Server) PollMutationsBlocking(after uint64, timeout time.Duration,
 // entry" has to look like when 0 is a real index.
 func mutation(kind, nodePath string) mutationEvent {
 	return mutationEvent{Type: kind, NodePath: nodePath, EntryIndex: -1}
+}
+
+func (event mutationEvent) isScoped() bool {
+	return event.extensionOwner != ""
+}
+
+func scopedMutation(owner, kind, scope string, payload json.RawMessage) mutationEvent {
+	return mutationEvent{
+		Type:           kind,
+		NodePath:       "",
+		EntryIndex:     -1,
+		Payload:        payload,
+		extensionOwner: owner,
+		scope:          scope,
+	}
 }

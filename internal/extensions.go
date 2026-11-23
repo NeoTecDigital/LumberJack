@@ -41,7 +41,8 @@ type extensionSet struct {
 	factorOwner    string
 	listeners      []owned[extension.OutboxListener]
 	entitlements   []owned[extension.OutboxEntitlement]
-	routes         []extensionRoute // registration order
+	eventDelivery  map[string]extension.EventDeliveryFunc // by extension Name
+	routes         []extensionRoute                       // registration order
 	presentation   map[string]bool  // metadata keys whose changes are not news
 	markers        []string         // ownership markers: the compatibility marker, then each Spec's
 	filters        []extension.VisibilityFilter
@@ -199,7 +200,12 @@ func (server *Server) AttachExtensions(exts []extension.Extension) error {
 	if err != nil {
 		return err
 	}
-	set := &extensionSet{specs: specs, configurables: map[string]extension.Configurable{}, presentation: map[string]bool{}}
+	set := &extensionSet{
+		specs:         specs,
+		configurables: map[string]extension.Configurable{},
+		eventDelivery: map[string]extension.EventDeliveryFunc{},
+		presentation:  map[string]bool{},
+	}
 	set.markers = set.ownedMarkers()
 	for index, ext := range exts {
 		instance, err := ext.Attach(&extensionHost{server: server, name: specs[index].Name})
@@ -253,6 +259,9 @@ func (set *extensionSet) capabilities(spec extension.Spec, instance extension.In
 			return fmt.Errorf("%w: %s is a second PermitProvider; at most one is registered", ErrExtensionSet, spec.Name)
 		}
 		set.permits = provider
+	}
+	if spec.EventDelivery != nil {
+		set.eventDelivery[spec.Name] = spec.EventDelivery
 	}
 	for _, key := range spec.PresentationMetadata {
 		set.presentation[key] = true

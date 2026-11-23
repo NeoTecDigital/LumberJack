@@ -63,11 +63,12 @@ func (s *Server) registeredSessionLocked(key string, now int64) (core.Applicatio
 
 func (s *Server) serveApplicationSession(next http.HandlerFunc, w http.ResponseWriter, r *http.Request, token string) {
 	session, ok := s.applicationSession(token)
-	if !ok {
+	if !ok || session.UserID == "" {
 		http.Error(w, "Session expired or signed out", 401)
 		return
 	}
 	ctx := context.WithValue(r.Context(), "user_id", session.UserID)
+	ctx = extension.WithPrincipal(ctx, extension.Principal{UserID: session.UserID})
 	ctx, cancel := context.WithDeadline(ctx, time.Unix(applicationSessionDeadline(session), 0))
 	defer cancel()
 	next(w, r.WithContext(ctx))

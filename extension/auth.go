@@ -34,12 +34,13 @@ type Principal struct {
 
 type principalKey struct{}
 
-// WithPrincipal is the context a request carries once an authenticator accepted it.
+// WithPrincipal attaches an authenticated Principal to ctx for guarded route handlers.
 func WithPrincipal(ctx context.Context, principal Principal) context.Context {
 	return context.WithValue(ctx, principalKey{}, principal)
 }
 
-// PrincipalFrom answers the principal an authenticator accepted for this request, if one did.
+// PrincipalFrom answers the Principal authenticated for this request on a guarded route, whether by
+// a RequestAuthenticator or by the engine's native browser or bearer session guard.
 func PrincipalFrom(ctx context.Context) (Principal, bool) {
 	principal, ok := ctx.Value(principalKey{}).(Principal)
 	return principal, ok

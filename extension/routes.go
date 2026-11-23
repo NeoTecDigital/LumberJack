@@ -18,7 +18,7 @@ type Router interface {
 // Route is one extension route.
 type Route struct {
 	Method, Pattern    string           // gorilla/mux pattern
-	Handler            http.HandlerFunc // principal via PrincipalFrom(r.Context()) or the engine's user id
+	Handler            http.HandlerFunc // guarded handlers read caller via PrincipalFrom(r.Context()) (custom authenticator or native session)
 	Access             Access           // Session (default) | Public
 	Transport          Transport        // Both (default) | HTTP | Application
 	BackpressureExempt bool             // a credential exchange that must not be stranded
