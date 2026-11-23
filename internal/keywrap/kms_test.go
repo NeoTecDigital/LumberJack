@@ -1,5 +1,5 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
-package internal
+package keywrap
 
 import (
 	"bytes"

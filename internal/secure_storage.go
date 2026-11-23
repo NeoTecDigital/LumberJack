@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"io"
 	"os"
 	"strings"
@@ -28,14 +29,14 @@ const encryptedStateMagic = "LUMBERJACK-ENCRYPTED-STATE-3\n"
 
 type storageAccountKey struct {
 	key     []byte
-	wrapped wrappedStorageKey
+	wrapped keywrap.Wrapped
 }
 
 // secureStorage seals one store. label is the one its envelope was read under, and the one it is
 // written under. New stores default to neutral. level
 // is the state level its envelope version carried at the last decode.
 type secureStorage struct {
-	wrapper  storageKeyWrapper
+	wrapper  keywrap.Wrapper
 	id       string
 	accounts map[string]storageAccountKey
 	labels   []compat.Label
@@ -43,10 +44,10 @@ type secureStorage struct {
 	level    int
 }
 type encryptedStateEnvelope struct {
-	Version int               `json:"version"`
-	ID      string            `json:"id"`
-	Key     wrappedStorageKey `json:"key"`
-	Payload []byte            `json:"payload"`
+	Version int             `json:"version"`
+	ID      string          `json:"id"`
+	Key     keywrap.Wrapped `json:"key"`
+	Payload []byte          `json:"payload"`
 }
 type encryptedResource struct {
 	Payload     []byte            `json:"payload"`
@@ -60,7 +61,7 @@ type encryptedConversation struct {
 }
 type encryptedStateDocument struct {
 	Root          string                           `json:"root"`
-	Accounts      map[string]wrappedStorageKey     `json:"accounts"`
+	Accounts      map[string]keywrap.Wrapped       `json:"accounts"`
 	Nodes         map[string]encryptedResource     `json:"nodes"`
 	Conversations map[string]encryptedConversation `json:"conversations"`
 }
@@ -71,12 +72,12 @@ func (server *Server) storageCodec() (*secureStorage, error) {
 		if server.storageErr = config.Validate(); server.storageErr != nil {
 			return
 		}
-		wrapper, err := storageWrapperFor(config)
+		wrapper, err := keywrap.For(config)
 		server.storageErr = err
 		if err != nil || wrapper == nil {
 			return
 		}
-		id, err := storageRandomKey()
+		id, err := keywrap.Random()
 		if err != nil {
 			server.storageErr = err
 			return
@@ -148,7 +149,7 @@ func (s *secureStorage) accountKey(ctx context.Context, id string) ([]byte, erro
 	if exists {
 		account.key, err = s.wrapper.Unwrap(ctx, account.wrapped, s.aad("account/"+id))
 	} else {
-		account.key, err = storageRandomKey()
+		account.key, err = keywrap.Random()
 		if err == nil {
 			account.wrapped, err = s.wrapper.Wrap(ctx, account.key, s.aad("account/"+id))
 		}
@@ -161,16 +162,16 @@ func (s *secureStorage) accountKey(ctx context.Context, id string) ([]byte, erro
 }
 func (s *secureStorage) sealResource(ctx context.Context, master []byte, id string, plaintext []byte, users []string) (encryptedResource, error) {
 	result := encryptedResource{AccountKeys: map[string][]byte{}}
-	key, err := storageRandomKey()
+	key, err := keywrap.Random()
 	if err != nil {
 		return result, err
 	}
 	defer clear(key)
-	result.Payload, err = storageSeal(key, plaintext, s.aad("resource/"+id))
+	result.Payload, err = keywrap.Seal(key, plaintext, s.aad("resource/"+id))
 	if err != nil {
 		return result, err
 	}
-	result.BackendKey, err = storageSeal(master, key, s.aad("backend/"+id))
+	result.BackendKey, err = keywrap.Seal(master, key, s.aad("backend/"+id))
 	if err != nil {
 		return result, err
 	}
@@ -179,7 +180,7 @@ func (s *secureStorage) sealResource(ctx context.Context, master []byte, id stri
 		if err != nil {
 			return result, err
 		}
-		result.AccountKeys[userID], err = storageSeal(account, key, s.aad("grant/"+id+"/"+userID))
+		result.AccountKeys[userID], err = keywrap.Seal(account, key, s.aad("grant/"+id+"/"+userID))
 		if err != nil {
 			return result, err
 		}
@@ -187,12 +188,12 @@ func (s *secureStorage) sealResource(ctx context.Context, master []byte, id stri
 	return result, nil
 }
 func (s *secureStorage) openResource(master []byte, id string, resource encryptedResource) ([]byte, error) {
-	key, err := storageOpen(master, resource.BackendKey, s.aad("backend/"+id))
+	key, err := keywrap.Open(master, resource.BackendKey, s.aad("backend/"+id))
 	if err != nil {
 		return nil, err
 	}
 	defer clear(key)
-	return storageOpen(key, resource.Payload, s.aad("resource/"+id))
+	return keywrap.Open(key, resource.Payload, s.aad("resource/"+id))
 }
 
 // encode seals a plaintext document at the level the document itself requires.
@@ -216,12 +217,12 @@ func (s *secureStorage) encodeAt(data []byte, level int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	master, err := storageRandomKey()
+	master, err := keywrap.Random()
 	if err != nil {
 		return nil, err
 	}
 	defer clear(master)
-	document := encryptedStateDocument{Root: table.Root, Accounts: map[string]wrappedStorageKey{}, Conversations: map[string]encryptedConversation{}}
+	document := encryptedStateDocument{Root: table.Root, Accounts: map[string]keywrap.Wrapped{}, Conversations: map[string]encryptedConversation{}}
 	if document.Nodes, err = s.sealNodes(ctx, master, table, forest); err != nil {
 		return nil, err
 	}
@@ -248,7 +249,7 @@ func (s *secureStorage) encodeAt(data []byte, level int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	payload, err := storageSeal(master, compressed.Bytes(), s.aad("snapshot"))
+	payload, err := keywrap.Seal(master, compressed.Bytes(), s.aad("snapshot"))
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +313,7 @@ func (s *secureStorage) decode(data []byte) ([]byte, error) {
 	}
 	defer clear(master)
 	s.id, s.label, s.level = envelope.ID, label, level
-	compressed, err := storageOpen(master, envelope.Payload, s.aad("snapshot"))
+	compressed, err := keywrap.Open(master, envelope.Payload, s.aad("snapshot"))
 	if err != nil {
 		return nil, err
 	}

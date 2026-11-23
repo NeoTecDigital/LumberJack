@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"os"
 	"path/filepath"
 
@@ -22,8 +23,8 @@ import (
 // 10 MiB inline attachments are meant to grow out of, and an install that encrypts is exactly the
 // install that needs it.
 //
-// WHAT IS SHARED with secure_storage.go: the key wrapper (KMS or the local-test file), storageSeal
-// and storageOpen, and the shape sealResource uses — one random key per object, sealed under a
+// WHAT IS SHARED with secure_storage.go: the key wrapper (KMS or the local-test file), keywrap.Seal
+// and keywrap.Open, and the shape sealResource uses — one random key per object, sealed under a
 // master that the wrapper wraps, with the resource identity in the additional data. WHAT IS NOT: the
 // per-snapshot re-keying and the per-account grant wraps. A snapshot is rewritten whole and can take
 // a fresh master and fresh grants on every write; an object is appended once and never rewritten, so
@@ -43,8 +44,8 @@ import (
 //
 // On the disk: `<name>.objects/key` holds the store id and the wrapped master. Each sealed payload is
 //
-//	[60] key      storageSeal(master, object key, aad "key/<id>")     — 12 nonce + 32 + 16 tag
-//	[n+28] body   storageSeal(object key, plaintext, aad "object/<id>") — 12 nonce + n + 16 tag
+//	[60] key      keywrap.Seal(master, object key, aad "key/<id>")     — 12 nonce + 32 + 16 tag
+//	[n+28] body   keywrap.Seal(object key, plaintext, aad "object/<id>") — 12 nonce + n + 16 tag
 
 const (
 	objectKeyFileName    = "key"
@@ -55,9 +56,9 @@ const (
 // objectKeyEnvelope is the key file. The id is random and in the clear, as the encrypted state
 // envelope's is; it scopes the additional data so a key file cannot be moved under another store.
 type objectKeyEnvelope struct {
-	Version int               `json:"version"`
-	ID      string            `json:"id"`
-	Key     wrappedStorageKey `json:"key"`
+	Version int             `json:"version"`
+	ID      string          `json:"id"`
+	Key     keywrap.Wrapped `json:"key"`
 }
 
 // objectSealer holds a store's master. label is its key file's, and writeFlag the record flag new
@@ -84,16 +85,16 @@ func (s *objectSealer) recordAAD(flag byte, purpose string) []byte {
 
 // seal is one object's payload under one fresh key, under the store's write flag.
 func (s *objectSealer) seal(id objectID, plaintext []byte) ([]byte, error) {
-	key, err := storageRandomKey()
+	key, err := keywrap.Random()
 	if err != nil {
 		return nil, err
 	}
 	defer clear(key)
-	wrapped, err := storageSeal(s.master, key, s.recordAAD(s.writeFlag, "key/"+id.hex()))
+	wrapped, err := keywrap.Seal(s.master, key, s.recordAAD(s.writeFlag, "key/"+id.hex()))
 	if err != nil {
 		return nil, err
 	}
-	body, err := storageSeal(key, plaintext, s.recordAAD(s.writeFlag, "object/"+id.hex()))
+	body, err := keywrap.Seal(key, plaintext, s.recordAAD(s.writeFlag, "object/"+id.hex()))
 	if err != nil {
 		return nil, err
 	}
@@ -106,12 +107,12 @@ func (s *objectSealer) open(id objectID, flag byte, payload []byte) ([]byte, err
 	if len(payload) < objectSealedOverhead {
 		return nil, errors.New("sealed object payload is too short")
 	}
-	key, err := storageOpen(s.master, payload[:objectSealedKeySize], s.recordAAD(flag, "key/"+id.hex()))
+	key, err := keywrap.Open(s.master, payload[:objectSealedKeySize], s.recordAAD(flag, "key/"+id.hex()))
 	if err != nil {
 		return nil, err
 	}
 	defer clear(key)
-	return storageOpen(key, payload[objectSealedKeySize:], s.recordAAD(flag, "object/"+id.hex()))
+	return keywrap.Open(key, payload[objectSealedKeySize:], s.recordAAD(flag, "object/"+id.hex()))
 }
 
 // openObjectSealer decides the store's mode from the disk and the configuration together, and
@@ -186,11 +187,11 @@ func (server *Server) verifyExistingObjectKey() error {
 // createObjectSealer mints a store's master, wraps it, and publishes the key file the way the state
 // file is published: written whole, synced, renamed into place, directory synced.
 func createObjectSealer(dir, path string, storage *secureStorage) (*objectSealer, error) {
-	id, err := storageRandomKey()
+	id, err := keywrap.Random()
 	if err != nil {
 		return nil, err
 	}
-	master, err := storageRandomKey()
+	master, err := keywrap.Random()
 	if err != nil {
 		return nil, err
 	}

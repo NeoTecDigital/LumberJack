@@ -103,3 +103,31 @@ A malformed principal is invalid before directory or lock creation. Opening the
 same live store under the other profile in this process returns
 `embedded.ErrProfileConflict` (also `ErrRecordConflict`; C: `LJ_CONFLICT`).
 Contention from an unidentified external holder remains `LJ_LOCKED`.
+
+## Sealed indexed journals (record profile v2 open)
+
+Without a storage policy the existing plain record profile is unchanged. An explicit trusted
+`storage` wrapper on a v2 writable **or reader** open selects sealing. Plaintext is never
+adopted by that open. A sealed marker without its policy or with a wrong wrapper/label returns
+`LJ_SEALING_LABEL`, including a resident-store join; there is no plaintext retry.
+
+`LUMBERJACK-RECORD-2` stores a random per-store master key wrapped by the deployment wrapper.
+The authenticated marker under that master includes the original owner, indexes and receipt
+key. Each log body's AEAD authenticates the store id, format, purpose and sequence; the outer
+log retains its framing and torn-tail recovery. Neutral is the default; host state prefixes
+can be supplied as for the hub. This does not claim to detect rollback of a whole matched
+directory to an older backup; that requires independently protected state.
+
+The optional record archive exports `ic_lj_sealed_records_version() == 1`,
+`ic_lj_record_marker` (authenticate an existing marker and return its owner without opening a
+journal), and `ic_lj_record_seal`. The trusted host supplies an absolute account directory,
+the relative hub directory, one store name, the owner principal and an explicit storage policy.
+Seal requires stopped writers. It takes **both** existing sidecar locks, checks the complete
+plain journal, rewrites a private sibling copy, compares the verified frames and marker by
+digest, the canonical hub forest by digest, and every object by content id. Only then does it
+sync and atomically exchange whole directories. No exchange support means no conversion.
+Ambiguous, unsupported or mixed layouts are refused. An already sealed account is authenticated
+without changing the live files. Retry an interrupted operation with the same request; the
+transaction guard shares the live record lock's inode. Protect the staging directory and its
+parent as you would the store. Backups and storage snapshots retain historical plaintext;
+restore the matching backup and old reader together for rollback, never an image alone.

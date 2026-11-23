@@ -1,5 +1,5 @@
 // Written by Richard Christopher, Copyright 2026 NeoTec, LLC
-package internal
+package keywrap
 
 import (
 	"bytes"
@@ -93,18 +93,18 @@ func kmsVerified(values map[string]json.RawMessage, name string) bool {
 	_ = json.Unmarshal(values[name], &b)
 	return b
 }
-func (w *kmsStorageWrapper) Wrap(ctx context.Context, key, aad []byte) (wrappedStorageKey, error) {
+func (w *kmsStorageWrapper) Wrap(ctx context.Context, key, aad []byte) (Wrapped, error) {
 	result, err := w.call(ctx, "encrypt", map[string]string{"plaintext": base64.StdEncoding.EncodeToString(key), "additionalAuthenticatedData": base64.StdEncoding.EncodeToString(aad), "plaintextCrc32c": storageCRC(key), "additionalAuthenticatedDataCrc32c": storageCRC(aad)})
 	if err != nil {
-		return wrappedStorageKey{}, err
+		return Wrapped{}, err
 	}
 	ciphertext, err := base64.StdEncoding.DecodeString(kmsString(result, "ciphertext"))
 	if err != nil || len(ciphertext) == 0 || !kmsVerified(result, "verifiedPlaintextCrc32c") || !kmsVerified(result, "verifiedAdditionalAuthenticatedDataCrc32c") || storageCRC(ciphertext) != kmsString(result, "ciphertextCrc32c") {
-		return wrappedStorageKey{}, errors.New("KMS encryption integrity check failed")
+		return Wrapped{}, errors.New("KMS encryption integrity check failed")
 	}
-	return wrappedStorageKey{Key: w.name, Ciphertext: ciphertext}, nil
+	return Wrapped{Key: w.name, Ciphertext: ciphertext}, nil
 }
-func (w *kmsStorageWrapper) Unwrap(ctx context.Context, key wrappedStorageKey, aad []byte) ([]byte, error) {
+func (w *kmsStorageWrapper) Unwrap(ctx context.Context, key Wrapped, aad []byte) ([]byte, error) {
 	// A stored file cannot redirect this service's OAuth bearer to another host/key.
 	if key.Key != w.name {
 		return nil, errors.New("encrypted state names a different KMS key")

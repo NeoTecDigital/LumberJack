@@ -73,8 +73,10 @@ func ResolveOpenStorage(policy *StorageConfig) (*StorageConfig, error) {
 	if config.Mode == "" {
 		return nil, errors.New("sealing labels require encrypted storage")
 	}
-	config.MigrateLegacy = config.MigrateLegacy || ambient.MigrateLegacy
-	config.RewrapKeys = config.RewrapKeys || ambient.RewrapKeys
+	// An explicit per-open policy must never inherit permission to mutate an existing format.
+	if config.MigrateLegacy || config.RewrapKeys || ambient.MigrateLegacy || ambient.RewrapKeys {
+		return nil, errors.New("maintenance flags are not an open policy")
+	}
 	if config.WriteLabel == "" {
 		config.WriteLabel = ambient.WriteLabel
 	}

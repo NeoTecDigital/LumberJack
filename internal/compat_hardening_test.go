@@ -4,6 +4,7 @@ package internal
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,7 +195,7 @@ func TestNeutralEnvelopesAreRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		writer := &secureStorage{wrapper: &localStorageWrapper{key: key}, id: strings.Repeat("b", 64), accounts: map[string]storageAccountKey{}, label: (compat.Label{})}
+		writer := &secureStorage{wrapper: &keywrap.Local{Key: key}, id: strings.Repeat("b", 64), accounts: map[string]storageAccountKey{}, label: (compat.Label{})}
 		sealed, err := writer.encode(source)
 		if err != nil {
 			t.Fatal(err)
@@ -203,7 +204,7 @@ func TestNeutralEnvelopesAreRead(t *testing.T) {
 		if version := compatEnvelopeVersion(t, sealed); version != want {
 			t.Fatalf("neutral envelope version %d, want %d", version, want)
 		}
-		reader := &secureStorage{wrapper: &localStorageWrapper{key: key}}
+		reader := &secureStorage{wrapper: &keywrap.Local{Key: key}}
 		opened, err := reader.decode(sealed)
 		if err != nil {
 			t.Fatalf("neutral envelope %d not read: %v", want, err)

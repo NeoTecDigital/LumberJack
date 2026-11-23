@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/NeoTecDigital/LumberJack/internal/keywrap"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func encryptedDocumentForTest(t *testing.T, codec *secureStorage, forest *core.N
 	if err != nil {
 		t.Fatal(err)
 	}
-	zipped, err := storageOpen(key, envelope.Payload, codec.aad("snapshot"))
+	zipped, err := keywrap.Open(key, envelope.Payload, codec.aad("snapshot"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func TestAccessWallClockExpiryDeniesReadsWritesWrapsAndStream(t *testing.T) {
 	if err := s.persistState(s.statePath()); err != nil {
 		t.Fatal(err)
 	}
-	codec := &secureStorage{wrapper: &localStorageWrapper{key: bytes.Repeat([]byte{7}, 32)}, id: string(bytes.Repeat([]byte{'a'}, 64)), accounts: map[string]storageAccountKey{}}
+	codec := &secureStorage{wrapper: &keywrap.Local{Key: bytes.Repeat([]byte{7}, 32)}, id: string(bytes.Repeat([]byte{'a'}, 64)), accounts: map[string]storageAccountKey{}}
 	before := encryptedDocumentForTest(t, codec, s.forest)
 	if len(before.Nodes[node.ID].AccountKeys["reader"]) == 0 {
 		t.Fatal("unexpired recipient missing its resource wrap")

@@ -97,6 +97,9 @@ func (s *Store) prepare(q *request) candidate {
 	f, err := s.s.frame(s.m.Store, q.issuer, q.digest, q.c)
 	if err == nil {
 		c.body, err = json.Marshal(f)
+		if err == nil {
+			c.body, err = s.key.frame(true, f.Sequence, c.body)
+		}
 	}
 	if err == nil {
 		c.ops, c.answer.r, err = s.s.run(f)
