@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/NeoTecDigital/LumberJack/core"
+	"github.com/NeoTecDigital/LumberJack/extension"
 	"net/http"
 	"strings"
 	"time"
@@ -116,15 +117,49 @@ func newSessionToken() (string, error) {
 // the lock being released in between, so an enrolment landing at the same moment either precedes
 // this whole block — and the session is born stale — or follows it, and retires the session on its
 // next request. There is no ordering in which it survives.
+type sessionRegistration struct {
+	ttl           int64  // seconds; 0 uses applicationSessionTTL
+	sourceSession string // non-empty marks Delegated and sets SourceSession
+}
+
+func (s *Server) sourceSessionHeldByOtherLocked(userID, sourceSession string, now int64) bool {
+	for key, held := range s.forest.ApplicationSessions {
+		if !held.Delegated || held.SourceSession != sourceSession || held.UserID == userID {
+			continue
+		}
+		if _, live := s.registeredSessionLocked(key, now); live {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) registerSessionLocked(userID string, expected *int64, token string) (core.ApplicationSession, error) {
+	return s.registerSessionWithOptionsLocked(userID, expected, token, sessionRegistration{})
+}
+
+func (s *Server) registerSessionWithOptionsLocked(userID string, expected *int64, token string, reg sessionRegistration) (core.ApplicationSession, error) {
+	now := time.Now().Unix()
 	profile, err := s.forest.GetUserProfile(userID)
-	if err != nil || profile.LockedUntil > time.Now().Unix() || (expected != nil && !epochIsCurrent(*expected, profile.CredentialEpoch)) {
+	if err != nil || profile.LockedUntil > now || (expected != nil && !epochIsCurrent(*expected, profile.CredentialEpoch)) {
 		return core.ApplicationSession{}, apiErrorf(401, "Account unavailable")
 	}
-	now := time.Now().Unix()
+	if reg.sourceSession != "" && s.sourceSessionHeldByOtherLocked(userID, reg.sourceSession, now) {
+		return core.ApplicationSession{}, &extension.Error{Status: http.StatusUnauthorized, Message: "Session group unavailable"}
+	}
+	ttl := int64(applicationSessionTTL)
+	if reg.ttl > 0 {
+		ttl = reg.ttl
+	}
+	mfaAt := now
+	if reg.sourceSession != "" {
+		mfaAt = 0
+	}
 	s.sweepApplicationSessionsLocked(userID, now)
 	session := core.ApplicationSession{
-		UserID: userID, CreatedAt: now, LastActiveAt: now, ExpiresAt: now + applicationSessionTTL, CredentialEpoch: profile.CredentialEpoch, MFAAt: now,
+		UserID: userID, CreatedAt: now, LastActiveAt: now, ExpiresAt: now + ttl,
+		CredentialEpoch: profile.CredentialEpoch, MFAAt: mfaAt,
+		Delegated: reg.sourceSession != "", SourceSession: reg.sourceSession,
 	}
 	s.forest.ApplicationSessions[s.sessionHash(token)] = session
 	return session, nil

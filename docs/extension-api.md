@@ -360,6 +360,17 @@ type Sessions interface {
 	RetireCredentials(tx Tx, userID string) // the credential-epoch bump
 }
 
+// SessionOptions selects the transport and, for "browser" only, an optional bounded absolute
+// lifetime (0 = 24h default; < 1s or > 24h refused) and external source-session revocation group
+// (empty = ordinary session; non-empty printable key <= 256 bytes without whitespace or control
+// characters sets Delegated and SourceSession, refuses a live group key held by another user, and
+// ends the group together on sign-out). Bearer issues refuse both fields.
+type SessionOptions struct {
+	Transport     string
+	Lifetime      time.Duration
+	SourceSession string
+}
+
 // GrantSource materialises access grants onto nodes, under the exclusive hold, in the same change.
 // The engine's /access policies are the built-in source "access".
 type GrantSource interface {
