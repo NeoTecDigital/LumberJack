@@ -450,6 +450,10 @@ is always part of a `Change` and lands in the same snapshot as the data it descr
 Invariants:
 
 - Bytes of a key not set since load are re-emitted verbatim.
+- Lazy `Codec.Decode` on first read is synchronized per slot value so concurrent readers under the
+  shared hold (including `EventDelivery`) decode at most once without racing; because concurrent
+  readers share the cached decoded value, extensions should treat the value returned by
+  `ReadTx.Slot` as read-only under a shared hold.
 - Keys are declared statically, and they are disjoint across extensions and from engine keys.
 - Encoding happens under the exclusive hold, in `encodeDocument` as today.
 - In-memory product state that is not persisted (registries, leases) lives on the `Instance`, not
