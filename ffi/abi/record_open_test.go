@@ -4,6 +4,7 @@ package abi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/NeoTecDigital/LumberJack/embedded"
+	"github.com/NeoTecDigital/LumberJack/extension"
 )
 
 func TestMalformedRecordPrincipalLeavesNoFiles(t *testing.T) {
@@ -67,5 +69,56 @@ func TestLiveProfileConflictBothDirections(t *testing.T) {
 				t.Fatalf("incorrect classification: %v", err)
 			}
 		})
+	}
+}
+
+type scopeProbe struct{ scope extension.StoreScope }
+
+func (e scopeProbe) Spec() extension.Spec { return extension.Spec{Name: "scope-probe", Scope: e.scope} }
+func (e scopeProbe) Attach(extension.Host) (extension.Instance, error) {
+	panic("record open attached extension")
+}
+
+func TestRegisteredScopeOnRecordOpen(t *testing.T) {
+	previous := registered()
+	defer func() { registeredMu.Lock(); registeredExtensions = previous; registeredMu.Unlock() }()
+	for _, version := range []struct {
+		n    uint32
+		open func(unsafe.Pointer, int64, unsafe.Pointer) int32
+	}{
+		{1, RecordOpen}, {2, RecordOpenV2},
+	} {
+		for _, tc := range []struct {
+			name string
+			set  []extension.Extension
+			want int32
+		}{
+			{"hub", []extension.Extension{scopeProbe{extension.HubStore}}, int32(statusOK)},
+			{"undeclared", []extension.Extension{scopeProbe{}}, int32(statusConflict)},
+			{"record", []extension.Extension{scopeProbe{extension.RecordStore}}, int32(statusConflict)},
+			{"mixed", []extension.Extension{scopeProbe{extension.HubStore}, scopeProbe{}}, int32(statusConflict)},
+			{"unknown", []extension.Extension{scopeProbe{255}}, int32(statusConflict)},
+		} {
+			t.Run(fmt.Sprintf("v%d/%s", version.n, tc.name), func(t *testing.T) {
+				registeredMu.Lock()
+				registeredExtensions = nil
+				registeredMu.Unlock()
+				Register(tc.set...)
+				dir := filepath.Join(t.TempDir(), "store")
+				raw, _ := json.Marshal(map[string]string{"directory": dir, "name": "journal", "principal": "owner", "durability": "local-sync"})
+				var h uint64
+				got := version.open(unsafe.Pointer(&raw[0]), int64(len(raw)), unsafe.Pointer(&h))
+				if got != tc.want || (h != 0) != (got == 0) {
+					t.Fatalf("status %d, handle %d", got, h)
+				}
+				if h != 0 {
+					RecordClose(h)
+					return
+				}
+				if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("refusal touched directory")
+				}
+			})
+		}
 	}
 }

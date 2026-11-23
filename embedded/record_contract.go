@@ -2,6 +2,7 @@
 package embedded
 
 import (
+	"github.com/NeoTecDigital/LumberJack/extension"
 	"github.com/NeoTecDigital/LumberJack/internal/store"
 	"github.com/NeoTecDigital/LumberJack/types"
 )
@@ -21,6 +22,15 @@ const MaxRecordRequestBytes = store.MaxBytes
 // OpenRecordDocument opens a store from the strict, versioned record ABI document.
 // Version 1 does not accept version 2 fields.
 func OpenRecordDocument(version uint32, raw []byte) (*RecordHandle, error) {
+	return OpenRecordDocumentWith(version, raw)
+}
+
+// OpenRecordDocumentWith enforces the host's extension set before opening any
+// file. It never attaches an extension to the journal.
+func OpenRecordDocumentWith(version uint32, raw []byte, exts ...extension.Extension) (*RecordHandle, error) {
+	if err := CheckRecordExtensions(exts); err != nil {
+		return nil, err
+	}
 	if (version != 1 && version != 2) || len(raw) > MaxRecordRequestBytes {
 		return nil, ErrRecordInvalid
 	}

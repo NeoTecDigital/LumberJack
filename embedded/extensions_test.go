@@ -78,3 +78,38 @@ func TestOpenWithSharesOnlyTheSameExtensionSet(t *testing.T) {
 	}
 	_ = reopened.Close()
 }
+
+type profileExtension struct {
+	recordingExtension
+	scope extension.StoreScope
+}
+
+func (e profileExtension) Spec() extension.Spec { return extension.Spec{Name: e.name, Scope: e.scope} }
+
+func TestHubAttachesOnlyApplicableExtensions(t *testing.T) {
+	var events []string
+	var mu sync.Mutex
+	hub := profileExtension{recordingExtension{"hub", &events, &mu}, extension.HubStore}
+	record := profileExtension{recordingExtension{"journal", &events, &mu}, extension.RecordStore}
+	both := recordingExtension{"both", &events, &mu}
+	config := embeddedConfig(t)
+	h, err := OpenWith(config, "", hub, record, both)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := OpenWith(config, "", hub, both)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = shared.Close()
+	_ = h.Close()
+	if got := strings.Join(events, ";"); got != "attach hub;attach both;close both;close hub" {
+		t.Fatal(got)
+	}
+	if _, err = OpenRecordDocumentWith(2, nil, record); !errors.Is(err, ErrRecordConflict) {
+		t.Fatal(err)
+	}
+	if _, err = OpenRecordDocumentWith(2, nil, hub); !errors.Is(err, ErrRecordInvalid) {
+		t.Fatal(err)
+	}
+}

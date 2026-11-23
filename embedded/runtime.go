@@ -103,7 +103,11 @@ var ErrExtensionConflict = errors.New("lumberjack: the state file is open with a
 // after the state is loaded and before the first write or request (docs/extension-api.md §3). A
 // second OpenWith of the same path shares the runtime only with the same set, in the same order.
 func OpenWith(config Config, principal string, exts ...extension.Extension) (*Handle, error) {
-	config, err := canonicalConfig(config)
+	exts, err := hubExtensions(exts)
+	if err != nil {
+		return nil, err
+	}
+	config, err = canonicalConfig(config)
 	if err != nil {
 		return nil, err
 	}

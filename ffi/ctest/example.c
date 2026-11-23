@@ -14,6 +14,21 @@
 static lj_status_t (*const check_writes)(lj_handle_t, int64_t *) = ic_lj_example_writes;
 static lj_status_t (*const check_open)(lj_cstr, int64_t, lj_handle_t *) = ic_lj_open;
 
+/* A journal shares the archive, not the pointer handle or its write hooks. */
+static void journal_probe(const char *dir, lj_handle_t hub, int64_t expected) {
+    char req[512], out[2048];
+    snprintf(req, sizeof req, "{\"directory\":\"%s\",\"name\":\"journal\","
+             "\"principal\":\"owner\",\"durability\":\"local-sync\"}", dir);
+    lj_handle_t journal = 0;
+    assert(ic_lj_record_v2_open(REQ(req), &journal) == LJ_OK && journal != hub);
+    const char *cmd = "{\"command_id\":\"one\",\"edits\":[{\"op\":\"create\",\"kind\":\"ticket\"}]}";
+    int64_t n = 0, observed = -1;
+    assert(ic_lj_record_apply(journal, REQ(cmd), out, sizeof out, &n) == LJ_OK);
+    assert(check_writes(hub, &observed) == LJ_OK && observed == expected);
+    assert(check_writes(journal, &observed) == LJ_BAD_HANDLE);
+    assert(ic_lj_record_close(journal) == LJ_OK);
+}
+
 int main(void) {
     assert(ic_lj_abi_version() == LJ_ABI_VERSION);
     char dir[] = "/tmp/lj_example_XXXXXX";
@@ -31,6 +46,7 @@ int main(void) {
     assert(ic_lj_node_create(h, REQ("path: example/one\ntype: leaf\n"), out, sizeof out, &out_len) == LJ_OK);
     assert(check_writes(h, &after) == LJ_OK);
     assert(after > before);
+    journal_probe(dir, h, after);
     assert(check_writes((lj_handle_t)987654321, &after) == LJ_BAD_HANDLE);
 
     assert(ic_lj_close(h) == LJ_OK);

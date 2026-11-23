@@ -12,7 +12,12 @@ seam is admitted only if:
 - it has a generic test that uses no product code;
 - it carries no product logic.
 
-Applications implement their extensions in their own repositories.
+Applications implement their extensions in their own repositories. Each `extension.Spec.Scope`
+selects `HubStore` (the pointer forest), `RecordStore` (the standalone journal), or `AllStores`.
+Omitting it means `AllStores`, as before. Only applicable extensions attach to a hub.
+Both record ABIs refuse any registration other than an explicit `HubStore` with `LJ_CONFLICT`;
+record hooks are not implemented. A hub and a separate journal can therefore use one archive
+without giving hub hooks access to record writes. These scopes do not replace file locks or grants.
 
 What is not a seam (§9): the owned-scope snapshot overlay, durability pairs, `DomainProduct` and
 application-specific admission protocols. Products rebuild these on top of the seams below if they still need them.

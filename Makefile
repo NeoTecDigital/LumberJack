@@ -120,15 +120,15 @@ rollback-check: | $(BUILD)
 # A product archive in miniature (docs/extension-api.md §6): ffi/testdata/example is a main package
 # of the generated base wrappers, one export of its own and an extension registered in init. It is
 # built as ONE c-archive and driven from C, which proves the composition and that the product export
-# resolves handles ic_lj_open issued; its exports are the twenty base functions plus its own.
+# resolves handles ic_lj_open issued; it exports the base and record families plus its own counter.
 EXAMPLE_ARCHIVE := $(BUILD)/libexample.a
 product-archive-example: | $(BUILD)
 	@CGO_ENABLED=1 $(GO) build -buildmode=c-archive -trimpath -o $(EXAMPLE_ARCHIVE) ./ffi/testdata/example
 	@$(CC) $(CFLAGS) -I ffi -I ffi/testdata/example -I $(BUILD) -o $(BUILD)/example ffi/ctest/example.c $(EXAMPLE_ARCHIVE) $(CLIBS)
 	@$(BUILD)/example
-	@test "$$($(NM) -g --defined-only $(EXAMPLE_ARCHIVE) | awk '$$2 == "T" && $$3 ~ /^ic_lj_/ { print $$3 }' | sort -u | wc -l)" = 21 || { \
-		echo "ERROR: the example archive does not export the base plus its one export"; exit 1; }
-	@echo "  example: a product archive exports the 20 base functions and its own, over one handle table"
+	@$(NM) -g --defined-only $(EXAMPLE_ARCHIVE) | awk '$$2 == "T" && $$3 ~ /^ic_lj_/ {print $$3}' | sort -u > $(BUILD)/example.exports
+	@printf '%s\n' $(BASE_EXPORTS) $(RECORD_EXPORTS) ic_lj_example_writes | sort -u | diff - $(BUILD)/example.exports
+	@echo "  example: hub hook active, record writes isolated, exact exports"
 
 .PHONY: smoke-records
 smoke-records: ffi

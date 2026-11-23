@@ -23,6 +23,7 @@ type Extension interface {
 
 // Spec is what an extension declares about itself. Everything in it is validated at Open.
 type Spec struct {
+	Scope       StoreScope  // zero binds both profiles; a narrower scope must be explicit
 	Name        string      // stable, [a-z0-9-]+; namespaces grant ids, config parts, errors
 	Slot        SlotSpec    // persisted keys this extension owns
 	Markers     []string    // CommandReceipts keys that mark a node as owned by this extension
@@ -33,6 +34,16 @@ type Spec struct {
 	// to them alone queues no notification for the node's subscribers.
 	PresentationMetadata []string
 }
+
+// StoreScope declares where an extension's contract must be honored. The zero
+// value preserves existing registrations: a journal cannot bypass their hooks.
+type StoreScope uint8
+
+const (
+	AllStores   StoreScope = iota // application hub and record journal
+	HubStore                      // pointer forest only
+	RecordStore                   // journal only (record hooks are not supported)
+)
 
 // Persistence is which persistence modes an extension can run under.
 type Persistence uint8
